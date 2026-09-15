@@ -23,7 +23,7 @@ port = "/dev/ttyUSB0"
 baud = 115200
 control_hz = 50
 max_accel_deg_s2 = 3.0        # per-axis acceleration limit
-max_rate_deg_s = 2.0          # per-axis speed limit (also capped by firmware step rate)
+max_rate_deg_s = 3.0          # per-axis speed limit (also capped by firmware step rate)
 firmware_max_step_rate = 9000 # steps/s, firmware hard cap is 9500
 axis1_hour_limit = 120        # |axis1| limit from counterweight-down, deg (>90 = counterweight up)
 kp_position = 4.0             # 1/s, position error -> rate correction
