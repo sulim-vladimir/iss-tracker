@@ -1,4 +1,5 @@
-// ISS tracking mount firmware: Arduino Uno + 2x DRV8825 (CNC shield v3 pinout by default).
+// ISS tracking mount firmware: Arduino Uno + 2x DRV8825.
+// Pinout matches the original serialSpeed.ino wiring.
 //
 // Velocity-mode dual-axis stepper driver. Both axes are stepped from a single Timer1
 // interrupt using phase accumulators (DDA), so any rate from ~0.005 to MAX_ISR_RATE
@@ -11,12 +12,14 @@
 //   Q                   query                                        -> P line
 //   A <acc1> [<acc2>]   acceleration limits, steps/s^2               -> OK
 //   M <maxrate>         max |rate|, steps/s                          -> OK
-//   E <0|1>             disable/enable drivers                       -> OK
+//   U <ms1> <ms2>       microstepping 1..32 (only while stopped)     -> OK
+//   E <0|1>             disable/enable drivers (if ENABLE_PIN wired) -> OK
 //   Z [<pos1> <pos2>]   set step counters (default 0 0)              -> OK
 //   S                   decelerate to stop                           -> P line
 //   X                   emergency stop (no ramp)                     -> P line
 //   V                   version                                      -> ISSMOUNT <ver>
-// P line: "P <pos1> <pos2> <rate1> <rate2> <millis>"  (positions in steps, rates in steps/s)
+// P line: "P <pos1> <pos2> <rate1> <rate2> <millis>"
+//   positions are in steps at the current microstep setting, rates in steps/s.
 // Errors: "ERR <text>"
 
 #include <Arduino.h>
@@ -24,26 +27,25 @@
 
 #define FW_VERSION "1"
 
-// ---- pins (CNC shield v3: X = axis1/RA, Y = axis2/Dec) ----
-#define AX1_STEP_PIN 2   // PD2
-#define AX2_STEP_PIN 3   // PD3
-#define AX1_DIR_PIN  5   // PD5
-#define AX2_DIR_PIN  6   // PD6
-#define ENABLE_PIN   8   // active LOW, shared
+// ---- pins: axis1 = RA, axis2 = Dec ----
+#define AX1_STEP_PIN 3   // PD3
+#define AX1_DIR_PIN  2   // PD2
+#define AX2_STEP_PIN 7   // PD7
+#define AX2_DIR_PIN  8   // PB0
+const uint8_t MS_PINS[2][3] = {{4, 5, 6}, {9, 10, 11}};  // M0, M1, M2
+// #define ENABLE_PIN 12  // uncomment if DRV8825 EN is wired (active LOW)
 
-#define AX1_STEP_BIT _BV(PD2)
-#define AX2_STEP_BIT _BV(PD3)
-#define AX1_DIR_BIT  _BV(PD5)
-#define AX2_DIR_BIT  _BV(PD6)
+#define AX1_STEP_BIT _BV(PD3)
+#define AX2_STEP_BIT _BV(PD7)
 
 // ---- timing ----
 #define ISR_HZ 20000UL                // Timer1 CTC rate
 #define MAX_ISR_RATE 9500.0           // hard cap: need >= 2 ticks per step (high + low)
 #define RAMP_PERIOD_US 1000UL         // acceleration update period
 #define WATCHDOG_MS 500UL             // stop if no R/Q command within this time
+#define DEFAULT_MICROSTEP 16
 const double INC_PER_STEP_RATE = 4294967296.0 / ISR_HZ;
 
-// ---- state shared with ISR ----
 struct Axis {
   volatile uint32_t acc;       // phase accumulator
   volatile uint32_t inc;       // accumulator increment per tick (|rate| scaled)
@@ -53,17 +55,21 @@ struct Axis {
   volatile int32_t  pos;       // step counter
   double rate;                 // current commanded rate (main loop only)
   double target;               // target rate (main loop only)
+  uint8_t microstep;
 };
 
 Axis ax[2];
 double accelLimit[2] = {4000.0, 4000.0};  // steps/s^2
-double maxRate = 6000.0;      // steps/s
+double maxRate = 6000.0;                  // steps/s
 unsigned long lastCmdMs = 0;
 unsigned long lastRampUs = 0;
 
 static inline void setDirPin(uint8_t i, int8_t d) {
-  uint8_t bit = (i == 0) ? AX1_DIR_BIT : AX2_DIR_BIT;
-  if (d > 0) PORTD |= bit; else PORTD &= ~bit;
+  if (i == 0) {
+    if (d > 0) PORTD |= _BV(PD2); else PORTD &= ~_BV(PD2);
+  } else {
+    if (d > 0) PORTB |= _BV(PB0); else PORTB &= ~_BV(PB0);
+  }
 }
 
 ISR(TIMER1_COMPA_vect) {
@@ -117,17 +123,36 @@ void rampAxes(double dt) {
   }
 }
 
-void readState(int32_t &p1, int32_t &p2) {
+bool setMicrostep(uint8_t i, long ms) {
+  uint8_t bits;
+  switch (ms) {
+    case 1: bits = 0b000; break;
+    case 2: bits = 0b001; break;
+    case 4: bits = 0b010; break;
+    case 8: bits = 0b011; break;
+    case 16: bits = 0b100; break;
+    case 32: bits = 0b101; break;
+    default: return false;
+  }
+  for (uint8_t b = 0; b < 3; b++) digitalWrite(MS_PINS[i][b], (bits >> b) & 1);
+  if (ax[i].microstep) {
+    // keep the counter in the same physical units
+    uint8_t sreg = SREG;
+    cli();
+    ax[i].pos = (int32_t)((int64_t)ax[i].pos * ms / ax[i].microstep);
+    SREG = sreg;
+  }
+  ax[i].microstep = ms;
+  return true;
+}
+
+void sendP() {
+  int32_t p1, p2;
   uint8_t sreg = SREG;
   cli();
   p1 = ax[0].pos;
   p2 = ax[1].pos;
   SREG = sreg;
-}
-
-void sendP() {
-  int32_t p1, p2;
-  readState(p1, p2);
   Serial.print(F("P "));
   Serial.print(p1);
   Serial.print(' ');
@@ -146,17 +171,22 @@ double clampRate(double r) {
   return r;
 }
 
+bool parse2(char *p, double &a, double &b) {
+  char *end;
+  a = strtod(p, &end);
+  if (end == p) return false;
+  p = end;
+  b = strtod(p, &end);
+  return end != p;
+}
+
 void handleLine(char *line) {
-  char cmd = line[0];
   char *p = line + 1;
   char *end;
-  switch (cmd) {
+  switch (line[0]) {
     case 'R': {
-      double r1 = strtod(p, &end);
-      if (end == p) { Serial.println(F("ERR args")); return; }
-      p = end;
-      double r2 = strtod(p, &end);
-      if (end == p) { Serial.println(F("ERR args")); return; }
+      double r1, r2;
+      if (!parse2(p, r1, r2)) { Serial.println(F("ERR args")); return; }
       ax[0].target = clampRate(r1);
       ax[1].target = clampRate(r2);
       lastCmdMs = millis();
@@ -185,10 +215,25 @@ void handleLine(char *line) {
       Serial.println(F("OK"));
       break;
     }
+    case 'U': {
+      double m1, m2;
+      if (!parse2(p, m1, m2)) { Serial.println(F("ERR args")); return; }
+      if (ax[0].rate != 0 || ax[1].rate != 0 || ax[0].target != 0 || ax[1].target != 0) {
+        Serial.println(F("ERR moving"));
+        return;
+      }
+      if (!setMicrostep(0, (long)m1) || !setMicrostep(1, (long)m2)) { Serial.println(F("ERR microstep")); return; }
+      Serial.println(F("OK"));
+      break;
+    }
     case 'E': {
       long e = strtol(p, &end, 10);
       if (end == p) { Serial.println(F("ERR args")); return; }
+#ifdef ENABLE_PIN
       digitalWrite(ENABLE_PIN, e ? LOW : HIGH);
+#else
+      (void)e;
+#endif
       Serial.println(F("OK"));
       break;
     }
@@ -226,13 +271,19 @@ void setup() {
   pinMode(AX2_STEP_PIN, OUTPUT);
   pinMode(AX1_DIR_PIN, OUTPUT);
   pinMode(AX2_DIR_PIN, OUTPUT);
+  for (uint8_t i = 0; i < 2; i++)
+    for (uint8_t b = 0; b < 3; b++) pinMode(MS_PINS[i][b], OUTPUT);
+#ifdef ENABLE_PIN
   pinMode(ENABLE_PIN, OUTPUT);
-  digitalWrite(ENABLE_PIN, HIGH);  // drivers disabled until host sends E 1
+  digitalWrite(ENABLE_PIN, HIGH);  // disabled until host sends E 1
+#endif
 
   for (uint8_t i = 0; i < 2; i++) {
     ax[i].acc = 0; ax[i].inc = 0; ax[i].wantDir = 1; ax[i].pinDir = 1;
     ax[i].stepHigh = false; ax[i].pos = 0; ax[i].rate = 0; ax[i].target = 0;
+    ax[i].microstep = 0;
     setDirPin(i, 1);
+    setMicrostep(i, DEFAULT_MICROSTEP);
   }
 
   cli();

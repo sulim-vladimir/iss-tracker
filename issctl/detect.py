@@ -15,7 +15,7 @@ class Detection:
     t: float = 0.0
 
 
-def detect(img, sigma=6.0, min_area=3, bayer=False, gate=None, max_width=640):
+def detect(img, sigma=6.0, min_area=3, bayer=False, gate=None, max_width=1300):
     """Brightest compact blob above sigma*noise. gate=(x, y, radius) restricts the search.
 
     Coordinates are in full-resolution pixels of the input image.

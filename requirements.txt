@@ -1,0 +1,9 @@
+numpy
+scipy
+opencv-python-headless
+skyfield
+astropy
+pyserial
+zwoasi
+tomli; python_version < "3.11"
+pytest

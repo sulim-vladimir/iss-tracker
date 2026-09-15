@@ -16,7 +16,8 @@ max_age_hours = 12
 # ---- mount -------------------------------------------------------------------
 # steps_per_deg = motor_steps * microsteps * gear_ratio * worm_teeth / 360
 # EQ3-2 worm wheels: RA 130 teeth, Dec 65 teeth (verify on your mount).
-# gear_ratio = motor-to-worm reduction (e.g. 16T pulley on motor, 48T on worm -> 3.0).
+# gear_ratio = motor-to-worm reduction (pulley ratio).
+# With 1/16 microstepping: RA 2600 steps/deg, Dec 1300 steps/deg.
 [mount]
 port = "/dev/ttyUSB0"
 baud = 115200
@@ -30,15 +31,15 @@ command_latency_s = 0.02      # serial + firmware ramp latency, compensated by l
 
 [mount.axis1]                 # RA axis
 motor_steps = 200
-microsteps = 16
-gear_ratio = 3.0              # TODO: your drivetrain
+microsteps = 16               # sent to the firmware (M0-M2 pins) on connect
+gear_ratio = 2.25             # pulley ratio from serialSpeed.ino
 worm_teeth = 130
 reverse = false               # flip so that + moves in sidereal-tracking direction
 
 [mount.axis2]                 # Dec axis
 motor_steps = 200
 microsteps = 16
-gear_ratio = 3.0              # TODO: your drivetrain
+gear_ratio = 2.25
 worm_teeth = 65
 reverse = false               # flip so that + moves toward the pole on side "east_looking"
 

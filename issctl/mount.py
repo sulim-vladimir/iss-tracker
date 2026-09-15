@@ -137,6 +137,8 @@ class SerialMount(Mount):
         ver = self._cmd("V", "ISSMOUNT")
         if not ver:
             raise RuntimeError("no ISSMOUNT firmware response on " + m["port"])
+        self._cmd("X", "P")
+        self._cmd(f"U {m['axis1']['microsteps']} {m['axis2']['microsteps']}")
         acc = self.max_accel * self.spd
         self._cmd(f"A {acc[0]:.1f} {acc[1]:.1f}")
         self._cmd(f"M {m['firmware_max_step_rate']:.0f}")
