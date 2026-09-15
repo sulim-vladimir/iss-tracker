@@ -43,6 +43,15 @@ def cmd_passes(args, cfg):
         print(f"{i:2d} {fmt_t(p['rise'])}  max {p['max_alt']:4.1f}  {vis:7s} {describe(rep)}")
 
 
+def start_preview(cams, state, port):
+    from .preview import Preview
+    try:
+        Preview(cams, state, port).start()
+        print(f"preview on http://localhost:{port}/")
+    except OSError as e:
+        print(f"preview unavailable on port {port}: {e} (use --port)")
+
+
 # ---------------------------------------------------------------- hardware
 
 def open_mount(cfg, state, clock):
@@ -92,7 +101,6 @@ def cmd_console(args, cfg):
 
     from .calib import calibrate_cameras
     from .mount import SIDEREAL_DEG_S, SimMount
-    from .preview import Preview
 
     state = load_state()
     clock = Clock()
@@ -102,7 +110,7 @@ def cmd_console(args, cfg):
     else:
         mount, cams = open_mount(cfg, state, clock), open_cameras(cfg, clock)
     if cams and cfg["preview"]["enabled"]:
-        Preview(cams, state, cfg["preview"]["port"]).start()
+        start_preview(cams, state, args.port or cfg["preview"]["port"])
 
     speeds = [0.004, 0.02, 0.1, 0.5, 2.0]
     ui = {"jog": np.zeros(2), "speed": 2, "tracking": False, "busy": False, "quit": False, "msg": ""}
@@ -321,9 +329,7 @@ def cmd_track(args, cfg):
         cams["main"].sinks.append(recorder)
 
     if cams and cfg["preview"]["enabled"] and not args.no_preview:
-        from .preview import Preview
-        Preview(cams, state, cfg["preview"]["port"]).start()
-        print(f"preview on http://<host>:{cfg['preview']['port']}/")
+        start_preview(cams, state, args.port or cfg["preview"]["port"])
 
     log_path = logs / f"track-{stamp}{'-sim' if args.sim else ''}.csv"
     tracker = Tracker(cfg, state, mount, cams, clock, traj, log_path=log_path)
@@ -367,8 +373,10 @@ def main(argv=None):
 
     p = sub.add_parser("console", help="jog, home, sync, goto, calibrate cameras")
     p.add_argument("--sim", action="store_true")
+    p.add_argument("--port", type=int, help="preview port (default from config)")
 
     p = sub.add_parser("track", help="track a pass")
+    p.add_argument("--port", type=int, help="preview port (default from config)")
     p.add_argument("--pass", dest="pass_index", type=int, help="index from 'passes' (default: next visible)")
     p.add_argument("--offline", action="store_true")
     p.add_argument("--record", action="store_true", help="record SER (also in --sim)")
