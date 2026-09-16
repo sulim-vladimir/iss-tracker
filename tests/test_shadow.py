@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from issctl.calib import ideal_calibration, jacobian
+from issctl.calib import cal_px_per_deg, ideal_calibration, jacobian
 from issctl.config import load_config
 from issctl.control import Tracker
 from issctl.detect import Detection
@@ -102,10 +102,7 @@ def test_reacquires_after_shadow_exit(rig):
     mount.query()
     tracker.step()
     assert tracker.source == "predict"
-    # searching again, centred on the boresight; on this narrow guide field that is the whole frame
-    assert cam.gate is not None
-    assert cam.gate[:2] == tuple(state["cameras"]["guide"]["boresight"])
-    assert cam.gate[2] >= 0.5 * cam.height
+    assert cam.gate is None  # never locked yet, so search the whole frame
 
     offset = np.array([0.05, -0.04])
     px = pixel_for_offset(state, mount.position()[1], offset)
@@ -135,6 +132,26 @@ def test_rejects_outlier_once_locked(rig):
 
     assert tracker.rejected >= 1
     assert np.allclose(tracker.cross, cross_locked, atol=0.02)
+
+
+def test_search_gate_bounded_after_a_lock(rig):
+    """Once we have seen the ISS, a loss (cloud) searches a bounded circle, not the whole frame."""
+    cfg, traj, clock, mount, cam, tracker, state = rig
+    clock.t = DARK_UNTIL + 5.0
+    px = pixel_for_offset(state, mount.position()[1], [0.02, 0.01])
+    cam.emit(px[0], px[1], clock.now())
+    run_steps(tracker, mount, clock, 2)
+    assert tracker.source == "guide"
+
+    clock.t += 5.0  # nothing detected since: a cloud, say
+    mount.query()
+    tracker.step()
+
+    cal = state["cameras"]["guide"]
+    assert cam.gate is not None
+    assert cam.gate[:2] == tuple(cal["boresight"])
+    expected = tracker._jump_allowance(5.0) / 60.0 * cal_px_per_deg(cal)
+    assert cam.gate[2] == pytest.approx(min(expected, 0.5 * max(cam.width, cam.height)), rel=0.05)
 
 
 def test_jump_allowance_grows_while_blind(rig):

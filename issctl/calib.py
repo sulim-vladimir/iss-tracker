@@ -57,30 +57,53 @@ def measure(cam, n=10, timeout=5.0):
     return np.mean(pts, axis=0) if len(pts) >= max(3, n // 2) else None
 
 
-def calibrate_cameras(mount, cams, step_deg=0.08, track_rate=None, log=print):
-    """Needs a bright star visible in every camera (centre it in the main camera first)."""
+def default_step(cam, fraction=0.2):
+    """Move enough to shift the target ~20% of the frame height in THIS camera.
+
+    A single step cannot serve both: with a 16 mm guide lens (74 px/deg) and the main camera at
+    750 mm (4500 px/deg), 0.08 deg is 375 px in the main frame but only 6 px in the guide.
+    """
+    return float(np.clip(fraction * cam.height / pixels_per_deg(cam.cfg), 0.02, 3.0))
+
+
+def calibrate_cameras(mount, cams, steps=None, track_rate=None, log=print, abort=None):
+    """Needs one bright target visible in every camera (centre it in the main camera first).
+
+    Each camera is calibrated with its own step size, so wide and narrow fields both get a
+    well-measured shift.
+    """
+    steps = dict(steps or {})
     start = mount.position()
     for name, cam in cams.items():
         if measure(cam) is None:
-            raise RuntimeError(f"no star detected in {name} camera")
+            raise RuntimeError(f"no target detected in {name} camera")
+        steps.setdefault(name, default_step(cam))
+    def check_abort():
+        if abort and abort():
+            raise RuntimeError("calibration aborted")
+
     cols = {name: [None, None] for name in cams}
-    for axis in (0, 1):
-        d = np.zeros(2)
-        d[axis] = step_deg
-        mount.move_to(start - d, track_rate=track_rate)
-        mount.move_to(start, track_rate=track_rate)       # approach from + side: backlash taken up
-        time.sleep(0.5)
-        base = {n: measure(c) for n, c in cams.items()}
-        mount.move_to(start + d, track_rate=track_rate)
-        time.sleep(0.5)
-        moved = {n: measure(c) for n, c in cams.items()}
-        for n in cams:
-            if base[n] is None or moved[n] is None:
-                raise RuntimeError(f"lost star in {n} camera while moving axis{axis + 1}")
-            cols[n][axis] = (moved[n] - base[n]) / step_deg
-            log(f"{n}: axis{axis + 1} +{step_deg} deg -> {cols[n][axis].round(1)} px")
-        mount.move_to(start - d, track_rate=track_rate)
-        mount.move_to(start, track_rate=track_rate)
+    for name, cam in cams.items():
+        step_deg = steps[name]
+        for axis in (0, 1):
+            check_abort()
+            d = np.zeros(2)
+            d[axis] = step_deg
+            mount.move_to(start - d, track_rate=track_rate, abort=abort)
+            mount.move_to(start, track_rate=track_rate, abort=abort)  # approach from + side
+            time.sleep(0.5)
+            base = measure(cam)
+            mount.move_to(start + d, track_rate=track_rate, abort=abort)
+            time.sleep(0.5)
+            moved = measure(cam)
+            check_abort()
+            if base is None or moved is None:
+                raise RuntimeError(f"lost the target in {name} while moving axis{axis + 1} "
+                                   f"by {step_deg:.3f} deg")
+            cols[name][axis] = (moved - base) / step_deg
+            log(f"{name}: axis{axis + 1} +{step_deg:.3f} deg -> {(moved - base).round(1)} px")
+            mount.move_to(start - d, track_rate=track_rate, abort=abort)
+            mount.move_to(start, track_rate=track_rate, abort=abort)
     time.sleep(0.5)
     final = {n: measure(c) for n, c in cams.items()}
     dec_cal = float(geo.axis2_to_dec(mount.position()[1]))

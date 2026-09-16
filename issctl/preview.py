@@ -25,6 +25,8 @@ PAGE = """<!doctype html><html><head><title>ISS tracker</title>
  .ctl label{{width:62px;color:#b9c1c8}}
  .info{{font:13px/1.5 ui-monospace,monospace;color:#cfd6dd;white-space:pre;margin-top:6px;
         min-height:4.5em}}
+ .pad{{display:grid;grid-template-areas:". u ." "l c r" ". d .";gap:5px;width:170px;margin:8px 0}}
+ .pad button{{padding:8px 0}}
  button{{background:#4d555d;color:#e8e8e8;border:0;border-radius:4px;padding:5px 11px;
          font-size:14px;cursor:pointer}}
  button:hover{{background:#5c656e}}
@@ -32,14 +34,39 @@ PAGE = """<!doctype html><html><head><title>ISS tracker</title>
         padding:4px;width:74px;font-size:14px}}
  .rec{{margin-top:12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}}
  #recbtn.on{{background:#a33;}}
+ #estop{{background:#b32222;color:#fff;font-weight:600;font-size:15px;padding:9px 18px;
+         margin-bottom:10px}}
+ #estop:hover{{background:#c93030}}
  #recinfo{{color:#b9c1c8}}
 </style></head><body>
-<div class="row">{panels}</div>
+{estop}<div class="row">{panels}</div>
 <script>
 const CAMS = {cams};
 async function api(path, params) {{
   const r = await fetch(path + '?' + new URLSearchParams(params));
   return apply(await r.json());
+}}
+function tgt() {{ return document.getElementById('target').value; }}
+function mnt(action, params) {{ return api('/api/mount', Object.assign({{action}}, params)); }}
+function applyMount(m) {{
+  const sel = document.getElementById('speedsel');
+  if (sel && !sel.options.length)
+    m.speeds.forEach((v, i) => sel.add(new Option(v, i)));
+  if (sel) sel.value = m.speed_index;
+  const fs = document.getElementById('framesel');
+  if (fs && !fs.options.length) m.frames.forEach(f => fs.add(new Option(f, f)));
+  if (fs) fs.value = m.frame;
+  document.getElementById('frame-hint').textContent =
+    m.frame === 'axes' ? 'raw mount axes' : 'move target in image';
+  document.getElementById('mount-busy').textContent = m.busy ? 'working...' : '';
+  document.getElementById('mount-info').textContent =
+    `axis1 ${{m.axis1.toFixed(3)}}  axis2 ${{m.axis2.toFixed(3)}}\\n`
+    + `alt ${{m.alt.toFixed(2)}}  az ${{m.az.toFixed(2)}} ${{m.compass}}\\n`
+    + `jog ${{m.jog}}  sidereal ${{m.tracking ? 'on' : 'off'}}\\n${{m.msg || ''}}`;
+  const cal = Object.entries(m.cal).map(([n, c]) =>
+    `${{n}}: ${{c.scale}} px/deg, rot ${{c.rotation}} deg, boresight ${{c.boresight}}`);
+  document.getElementById('cal-info').textContent =
+    cal.length ? cal.join('\\n') : 'not calibrated yet';
 }}
 function apply(s) {{
   for (const n of CAMS) {{
@@ -52,6 +79,9 @@ function apply(s) {{
     const info = document.getElementById('info-' + n);
     if (info) info.textContent = ((s.status || {{}})[n] || []).join('\\n');
   }}
+  if (s.mount) applyMount(s.mount);
+  const em = document.getElementById('estop-msg');
+  if (em) em.textContent = (s.stopped || (s.mount && s.mount.aborted)) ? 'motors halted' : '';
   const r = s.record, btn = document.getElementById('recbtn');
   if (btn && r) {{
     btn.textContent = r.recording ? 'Stop recording' : 'Start recording';
@@ -82,6 +112,34 @@ PANEL = """<div class="panel"><h2>{name} <span id="stat-{name}"></span></h2>
 RECORD = """<div class="rec"><button id="recbtn"
  onclick="api('/api/record',{on: this.className!=='on' ? 1 : 0})">Start recording</button>
  <span id="recinfo">not recording</span></div>"""
+
+ESTOP = """<button id="estop" onclick="api('/api/estop',{})">EMERGENCY STOP</button>
+<span id="estop-msg"></span>"""
+
+MOUNT = """<div class="panel"><h2>mount <span id="mount-busy"></span></h2>
+<div class="info" id="mount-info"></div>
+<div class="pad">
+ <button style="grid-area:u" onclick="mnt('jog',{axis:2,dir:1})">&#9650;</button>
+ <button style="grid-area:l" onclick="mnt('jog',{axis:1,dir:-1})">&#9664;</button>
+ <button style="grid-area:c" onclick="mnt('stop',{})">stop</button>
+ <button style="grid-area:r" onclick="mnt('jog',{axis:1,dir:1})">&#9654;</button>
+ <button style="grid-area:d" onclick="mnt('jog',{axis:2,dir:-1})">&#9660;</button></div>
+<div class="ctl"><label>arrows</label>
+ <select id="framesel" onchange="mnt('frame',{frame:this.value})"></select>
+ <span id="frame-hint"></span></div>
+<div class="ctl"><label>speed</label>
+ <select id="speedsel" onchange="mnt('speed',{index:this.value})"></select> deg/s
+ <button onclick="mnt('track',{on:1})">sidereal on</button>
+ <button onclick="mnt('track',{on:0})">off</button></div>
+<div class="ctl"><label>target</label>
+ <input id="target" placeholder="vega / jupiter / 18.6 38.8" style="width:150px">
+ <button onclick="mnt('goto',{target:tgt()})">goto</button>
+ <button onclick="mnt('sync',{target:tgt()})">sync</button></div>
+<div class="ctl"><label></label>
+ <button onclick="if(confirm('Set current position as home?')) mnt('home',{})">set home</button>
+ <button onclick="mnt('calibrate',{})">calibrate cameras</button>
+ <button onclick="mnt('mask',{})">mask point</button></div>
+<div class="info" id="cal-info"></div></div>"""
 
 
 def render(cam, cal, max_width=800):
@@ -116,7 +174,10 @@ class Preview:
         can_record = bool(self.controls and self.controls.get("record"))
         panels = "".join(PANEL.format(name=n, extra=RECORD if (n == "main" and can_record) else "")
                          for n in self.cams)
-        return PAGE.format(panels=panels, cams=json.dumps(list(self.cams)))
+        if self.controls and self.controls.get("mount_action"):
+            panels += MOUNT
+        estop = ESTOP if (self.controls and self.controls.get("estop")) else ""
+        return PAGE.format(panels=panels, cams=json.dumps(list(self.cams)), estop=estop)
 
     def api_state(self):
         if self.controls and self.controls.get("state"):
@@ -129,6 +190,8 @@ class Preview:
                 out["status"] = {n: list(self.status(n)) for n in self.cams}
             except Exception:
                 pass
+        if self.controls and self.controls.get("mount_state"):
+            out["mount"] = self.controls["mount_state"]()
         return out
 
     def start(self):
@@ -163,6 +226,12 @@ class Preview:
                     return self._send(json.dumps(preview.api_state()).encode())
                 if path == "/api/record" and ctl.get("record"):
                     ctl["record"](q.get("on") not in (None, "0", "false"))
+                    return self._send(json.dumps(preview.api_state()).encode())
+                if path == "/api/estop" and ctl.get("estop"):
+                    ctl["estop"]()
+                    return self._send(json.dumps(preview.api_state()).encode())
+                if path == "/api/mount" and ctl.get("mount_action"):
+                    ctl["mount_action"](q.get("action"), q)
                     return self._send(json.dumps(preview.api_state()).encode())
 
                 name = path.strip("/").removesuffix(".mjpg")

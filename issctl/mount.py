@@ -42,6 +42,10 @@ class Mount:
     def stop(self):
         self.set_rates(0.0, 0.0)
 
+    def estop(self):
+        """Immediate stop, no deceleration ramp. May lose steps: re-sync before trusting positions."""
+        self.set_rates(0.0, 0.0)
+
     def close(self):
         pass
 
@@ -228,3 +232,11 @@ class SimMount(Mount):
         with self.lock:
             self._advance()
             self.mech = np.zeros(2)
+
+    def estop(self):
+        with self.lock:
+            self._advance()
+            self.pending.clear()
+            self.rate = np.zeros(2)
+            self.target = np.zeros(2)
+        self.rate_cmd = np.zeros(2)

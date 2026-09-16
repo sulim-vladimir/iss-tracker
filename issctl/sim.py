@@ -63,6 +63,29 @@ class SimWorld:
         return px
 
 
+class CalibWorld:
+    """One fixed bright target at a constant mount position - a distant light, as recommended for
+    calibration. Lets the calibration routine be exercised without a sky."""
+
+    def __init__(self, cfg, mount, offset=(0.02, -0.015), rotations=None, pointing_error=(0.3, -0.2)):
+        self.mount = mount
+        self.pointing_error = np.asarray(pointing_error, dtype=float)
+        # offset is measured from where the telescope really points, i.e. as the user would see it
+        self.axes_target = mount.position() + self.pointing_error + np.asarray(offset, dtype=float)
+        rotations = rotations or {"guide": 12.0, "main": -7.0}
+        self.true_cal = {n: ideal_calibration(cfg["cameras"][n], rotations[n]) for n in rotations}
+
+    def pixel(self, cam, t):
+        m = self.mount.position_at(t)
+        if m is None:
+            return None
+        pointing = m + self.pointing_error
+        cal = self.true_cal[cam]
+        px = np.array(cal["boresight"]) + jacobian(cal, pointing[1]) @ (pointing - self.axes_target)
+        w, h = (cal["boresight"][0] + 0.5) * 2, (cal["boresight"][1] + 0.5) * 2
+        return px if (0 <= px[0] < w and 0 <= px[1] < h) else None
+
+
 def random_clouds(t0, t1, n, seed=0, min_len=3.0, max_len=12.0):
     """n opaque intervals at random times: clouds the tracker cannot predict."""
     rng = np.random.default_rng(seed)

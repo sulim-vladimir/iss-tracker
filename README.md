@@ -1,16 +1,16 @@
 # ISS closed-loop tracker
 
-EQ3-2 (steppers, Arduino Uno + 2x DRV8825) · 150/750 Newtonian + ASI290MC · 9x50 finder + ASI120MM · Raspberry Pi 5.
+EQ3-2 (steppers, Arduino Uno + 2x DRV8825) · 150/750 Newtonian + ASI290MC · ASI120MM with a 16 mm lens · Raspberry Pi 5.
 
 ## How it works
 
 ```
 TLE (Celestrak) --> Skyfield --> refracted alt/az --> HA/Dec --> mount axis angles
-                                                  (pier side chosen per pass)
+                                                 (pier side chosen per pass)
                                                            |
                                     cubic-spline trajectory, feed-forward rates
                                                            v
- guide cam (1.5 deg FOV) --+                    +--------------------+   R rate1 rate2   +---------+
+ guide cam (17 deg FOV) ---+                    +--------------------+   R rate1 rate2   +---------+
                            +--> blob centroid ->| offset estimator   |------------------>| Uno ISR |--> DRV8825
  main cam (0.4 deg FOV) ---+   px -> axis deg   | time offset (along)|<------------------| stepper |
                                via calibration  | alpha-beta (cross) |   P pos1 pos2     +---------+
@@ -88,7 +88,8 @@ arduino-cli upload -p /dev/ttyUSB0 --fqbn arduino:avr:uno firmware/issmount
    * `c` calibrates both cameras — see [Camera calibration](#camera-calibration) below.
 4. `./issctl.sh passes` — shows side, trackable seconds, peak rates, and what limits each pass.
 5. `./issctl.sh track` (next visible pass) or `--pass N`. Recording goes to `captures/*.ser`,
-   control log to `logs/track-*.csv`.
+   control log to `logs/track-*.csv`. Keep the browser page open: it carries the
+   [emergency stop](#emergency-stop).
 
 ## Camera calibration
 
@@ -98,18 +99,29 @@ follows prediction alone.
 
 ### What you do
 
+Everything below can be done **entirely from the browser** - jog, home, sync, goto, calibrate - so
+you never need the terminal outside. `--web` skips the curses UI altogether:
+
+```bash
+./issctl.sh console --web --port 8090      # then open http://<pi>:8090/ on a laptop or phone
+```
+
 1. **Focus both cameras.** Calibration measures geometry, not sharpness, but detection needs a
    compact blob.
-2. Start the console and open the preview in a browser:
-   ```bash
-   ./issctl.sh console --port 8090
-   ```
-3. **Put a bright point source in the centre of the main camera.** Jog with the arrows while
-   watching the preview; adjust exposure/gain (`x` selects a camera, `-`/`=` exposure, `[`/`]` gain)
-   until both panels say *detected*.
-4. **Press `t`** if you are on a star, so sidereal tracking holds it still. Skip for a fixed
+2. **Put a bright point source in the centre of the main camera**, using the jog arrows in the mount
+   panel while watching the image. Adjust exposure/gain per camera until both panels say *detected*.
+3. **Turn sidereal tracking on** if you are on a star, so it holds still. Skip for a fixed
    terrestrial target.
-5. **Press `c`.** It takes about a minute and saves to `data/state.json` by itself.
+4. **Press "calibrate cameras".** It takes about a minute; the panel shows progress, then the
+   resulting scale, rotation and boresight. Results save to `data/state.json` automatically
+   (simulation writes `data/state-sim.json` instead, so it never overwrites real calibration).
+
+The terminal console does the same with keys: arrows jog, `t` sidereal, `c` calibrate, `s` sync,
+`g` goto, `H` home, `m` mask point.
+
+**Avoid calibrating near the pole.** Axis1's effect on the image shrinks with cos(dec), so near
+axis2 = 90 deg the measurement degenerates and the matrix becomes ill-conditioned. Pick a target well
+away from the celestial pole - a terrestrial light is usually fine by definition.
 
 ### Use a distant light, not a star
 
@@ -127,17 +139,32 @@ imaging, but calibration itself is unaffected.
 
 ### What it measures
 
-For each axis ([calib.py](issctl/calib.py)): move -0.08 deg then back (taking up backlash from a
-consistent side), average the blob position over ~10 frames, move +0.08 deg, measure again. Pixel
-shift over axis move gives one column of the 2x2 matrix; two axes give the whole thing - scale,
-rotation and mirror flip at once. Then, with the target centred in the main camera, it computes
+For each axis ([calib.py](issctl/calib.py)): move one step negative then back (taking up backlash
+from a consistent side), average the blob position over ~10 frames, move one step positive, measure
+again. Pixel shift over axis move gives one column of the 2x2 matrix; two axes give the whole thing -
+scale, rotation and mirror flip at once.
+
+**The step size is chosen per camera**, aiming to shift the target ~20% of that camera's frame
+height. One size cannot serve both: 0.08 deg is 375 px in the main camera but only 6 px in a 16 mm
+guide. In practice it uses ~2.6 deg for the guide and ~0.05 deg for the main camera.
+
+Then, with the target centred in the main camera, it computes
 **where the main camera's centre falls in the guide image** (the guide boresight), which is what makes
 the handoff land the ISS in the small main field. It prints what it found:
 
 ```
-guide: axis1 +0.08 deg -> [ 66.9 -14.2] px
-guide: scale [836.4 835.9] px/deg, rotation 12.0 deg
-guide boresight (main camera centre) at [648.2 471.5]
+guide: axis1 +2.578 deg -> [144.3  30.7] px
+guide: axis2 +2.578 deg -> [-39.9 187.9] px
+main:  axis1 +0.049 deg -> [167.2 -20.5] px
+guide: 74.5 px/deg, rot 12.0 deg, boresight [639.5, 479.5]
+main: 4510.3 px/deg, rot -7.0 deg, boresight [967.5, 547.5]
+```
+
+Verified in simulation, where the true values are known: it recovered 74.5 px/deg / 12.0 deg for the
+guide and 4510 vs 4514 px/deg / -7.0 deg for the main camera. You can repeat that check yourself:
+
+```bash
+./issctl.sh console --sim --web --port 8090   # simulated mount + a fixed "distant light"
 ```
 
 ### Camera rotation does not matter
@@ -176,6 +203,35 @@ already uses 8080). Both cameras appear side by side, each with:
 * **Start/Stop recording** under the main frame, since that is the camera it records, with live
   frame and dropped counts. Each start writes a new `captures/iss-*.ser`; recording pauses by itself
   whenever the ISS is in shadow or behind a mapped obstruction.
+
+`console` adds a **mount panel**: a cross-shaped jog pad with a speed selector, sidereal tracking on/off,
+goto/sync by target name, set home, calibrate cameras, and a mask-point readout - plus live axis
+angles, alt/az and the current calibration. With `--web` there is no terminal UI at all, which suits
+a phone at the mount. `track` shows the camera panels only; jogging mid-pass is not offered on purpose.
+
+### Emergency stop
+
+A red **EMERGENCY STOP** sits at the top of the page in both `console` and `track`, and `X` does the
+same in the terminal console. Unlike the pad's `stop` button (which only drops the jog), it:
+
+* sends the firmware's `X` command - rates to zero immediately, with no deceleration ramp;
+* cancels sidereal tracking and any jog;
+* aborts a running goto, sync or calibration, and abandons a pass in `track`;
+* stays latched until your next deliberate command.
+
+Verified mid-calibration in simulation: the axis froze instantly and the calibration unwound with
+`calibration aborted` a few seconds later; jogging worked again afterwards.
+
+Because it skips the ramp it **can lose steps**, so re-sync (or re-home) before trusting the position
+afterwards. Two other safety nets exist: the firmware halts both axes if no command arrives for 0.5 s
+(so a crashed Pi or unplugged USB stops the mount), and `Ctrl-C` stops motion on the way out.
+
+**The arrows follow the image, not the axes.** Pick the frame in the *arrows* selector (`f` cycles it
+in the terminal): with `guide` or `main` selected, pressing right moves the target right in that
+camera's picture and up moves it up, whatever the camera's rotation, because the calibration matrix
+converts the screen direction into axis rates. `axes` drives axis1/axis2 raw, which is the only option
+before the cameras are calibrated. Verified in simulation with a camera rotated 12 deg: right/left move
+the target purely in x, up/down purely in y.
 
 The same controls exist in the terminal console: `x` selects a camera, `-`/`=` exposure, `[`/`]` gain.
 
@@ -269,8 +325,9 @@ Simulated results for the same pass (104 s lit, then shadow):
 * **Sensor work (accelerometer/magnetometer) is postponed** - see the conversation notes: an
   accelerometer gives every model parameter except azimuth; a magnetometer is only good for
   repeatability between sessions, not absolute heading, near rebar and stepper magnets.
-* A wider guide lens (12-16 mm, 17-23 deg field) would make acquisition far more forgiving than the
-  current 9x50 finder (1.5 deg), at 48-64"/px - still ample for handing off to the main camera.
+* The guide camera runs a 16 mm lens (17.2 x 12.9 deg at 48"/px), chosen so acquisition tolerates
+  several degrees of pointing and TLE error. Centroiding a bright ISS to ~0.2 px is ~10", far finer
+  than the main camera's 7.3' half-height, so the handoff still lands it.
 * No backlash compensation yet. The camera loop covers it while tracking in one direction, but
   direction reversals on Dec will show up as a short error transient.
 * Camera latency (`latency_s`) and `command_latency_s` should be tuned from real logs.

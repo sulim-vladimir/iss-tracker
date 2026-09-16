@@ -84,8 +84,8 @@ class Tracker:
         """Restrict the search to where the ISS can plausibly be, instead of the whole frame."""
         cam = self.cams[name]
         cal = self.cal.get(name)
-        if cal is None:
-            cam.gate = None
+        if cal is None or not np.isfinite(self.last_good):
+            cam.gate = None  # never locked yet: nothing to bound the search with, use the whole frame
             return
         radius = self._jump_allowance(now - self.last_good) / 60.0 * cal_px_per_deg(cal)
         cam.gate = (cal["boresight"][0], cal["boresight"][1],

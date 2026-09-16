@@ -10,7 +10,7 @@ import numpy as np
 from . import geometry as geo
 from . import predict as pr
 from .clock import Clock
-from .config import ROOT, load_config, load_state, save_state
+from .config import ROOT, SIM_STATE_FILE, load_config, load_state, save_state
 from .mask import SkyMask
 
 
@@ -90,11 +90,12 @@ def cmd_passes(args, cfg):
             print(f"   usable: {describe_windows(sat, site, rep, rep['track_start'])}")
 
 
-def make_controls(cams, recorder=None):
+def make_controls(cams, recorder=None, mount_action=None, mount_state=None, estop=None, stopped=None):
     """Callbacks the preview page uses for exposure, gain and recording."""
 
     def state():
-        out = {"cams": {}, "record": recorder.state() if recorder else None}
+        out = {"cams": {}, "record": recorder.state() if recorder else None,
+               "stopped": bool(stopped()) if stopped else False}
         for n, c in cams.items():
             _, det, _ = c.latest()
             out["cams"][n] = {"fps": c.fps, "exposure_ms": c.exposure_ms, "gain": c.gain,
@@ -116,7 +117,8 @@ def make_controls(cams, recorder=None):
             recorder.set_enabled(on)
 
     return {"state": state, "exposure": exposure, "gain": gain,
-            "record": record if recorder and recorder.available else None}
+            "record": record if recorder and recorder.available else None,
+            "mount_action": mount_action, "mount_state": mount_state, "estop": estop}
 
 
 def start_preview(cams, state, port, status=None, controls=None):
@@ -175,14 +177,22 @@ def cmd_console(args, cfg):
     import curses
     import threading
 
-    from .calib import calibrate_cameras
+    from .calib import calibrate_cameras, jacobian
     from .mount import SIDEREAL_DEG_S, SimMount
 
-    state = load_state()
+    state_path = SIM_STATE_FILE if args.sim else None
+    state = load_state(state_path)
     clock = Clock()
     site = pr.Site(cfg)
     if args.sim:
-        mount, cams = SimMount(cfg, state, clock), {}
+        from .camera import SimCamera
+        from .sim import CalibWorld
+        # start away from the pole: at axis2 = 90 the axis1 measurement degenerates (cos dec -> 0)
+        mount = SimMount(cfg, state, clock, start=[20.0, 40.0])
+        mount.query()
+        # a fixed "distant light" a little off the boresight, to exercise jogging and calibration
+        world = CalibWorld(cfg, mount)
+        cams = {n: SimCamera(n, cfg["cameras"][n], clock, world).start() for n in ("guide", "main")}
     else:
         mount, cams = open_mount(cfg, state, clock), open_cameras(cfg, clock)
     def status_lines(name):
@@ -197,22 +207,36 @@ def cmd_console(args, cfg):
             f"axis1 {pos[0]:+.3f}  axis2 {pos[1]:+.3f}",
         ]
 
-    from .ser import RecordControl
-    main_cfg = cfg["cameras"]["main"]
-    recorder = RecordControl(cams.get("main"), ROOT / main_cfg["record_dir"],
-                             bayer=main_cfg.get("bayer"), telescope=f"{main_cfg['focal_length_mm']}mm",
-                             instrument=main_cfg["name_match"])
-    if cams and cfg["preview"]["enabled"]:
-        start_preview(cams, state, args.port or cfg["preview"]["port"], status=status_lines,
-                      controls=make_controls(cams, recorder))
-
     speeds = [0.004, 0.02, 0.1, 0.5, 2.0]
-    ui = {"jog": np.zeros(2), "speed": 2, "tracking": False, "busy": False, "quit": False, "msg": ""}
+    ui = {"jog": np.zeros(2), "speed": 2, "tracking": False, "busy": False, "quit": False,
+          "msg": "", "frame": "guide", "abort": threading.Event()}
+
+    def jog_frames():
+        return ["axes"] + [n for n in cams if n in state.get("cameras", {})]
+
+    def jog_rates():
+        """Jog in the frame the user is looking at: arrows move the target in the image.
+
+        A rotated camera makes raw axis jogging confusing, so the calibration matrix converts
+        the screen direction (right, up) into the axis rates that produce it.
+        """
+        j = ui["jog"]
+        if not j.any():
+            return np.zeros(2)
+        cal = state.get("cameras", {}).get(ui["frame"])
+        if cal is None:
+            return j * speeds[ui["speed"]]
+        want_px = np.array([j[0], -j[1]])  # screen up is -y in image coordinates
+        d = np.linalg.solve(jacobian(cal, mount.position()[1]), want_px)
+        peak = np.max(np.abs(d))
+        return d / peak * speeds[ui["speed"]] if peak > 1e-9 else np.zeros(2)
 
     def keepalive():
         while not ui["quit"]:
-            if not ui["busy"]:
-                r = ui["jog"] * speeds[ui["speed"]]
+            if aborted():
+                mount.set_rates(0.0, 0.0)
+            elif not ui["busy"]:
+                r = jog_rates()
                 if ui["tracking"]:
                     r = r + [SIDEREAL_DEG_S, 0.0]
                 mount.set_rates(*r)
@@ -220,7 +244,7 @@ def cmd_console(args, cfg):
 
     def persist():
         state["index"] = mount.index.tolist()
-        save_state(state)
+        save_state(state, state_path)
 
     def prompt(scr, text):
         scr.nodelay(False)
@@ -236,7 +260,22 @@ def cmd_console(args, cfg):
         scr.nodelay(True)
         return s
 
+    def aborted():
+        return ui["abort"].is_set()
+
+    def emergency_stop():
+        """Cut motion now: drop jog and tracking, abort any running goto/calibration, halt motors."""
+        ui["abort"].set()
+        ui["jog"][:] = 0
+        ui["tracking"] = False
+        try:
+            mount.estop()
+            ui["msg"] = "EMERGENCY STOP - motors halted; re-sync before trusting positions"
+        except Exception as e:
+            ui["msg"] = f"EMERGENCY STOP failed: {e}"
+
     def busy(fn):
+        ui["abort"].clear()
         ui["busy"] = True
         try:
             fn()
@@ -254,9 +293,106 @@ def cmd_console(args, cfg):
                 a1, a2 = geo.hadec_to_axes(ha, dec, side)
                 options.append((abs(float(a1)), [float(a1), float(a2)]))
             target = min(options)[1]
-            mount.move_to(target, track_rate=[SIDEREAL_DEG_S, 0.0])
+            mount.move_to(target, track_rate=[SIDEREAL_DEG_S, 0.0], abort=aborted)
+            if aborted():
+                ui["msg"] = "goto aborted"
+                return
         ui["tracking"] = True
         ui["msg"] = f"at {name} (alt {alt:.1f}), tracking on"
+
+    def do_sync(name):
+        ha, dec, alt, _ = pr.target_hadec(name, site, clock.now())
+        d = mount.sync(ha, dec)
+        persist()
+        ui["msg"] = f"synced on {name}: correction {d.round(3)} deg"
+
+    def do_cal():
+        ui["msg"] = "calibrating..."
+        res = calibrate_cameras(mount, cams, track_rate=[SIDEREAL_DEG_S, 0.0] if ui["tracking"] else None,
+                                log=lambda s: ui.__setitem__("msg", s), abort=aborted)
+        state.setdefault("cameras", {}).update(res)
+        persist()
+        ui["msg"] = "camera calibration saved"
+
+    def pointing():
+        pos = mount.position()
+        ha_p, dec_p = geo.axes_to_hadec(*pos)
+        alt_p, az_p = geo.hadec_to_altaz(ha_p, dec_p, site.lat)
+        return pos, float(alt_p), float(az_p)
+
+    def in_background(fn):
+        threading.Thread(target=busy, args=(fn,), daemon=True).start()
+
+    def mount_action(action, params):
+        """Same operations as the curses keys, for the browser panel."""
+        if action == "estop":
+            return emergency_stop()
+        if ui["busy"] and action != "stop":
+            return
+        if aborted() and action not in ("stop", "frame", "speed"):
+            ui["abort"].clear()  # any deliberate command clears the latched stop
+        if action == "jog":
+            axis = int(params.get("axis", 1)) - 1
+            ui["jog"][axis] = float(params.get("dir", 0))
+        elif action == "stop":
+            ui["jog"][:] = 0
+        elif action == "speed":
+            ui["speed"] = max(0, min(len(speeds) - 1, int(params.get("index", 2))))
+        elif action == "frame":
+            frame = params.get("frame", "axes")
+            if frame in jog_frames():
+                ui["frame"] = frame
+                ui["msg"] = (f"arrows move the target in the {frame} image" if frame != "axes"
+                             else "arrows drive the mount axes directly")
+        elif action == "track":
+            ui["tracking"] = params.get("on") not in (None, "0", "false")
+        elif action == "home":
+            ui["jog"][:] = 0
+            ui["tracking"] = False
+            mount.set_home()
+            persist()
+            ui["msg"] = "home set (counterweight down, tube at pole)"
+        elif action in ("sync", "goto"):
+            target = (params.get("target") or "").strip()
+            if not target:
+                ui["msg"] = "enter a target first"
+            else:
+                ui["jog"][:] = 0
+                in_background(lambda: (do_sync if action == "sync" else goto)(target))
+        elif action == "calibrate":
+            if cams:
+                ui["jog"][:] = 0
+                in_background(do_cal)
+            else:
+                ui["msg"] = "no cameras"
+        elif action == "mask":
+            _, alt_m, az_m = pointing()
+            ui["msg"] = f"sky mask point: az {az_m:.1f} alt {alt_m:.1f}"
+
+    def mount_status():
+        pos, alt_s, az_s = pointing()
+        cal = {}
+        for n, c in state.get("cameras", {}).items():
+            J = np.array(c["J"], dtype=float)
+            cal[n] = {"scale": round(float(np.linalg.norm(J[:, 1])), 1),
+                      "rotation": round(float(np.degrees(np.arctan2(J[1, 0], J[0, 0]))), 1),
+                      "boresight": [round(float(v), 1) for v in c["boresight"]]}
+        return {"axis1": round(float(pos[0]), 4), "axis2": round(float(pos[1]), 4),
+                "alt": round(alt_s, 2), "az": round(az_s, 2), "compass": geo.compass(az_s),
+                "speeds": speeds, "speed_index": ui["speed"], "tracking": ui["tracking"],
+                "frame": ui["frame"] if ui["frame"] in jog_frames() else "axes",
+                "frames": jog_frames(), "aborted": aborted(),
+                "busy": ui["busy"], "msg": ui["msg"], "jog": ui["jog"].tolist(), "cal": cal}
+
+    from .ser import RecordControl
+    main_cfg = cfg["cameras"]["main"]
+    recorder = RecordControl(cams.get("main"), ROOT / main_cfg["record_dir"],
+                             bayer=main_cfg.get("bayer"), telescope=f"{main_cfg['focal_length_mm']}mm",
+                             instrument=main_cfg["name_match"])
+    if cfg["preview"]["enabled"]:
+        start_preview(cams, state, args.port or cfg["preview"]["port"], status=status_lines,
+                      controls=make_controls(cams, recorder, mount_action, mount_status,
+                                             estop=emergency_stop, stopped=aborted))
 
     def run(scr):
         curses.curs_set(0)
@@ -279,6 +415,8 @@ def cmd_console(args, cfg):
                 ui["jog"][1] = 0 if ui["jog"][1] > 0 else -1
             elif k == ord(" "):
                 ui["jog"][:] = 0
+            elif k == ord("X"):
+                emergency_stop()
             elif ord("1") <= k <= ord("5"):
                 ui["speed"] = k - ord("1")
             elif k == ord("t"):
@@ -292,31 +430,20 @@ def cmd_console(args, cfg):
             elif k == ord("s"):
                 name = prompt(scr, "sync to (star/planet or 'RAh Dec'): ")
                 if name:
-                    def do_sync():
-                        ha, dec, alt, _ = pr.target_hadec(name, site, clock.now())
-                        d = mount.sync(ha, dec)
-                        persist()
-                        ui["msg"] = f"synced on {name}: correction {d.round(3)} deg"
-                    busy(do_sync)
+                    busy(lambda: do_sync(name))
             elif k == ord("g"):
                 name = prompt(scr, "goto (star/planet or 'RAh Dec'): ")
                 if name:
                     ui["jog"][:] = 0
                     busy(lambda: goto(name))
             elif k == ord("c") and cams:
-                def do_cal():
-                    ui["msg"] = "calibrating..."
-                    res = calibrate_cameras(mount, cams, track_rate=[SIDEREAL_DEG_S, 0.0] if ui["tracking"] else None,
-                                            log=lambda s: None)
-                    state.setdefault("cameras", {}).update(res)
-                    persist()
-                    ui["msg"] = "camera calibration saved"
                 busy(do_cal)
             elif k == ord("m"):
-                pos = mount.position()
-                ha_m, dec_m = geo.axes_to_hadec(*pos)
-                alt_m, az_m = geo.hadec_to_altaz(ha_m, dec_m, site.lat)
-                ui["msg"] = f"sky mask point: az {float(az_m):.1f} alt {float(alt_m):.1f}"
+                mount_action("mask", {})
+            elif k == ord("f"):
+                frames = jog_frames()
+                nxt = frames[(frames.index(ui["frame"]) + 1) % len(frames)] if ui["frame"] in frames else frames[0]
+                mount_action("frame", {"frame": nxt})
             elif k == ord("x") and cam_names:
                 sel = (sel + 1) % len(cam_names)
             elif k in (ord("-"), ord("=")) and cam_names:
@@ -335,13 +462,16 @@ def cmd_console(args, cfg):
             alt, az = geo.hadec_to_altaz(ha, dec, site.lat)
             scr.erase()
             lines = [
-                "ISS mount console   q quit | arrows jog (toggle) | space stop | 1-5 speed | t sidereal",
-                "                    H home | s sync | g goto | c calibrate | m mask point | x cam | -/= exposure | [/] gain",
+                "ISS mount console   q quit | arrows jog (toggle) | space stop jog | X EMERGENCY STOP | 1-5 speed | t sidereal",
+                "                    H home | s sync | g goto | c calibrate | m mask point | f arrow frame",
+                "                    x select cam | -/= exposure | [/] gain",
                 "",
                 f"axis1 {pos[0]:+9.4f}   axis2 {pos[1]:+9.4f}   side {'east_looking' if pos[1] <= 90 else 'west_looking'}",
                 f"HA {float(ha):+8.3f}   Dec {float(dec):+8.3f}   Alt {float(alt):6.2f}   Az {float(az):6.2f}",
                 f"jog speed {speeds[ui['speed']]} deg/s   tracking {'ON' if ui['tracking'] else 'off'}   "
                 f"rates {mount.rate_cmd.round(4)}",
+                f"arrows move: {ui['frame']}"
+                + ("  (target in image)" if ui["frame"] != "axes" else "  (raw axes)"),
                 "",
             ]
             for i, n in enumerate(cam_names):
@@ -360,7 +490,17 @@ def cmd_console(args, cfg):
             time.sleep(0.05)
 
     try:
-        curses.wrapper(run)
+        if args.web:
+            threading.Thread(target=keepalive, daemon=True).start()
+            mount.enable(True)
+            print(f"web console on http://localhost:{args.port or cfg['preview']['port']}/"
+                  "  (no terminal UI; Ctrl-C to quit)")
+            while True:
+                time.sleep(0.5)
+        else:
+            curses.wrapper(run)
+    except KeyboardInterrupt:
+        pass
     finally:
         ui["quit"] = True
         time.sleep(0.1)
@@ -405,8 +545,9 @@ def cmd_track(args, cfg):
             from .sim import random_clouds
             clouds = random_clouds(traj.t_start, traj.t_end, args.clouds, seed=args.cloud_seed)
             print("clouds at " + ", ".join(f"{a - traj.t_start:+.0f}..{b - traj.t_start:+.0f}s" for a, b in clouds))
+        pe = args.pointing_error
         world = SimWorld(cfg, sat, site, mount, time_error_s=args.time_error, traj=traj,
-                         mask=mask, clouds=clouds)
+                         mask=mask, clouds=clouds, pointing_error=(pe, -0.7 * pe))
         state["cameras"] = world.calibration_estimate(scale_error=args.cal_scale_error,
                                                       rot_error_deg=args.cal_rot_error)
         cams = {n: SimCamera(n, cfg["cameras"][n], clock, world).start() for n in ("guide", "main")}
@@ -462,9 +603,19 @@ def cmd_track(args, cfg):
             f"{tracker.source}  dt {tracker.time_offset:+.2f}s  lit {tracker.lit:.2f}",
         ]
 
+    def stop_tracking():
+        """Abandon the pass and halt the motors - the tracker is driving them at up to 3 deg/s."""
+        tracker.stop_requested = True
+        try:
+            mount.estop()
+        except Exception as e:
+            print(f"emergency stop failed: {e}")
+        print("EMERGENCY STOP - tracking abandoned, motors halted")
+
     if cams and cfg["preview"]["enabled"] and not args.no_preview:
         start_preview(cams, state, args.port or cfg["preview"]["port"], status=status_lines,
-                      controls=make_controls(cams, recorder))
+                      controls=make_controls(cams, recorder, estop=stop_tracking,
+                                             stopped=lambda: tracker.stop_requested))
 
     def on_start():
         if auto_record and recorder.available:
@@ -510,6 +661,8 @@ def main(argv=None):
     p = sub.add_parser("console", help="jog, home, sync, goto, calibrate cameras")
     p.add_argument("--sim", action="store_true")
     p.add_argument("--port", type=int, help="preview port (default from config)")
+    p.add_argument("--web", action="store_true",
+                   help="browser only, no terminal UI (handy over SSH or from a phone)")
 
     p = sub.add_parser("track", help="track a pass")
     p.add_argument("--port", type=int, help="preview port (default from config)")
@@ -521,6 +674,8 @@ def main(argv=None):
     p.add_argument("--speed", type=float, default=1.0, help="simulation speed factor")
     p.add_argument("--sim-lead", type=float, default=20.0, help="seconds before track start to begin")
     p.add_argument("--time-error", type=float, default=1.5, help="simulated TLE timing error, s")
+    p.add_argument("--pointing-error", type=float, default=0.35,
+                   help="simulated mount pointing error on axis1, deg (axis2 gets -0.7x)")
     p.add_argument("--cal-rot-error", type=float, default=2.0,
                    help="simulated camera-calibration rotation error, deg")
     p.add_argument("--cal-scale-error", type=float, default=1.03,

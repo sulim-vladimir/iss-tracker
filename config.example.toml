@@ -54,15 +54,17 @@ reverse = false               # flip so that + moves toward the pole on side "ea
 [cameras]
 sdk_lib = "/usr/local/lib/libASICamera2.so"
 
-[cameras.guide]               # 9x50 finder + ASI120MM
+[cameras.guide]               # ASI120MM + 16 mm CS lens: 17.2 x 12.9 deg at 48"/px
 name_match = "ASI120"
-focal_length_mm = 180
+focal_length_mm = 16
 pixel_um = 3.75
 width = 1280
 height = 960
 bin = 1
-exposure_ms = 2.0
-gain = 60
+# The 16 mm lens has ~11 mm of aperture vs 50 mm for the finder, so a point source gives far fewer
+# photons: start longer/higher and trim from the browser panel once you see the ISS.
+exposure_ms = 8.0
+gain = 200
 usb_bandwidth = 80
 latency_s = 0.01              # extra delay between mid-exposure and frame arrival
 detect_sigma = 6.0
@@ -97,7 +99,7 @@ lost_timeout_s = 1.5          # fall back to guide / pure prediction after this
 shadow_threshold = 0.25       # sunlit fraction below which we stop believing the cameras
 max_offset_jump_arcmin = 25   # reject detections that jump this far once locked (stars, hot pixels)
 reacquire_growth_arcmin_per_s = 8   # widen that limit while coasting blind (clouds/obstructions)
-max_reacquire_arcmin = 180    # never accept a detection further out than this
+max_reacquire_arcmin = 240    # never accept a detection further out than this (4 deg of the 17 deg field)
 
 [preview]
 enabled = true

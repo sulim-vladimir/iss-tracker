@@ -8,6 +8,7 @@ except ModuleNotFoundError:  # Python < 3.11
 
 ROOT = Path(__file__).resolve().parent.parent
 STATE_FILE = ROOT / "data" / "state.json"
+SIM_STATE_FILE = ROOT / "data" / "state-sim.json"  # keep simulated calibration out of the real one
 
 
 def load_config(path=None):
@@ -18,13 +19,15 @@ def load_config(path=None):
         return tomllib.load(f)
 
 
-def load_state():
+def load_state(path=None):
     """Persistent calibration results (sync offsets, camera Jacobians, boresights)."""
-    if STATE_FILE.exists():
-        return json.loads(STATE_FILE.read_text())
+    path = path or STATE_FILE
+    if path.exists():
+        return json.loads(path.read_text())
     return {}
 
 
-def save_state(state):
-    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    STATE_FILE.write_text(json.dumps(state, indent=2))
+def save_state(state, path=None):
+    path = path or STATE_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state, indent=2))
