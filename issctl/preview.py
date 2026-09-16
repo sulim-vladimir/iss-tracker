@@ -166,14 +166,14 @@ function drawSky(s) {{
     svg.appendChild(el('line', {{x1: x0, y1: y0, x2: x1, y2: y1, 'stroke-width': 2,
       stroke: !open ? '#c0504d' : (lit > 0.5 ? '#3fb9d6' : '#6b7580')}}));
   }}
-  if (s.pointing) {{
+  if (s.pointing) {{  // where the mount looks: open yellow circle
     const [x, y] = pos(s.pointing[1], s.pointing[0]);
-    svg.appendChild(el('circle', {{cx: x, cy: y, r: 3.5, fill: '#e2483c'}}));  // where the mount looks
-  }}
-  if (s.target) {{
-    const [x, y] = pos(s.target[1], s.target[0]);
-    svg.appendChild(el('circle', {{cx: x, cy: y, r: 5, fill: 'none', stroke: '#ffd24a',
+    svg.appendChild(el('circle', {{cx: x, cy: y, r: 6, fill: 'none', stroke: '#ffd24a',
       'stroke-width': 2}}));
+  }}
+  if (s.target) {{  // the ISS itself: solid red dot, drawn on top
+    const [x, y] = pos(s.target[1], s.target[0]);
+    svg.appendChild(el('circle', {{cx: x, cy: y, r: 3.5, fill: '#e2483c'}}));
   }}
   const fmt = (p, name) => p ? `${{name}} alt ${{p[0].toFixed(1)}}  az ${{p[1].toFixed(1)}}` : '';
   document.getElementById('sky-info').textContent =

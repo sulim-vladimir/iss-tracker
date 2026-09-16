@@ -75,14 +75,16 @@ arduino-cli upload -p /dev/ttyUSB0 --fqbn arduino:avr:uno firmware/issmount
 
 ## Field procedure
 
-1. **Axis directions**: `python -m issctl mount-test` runs each axis ±0.5 deg/s. Check measured
+1. **Axis directions**: `./issctl.sh mount-test` runs each axis ±0.5 deg/s. Check measured
    motion matches (verifies `gear_ratio`/`microsteps`). Set `reverse` flags so that
    axis1 + = sidereal direction and, on the east-looking side, axis2 + = toward the pole.
+   Do this **before** homing or any goto: it moves only ~1 deg each way, so it is the safe way to
+   find out which way the motors actually turn.
 2. **Polar align** as well as you can - a few arcmin is plenty, the loop absorbs the rest. Some
    alignment is currently **required**: the unaligned-mount pointing model is not wired in yet
    (see [Known limits](#known-limits--next-steps)).
 3. `./issctl.sh console --port 8090`
-   * park at counterweight-down, tube at pole → `H` (home)
+   * put the scope in the [home position](#starting-position-home) → `H` (or **set home**)
    * `g` goto a bright star (`vega`, `arcturus`, `jupiter`, `moon`, or `18.6 38.8`), centre it in
      the **main** camera with arrows, `s` sync. Watch the preview in a browser.
    * `c` calibrates both cameras — see [Camera calibration](#camera-calibration) below.
@@ -90,6 +92,31 @@ arduino-cli upload -p /dev/ttyUSB0 --fqbn arduino:avr:uno firmware/issmount
 5. `./issctl.sh track` (next visible pass) or `--pass N`. Recording goes to `captures/*.ser`,
    control log to `logs/track-*.csv`. Keep the browser page open: it carries the
    [emergency stop](#emergency-stop).
+
+## Starting position (home)
+
+**Counterweight straight down, tube parallel to the polar axis** (pointing at the celestial pole).
+That pose is what the software calls axis1 = 0, axis2 = 90, and everything else is measured from it.
+
+Each session:
+
+1. Put the mount in that pose by hand - a degree or two out is fine.
+2. Start `console` and press **set home** (`H`).
+3. Later, **sync** on a star, planet, the Moon or a distant light to remove what is left.
+
+**Why every session:** the Uno resets when the serial port opens, so its step counters always start at
+zero. The driver then adds the offset saved in `data/state.json`, which effectively assumes *the scope
+is still where you last homed it*. If the tube was moved by hand in between, the program starts out
+believing a stale position. So either park back at home before quitting, or press **set home** at the
+start with the scope physically at home.
+
+**How exact?** Not very. Three layers absorb the error: `sync` on a known object, the camera loop once
+the ISS is acquired, and a wide search gate at first acquisition. What home *does* need to be is
+roughly right, so that the first slew goes the right way and `axis1_hour_limit` means what it says -
+a home that is 90 deg out can swing the tube into the tripod or the railing.
+
+**Before any large move**, check cable slack and clearance, and keep the browser page open: it carries
+the [emergency stop](#emergency-stop).
 
 ## Camera calibration
 
