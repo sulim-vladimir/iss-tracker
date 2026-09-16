@@ -46,6 +46,7 @@ class Tracker:
         self.visible = True
         self.last_good = -np.inf
         self.rejected = 0
+        self.force_accept = False
         self.last_px = {}
         self.stop_requested = False
         self.on_visibility = None
@@ -56,6 +57,22 @@ class Tracker:
             self._csv.writerow(["t", "a1", "a2", "alt", "az", "tgt1", "tgt2", "cmd1", "cmd2",
                                 "time_offset", "cross1", "cross2", "source", "det_x", "det_y",
                                 "lit", "open"])
+
+    def select(self, name, x, y):
+        """User pointed at the ISS in a frame: lock onto it and trust the next detection."""
+        cam = self.cams.get(name)
+        if not cam:
+            return
+        cam.select(x, y)
+        self.force_accept = True
+        self.main_streak = 0
+        self.log(f"target selected by hand in {name} at ({x:.0f}, {y:.0f})")
+
+    def clear_selection(self, name=None):
+        for n, cam in self.cams.items():
+            if name in (None, n):
+                cam.clear_selection()
+        self.log("manual selection cleared, back to automatic")
 
     def altaz(self, pos=None):
         """Where the telescope is actually pointing, in the sky the user sees."""
@@ -84,6 +101,8 @@ class Tracker:
         """Restrict the search to where the ISS can plausibly be, instead of the whole frame."""
         cam = self.cams[name]
         cal = self.cal.get(name)
+        if cam.manual:
+            return  # the user picked the target: leave their choice alone
         if cal is None or not np.isfinite(self.last_good):
             cam.gate = None  # never locked yet: nothing to bound the search with, use the whole frame
             return
@@ -119,7 +138,9 @@ class Tracker:
 
         # A detection implying a big jump is another object (star, hot pixel, another satellite).
         jump = float(np.hypot(*(o * geo.sky_metric(meas[1])))) * 60
-        if np.isfinite(self.last_good) and jump > self._jump_allowance(det.t - self.last_good):
+        if self.force_accept:
+            self.force_accept = False  # user pointed at it, so believe it however far off it is
+        elif np.isfinite(self.last_good) and jump > self._jump_allowance(det.t - self.last_good):
             self.rejected += 1
             return
         self.last_good = det.t
@@ -137,7 +158,7 @@ class Tracker:
         self.cross_rate = self.cross_rate + self.tr["cross_beta"] * resid / dt
         self.t_update = det.t
 
-        if name == "guide":
+        if name == "guide" and not self.cams[name].manual:
             cam = self.cams[name]
             cam.gate = (det.x, det.y, 0.15 * cam.width)
 
@@ -147,7 +168,7 @@ class Tracker:
             if self.main_streak >= self.tr["main_handoff_frames"]:
                 self.log("main camera lost target, back to guide")
             self.main_streak = 0
-        if "guide" in self.cams and now - self.last_seen["guide"] > timeout:
+        if "guide" in self.cams and now - self.last_seen["guide"] > timeout and not self.cams["guide"].manual:
             self._search_gate("guide", now)
         if all(now - t > timeout for t in self.last_seen.values()) and self.source != "predict":
             self.log("target lost, following prediction")
@@ -173,7 +194,8 @@ class Tracker:
                 self.main_streak = 0
                 self.cross_rate[:] = 0.0
                 for cam in self.cams.values():
-                    cam.gate = None
+                    if not cam.manual:
+                        cam.gate = None
             else:
                 self.log("ISS should be back in view - looking for it again")
                 self.source = "predict"

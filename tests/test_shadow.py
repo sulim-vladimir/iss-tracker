@@ -33,8 +33,18 @@ class StubCam:
         self.width = cam_cfg["width"]
         self.height = cam_cfg["height"]
         self.gate = None
+        self.follow = False
+        self.manual = False
         self._det = None
         self._seq = 0
+
+    def select(self, x, y, radius=None):
+        self.gate = (float(x), float(y), float(radius or 40.0))
+        self.follow = self.manual = True
+
+    def clear_selection(self):
+        self.gate = None
+        self.follow = self.manual = False
 
     def emit(self, x, y, t):
         self._det = Detection(x, y, 1000.0, 9, t)
@@ -152,6 +162,40 @@ def test_search_gate_bounded_after_a_lock(rig):
     assert cam.gate[:2] == tuple(cal["boresight"])
     expected = tracker._jump_allowance(5.0) / 60.0 * cal_px_per_deg(cal)
     assert cam.gate[2] == pytest.approx(min(expected, 0.5 * max(cam.width, cam.height)), rel=0.05)
+
+
+def test_manual_selection_overrides_the_outlier_guard(rig):
+    """Clicking an object means 'track this one', even if it is far from the prediction."""
+    cfg, traj, clock, mount, cam, tracker, state = rig
+    clock.t = DARK_UNTIL + 5.0
+    mount.mech = traj.at(clock.now())[0] - mount.index
+    px = pixel_for_offset(state, mount.position()[1], [0.02, 0.01])
+    cam.emit(px[0], px[1], clock.now())
+    run_steps(tracker, mount, clock, 2)
+    cross_locked = tracker.cross.copy()
+
+    far = pixel_for_offset(state, mount.position()[1], [3.0, 2.0])
+    tracker.select("guide", far[0], far[1])
+    assert cam.manual and cam.gate[:2] == (pytest.approx(far[0]), pytest.approx(far[1]))
+
+    cam.emit(far[0], far[1], clock.now())
+    run_steps(tracker, mount, clock, 2)
+    assert not np.allclose(tracker.cross, cross_locked, atol=0.02)  # accepted, unlike an outlier
+    assert not tracker.force_accept                                  # and only for that one detection
+
+    tracker.clear_selection()
+    assert not cam.manual and cam.gate is None
+
+
+def test_tracker_leaves_a_manual_gate_alone(rig):
+    cfg, traj, clock, mount, cam, tracker, state = rig
+    clock.t = DARK_UNTIL + 5.0
+    tracker.select("guide", 100.0, 200.0)
+    gate = cam.gate
+    clock.t += 30.0          # long enough that the search gate would normally be widened
+    mount.query()
+    tracker.step()
+    assert cam.gate == gate
 
 
 def test_jump_allowance_grows_while_blind(rig):

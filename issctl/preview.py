@@ -78,6 +78,10 @@ function apply(s) {{
       c.fps.toFixed(0) + ' fps  ' + (c.det ? 'detected ' + c.det[0] + ',' + c.det[1] : 'no detection');
     const info = document.getElementById('info-' + n);
     if (info) info.textContent = ((s.status || {{}})[n] || []).join('\\n');
+    const sel = document.getElementById('sel-' + n);
+    if (sel) sel.textContent = c.manual
+      ? (c.det ? 'locked on your pick' : 'your pick - nothing there, click again or go auto')
+      : 'brightest in frame';
   }}
   if (s.mount) applyMount(s.mount);
   const em = document.getElementById('estop-msg');
@@ -96,8 +100,12 @@ setInterval(async () => apply(await (await fetch('/api/state')).json()), 1000);
 </script></body></html>"""
 
 PANEL = """<div class="panel"><h2>{name} <span id="stat-{name}"></span></h2>
-<img src="/{name}.mjpg">
+<img src="/{name}.mjpg" title="click the object to track"
+ onclick="api('/api/select',{{cam:'{name}',fx:event.offsetX/this.clientWidth,
+                             fy:event.offsetY/this.clientHeight}})">
 <div class="info" id="info-{name}"></div>
+<div class="ctl"><label>target</label><span id="sel-{name}"></span>
+ <button onclick="api('/api/select',{{cam:'{name}',clear:1}})">Auto</button></div>
 <div class="ctl"><label>exposure</label>
  <button onclick="api('/api/exposure',{{cam:'{name}',factor:0.667}})">-</button>
  <input id="exp-{name}" onchange="api('/api/exposure',{{cam:'{name}',ms:this.value}})">ms
@@ -226,6 +234,9 @@ class Preview:
                     return self._send(json.dumps(preview.api_state()).encode())
                 if path == "/api/record" and ctl.get("record"):
                     ctl["record"](q.get("on") not in (None, "0", "false"))
+                    return self._send(json.dumps(preview.api_state()).encode())
+                if path == "/api/select" and ctl.get("select"):
+                    ctl["select"](q.get("cam"), q.get("fx"), q.get("fy"), q.get("clear"))
                     return self._send(json.dumps(preview.api_state()).encode())
                 if path == "/api/estop" and ctl.get("estop"):
                     ctl["estop"]()

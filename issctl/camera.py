@@ -19,6 +19,8 @@ class Camera:
         self.exposure_ms = cam_cfg["exposure_ms"]
         self.gain = cam_cfg["gain"]
         self.gate = None
+        self.follow = False   # keep the gate on whatever was picked, frame to frame
+        self.manual = False   # picked by the user: the tracker must not move the gate
         self.sinks = []
         self.fps = 0.0
         self._frame = None
@@ -39,6 +41,17 @@ class Camera:
 
     def set_gain(self, gain):
         self.gain = max(0, int(gain))
+
+    def select(self, x, y, radius=None):
+        """Lock onto the object near (x, y) instead of simply the brightest one."""
+        self.gate = (float(x), float(y), float(radius or max(20.0, 0.03 * self.width)))
+        self.follow = True
+        self.manual = True
+
+    def clear_selection(self):
+        self.gate = None
+        self.follow = False
+        self.manual = False
 
     def _grab(self):
         raise NotImplementedError
@@ -61,9 +74,12 @@ class Camera:
             img, t = self._grab()
             if img is None:
                 continue
-            det = detect(img, self.cfg["detect_sigma"], self.cfg["detect_min_area"], self.bayer, self.gate)
+            gate = self.gate  # snapshot: a click may replace it while we are detecting
+            det = detect(img, self.cfg["detect_sigma"], self.cfg["detect_min_area"], self.bayer, gate)
             if det:
                 det.t = t
+                if self.follow and gate is not None and self.gate is gate:
+                    self.gate = (det.x, det.y, gate[2])  # stay on the object we were given
             with self._lock:
                 self._frame, self._det = img, det
                 self._seq += 1
@@ -153,18 +169,25 @@ class SimCamera(Camera):
         t = self.clock.now()
         img = self._noise[self._k].copy()
         self._k = (self._k + 1) % len(self._noise)
-        p = self.world.pixel(self.name, t)
-        if p is not None:
-            s = self.blob_sigma
-            r = int(4 * s) + 1
-            x0, y0 = int(round(p[0])), int(round(p[1]))
-            xs, ys = np.arange(x0 - r, x0 + r + 1), np.arange(y0 - r, y0 + r + 1)
-            gx = np.exp(-((xs - p[0]) ** 2) / (2 * s * s))
-            gy = np.exp(-((ys - p[1]) ** 2) / (2 * s * s))
-            patch = 180.0 * np.outer(gy, gx)
-            xa, xb = max(0, x0 - r), min(self.width, x0 + r + 1)
-            ya, yb = max(0, y0 - r), min(self.height, y0 + r + 1)
-            if xa < xb and ya < yb:
-                sub = patch[ya - (y0 - r):yb - (y0 - r), xa - (x0 - r):xb - (x0 - r)]
-                img[ya:yb, xa:xb] = np.clip(img[ya:yb, xa:xb] + sub, 0, 255).astype(np.uint8)
+        if hasattr(self.world, "blobs"):
+            blobs = self.world.blobs(self.name, t)
+        else:
+            p = self.world.pixel(self.name, t)
+            blobs = [(p, 180.0)] if p is not None else []
+        for p, amplitude in blobs:
+            self._draw(img, p, amplitude)
         return img, t
+
+    def _draw(self, img, p, amplitude):
+        s = self.blob_sigma
+        r = int(4 * s) + 1
+        x0, y0 = int(round(p[0])), int(round(p[1]))
+        xs, ys = np.arange(x0 - r, x0 + r + 1), np.arange(y0 - r, y0 + r + 1)
+        gx = np.exp(-((xs - p[0]) ** 2) / (2 * s * s))
+        gy = np.exp(-((ys - p[1]) ** 2) / (2 * s * s))
+        patch = amplitude * np.outer(gy, gx)
+        xa, xb = max(0, x0 - r), min(self.width, x0 + r + 1)
+        ya, yb = max(0, y0 - r), min(self.height, y0 + r + 1)
+        if xa < xb and ya < yb:
+            sub = patch[ya - (y0 - r):yb - (y0 - r), xa - (x0 - r):xb - (x0 - r)]
+            img[ya:yb, xa:xb] = np.clip(img[ya:yb, xa:xb] + sub, 0, 255).astype(np.uint8)

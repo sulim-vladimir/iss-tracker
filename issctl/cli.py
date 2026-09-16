@@ -90,7 +90,8 @@ def cmd_passes(args, cfg):
             print(f"   usable: {describe_windows(sat, site, rep, rep['track_start'])}")
 
 
-def make_controls(cams, recorder=None, mount_action=None, mount_state=None, estop=None, stopped=None):
+def make_controls(cams, recorder=None, mount_action=None, mount_state=None, estop=None, stopped=None,
+                  on_select=None):
     """Callbacks the preview page uses for exposure, gain and recording."""
 
     def state():
@@ -99,7 +100,8 @@ def make_controls(cams, recorder=None, mount_action=None, mount_state=None, esto
         for n, c in cams.items():
             _, det, _ = c.latest()
             out["cams"][n] = {"fps": c.fps, "exposure_ms": c.exposure_ms, "gain": c.gain,
-                              "det": [round(det.x, 1), round(det.y, 1)] if det else None}
+                              "det": [round(det.x, 1), round(det.y, 1)] if det else None,
+                              "manual": c.manual}
         return out
 
     def exposure(name, ms=None, factor=None):
@@ -116,9 +118,25 @@ def make_controls(cams, recorder=None, mount_action=None, mount_state=None, esto
         if recorder:
             recorder.set_enabled(on)
 
+    def select(name, fx=None, fy=None, clear=None):
+        """Click on the image: track that object rather than whichever is brightest."""
+        cam = cams.get(name)
+        if not cam:
+            return
+        if clear or fx is None or fy is None:
+            (on_select or (lambda *a: None))(name, None, None)
+            cam.clear_selection()
+        else:
+            x, y = float(fx) * cam.width, float(fy) * cam.height
+            if on_select:
+                on_select(name, x, y)
+            else:
+                cam.select(x, y)
+
     return {"state": state, "exposure": exposure, "gain": gain,
             "record": record if recorder and recorder.available else None,
-            "mount_action": mount_action, "mount_state": mount_state, "estop": estop}
+            "mount_action": mount_action, "mount_state": mount_state, "estop": estop,
+            "select": select}
 
 
 def start_preview(cams, state, port, status=None, controls=None):
@@ -615,7 +633,10 @@ def cmd_track(args, cfg):
     if cams and cfg["preview"]["enabled"] and not args.no_preview:
         start_preview(cams, state, args.port or cfg["preview"]["port"], status=status_lines,
                       controls=make_controls(cams, recorder, estop=stop_tracking,
-                                             stopped=lambda: tracker.stop_requested))
+                                             stopped=lambda: tracker.stop_requested,
+                                             on_select=lambda n, x, y: (tracker.select(n, x, y)
+                                                                        if x is not None
+                                                                        else tracker.clear_selection(n))))
 
     def on_start():
         if auto_record and recorder.available:

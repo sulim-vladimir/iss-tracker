@@ -67,23 +67,40 @@ class CalibWorld:
     """One fixed bright target at a constant mount position - a distant light, as recommended for
     calibration. Lets the calibration routine be exercised without a sky."""
 
-    def __init__(self, cfg, mount, offset=(0.02, -0.015), rotations=None, pointing_error=(0.3, -0.2)):
+    def __init__(self, cfg, mount, offset=(0.02, -0.015), rotations=None, pointing_error=(0.3, -0.2),
+                 decoys=((1.5, 0.8, 235.0), (-2.0, -1.2, 205.0))):
         self.mount = mount
         self.pointing_error = np.asarray(pointing_error, dtype=float)
         # offset is measured from where the telescope really points, i.e. as the user would see it
         self.axes_target = mount.position() + self.pointing_error + np.asarray(offset, dtype=float)
+        # other lights in the field, deliberately brighter than the one we actually want
+        self.decoys = [(self.axes_target + np.array([dx, dy]), amp) for dx, dy, amp in decoys]
         rotations = rotations or {"guide": 12.0, "main": -7.0}
         self.true_cal = {n: ideal_calibration(cfg["cameras"][n], rotations[n]) for n in rotations}
+
+    def _project(self, cam, pointing, axes):
+        cal = self.true_cal[cam]
+        px = np.array(cal["boresight"]) + jacobian(cal, pointing[1]) @ (pointing - axes)
+        w, h = (cal["boresight"][0] + 0.5) * 2, (cal["boresight"][1] + 0.5) * 2
+        return px if (0 <= px[0] < w and 0 <= px[1] < h) else None
 
     def pixel(self, cam, t):
         m = self.mount.position_at(t)
         if m is None:
             return None
+        return self._project(cam, m + self.pointing_error, self.axes_target)
+
+    def blobs(self, cam, t):
+        m = self.mount.position_at(t)
+        if m is None:
+            return []
         pointing = m + self.pointing_error
-        cal = self.true_cal[cam]
-        px = np.array(cal["boresight"]) + jacobian(cal, pointing[1]) @ (pointing - self.axes_target)
-        w, h = (cal["boresight"][0] + 0.5) * 2, (cal["boresight"][1] + 0.5) * 2
-        return px if (0 <= px[0] < w and 0 <= px[1] < h) else None
+        out = []
+        for axes, amp in [(self.axes_target, 150.0)] + self.decoys:
+            px = self._project(cam, pointing, axes)
+            if px is not None:
+                out.append((px, amp))
+        return out
 
 
 def random_clouds(t0, t1, n, seed=0, min_len=3.0, max_len=12.0):
