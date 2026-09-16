@@ -114,9 +114,10 @@ def make_controls(cams, recorder=None, mount_action=None, mount_state=None, esto
     def state():
         out = {"cams": {}, "record": recorder.state() if recorder else None,
                "stopped": bool(stopped()) if stopped else False,
-               "pointing": list(pointing()) if pointing else None,
-               "target": list(target()) if target else None,
                "pass": pass_info() if pass_info else None}
+        for key, fn in (("pointing", pointing), ("target", target)):
+            value = fn() if fn else None          # None whenever there is nothing to show
+            out[key] = list(value) if value is not None else None
         for n, c in cams.items():
             _, det, _ = c.latest()
             out["cams"][n] = {"fps": c.fps, "exposure_ms": c.exposure_ms, "gain": c.gain,
@@ -242,7 +243,7 @@ def cmd_console(args, cfg):
 
     speeds = [0.004, 0.02, 0.1, 0.5, 2.0]
     ui = {"jog": np.zeros(2), "speed": 2, "tracking": False, "busy": False, "quit": False,
-          "msg": "", "frame": "guide", "abort": threading.Event()}
+          "msg": "", "frame": "guide", "abort": threading.Event(), "mode": "console"}
 
     def jog_frames():
         return ["axes"] + [n for n in cams if n in state.get("cameras", {})]
@@ -266,7 +267,9 @@ def cmd_console(args, cfg):
 
     def keepalive():
         while not ui["quit"]:
-            if aborted():
+            if ui["mode"] == "track":
+                pass  # the tracker owns the mount while a pass is running
+            elif aborted():
                 mount.set_rates(0.0, 0.0)
             elif not ui["busy"]:
                 r = jog_rates()
@@ -299,6 +302,8 @@ def cmd_console(args, cfg):
     def emergency_stop():
         """Cut motion now: drop jog and tracking, abort any running goto/calibration, halt motors."""
         ui["abort"].set()
+        if session["tracker"]:
+            session["tracker"].stop_requested = True
         ui["jog"][:] = 0
         ui["tracking"] = False
         try:
@@ -361,6 +366,13 @@ def cmd_console(args, cfg):
         """Same operations as the curses keys, for the browser panel."""
         if action == "estop":
             return emergency_stop()
+        if action == "track":
+            return start_tracking(params.get("pass"))
+        if action == "untrack":
+            return stop_tracking()
+        if ui["mode"] == "track":
+            ui["msg"] = "tracking a pass - stop it first"
+            return
         if ui["busy"] and action != "stop":
             return
         if aborted() and action not in ("stop", "frame", "speed"):
@@ -403,6 +415,86 @@ def cmd_console(args, cfg):
             _, alt_m, az_m = pointing()
             ui["msg"] = f"sky mask point: az {az_m:.1f} alt {alt_m:.1f}"
 
+    # ---- tracking sessions started from the browser, sharing this process's mount and cameras ----
+    session = {"tracker": None, "traj": None, "info": None, "thread": None}
+
+    def sky_now():
+        return sky_payload(cfg, SkyMask.from_config(cfg), session["traj"], site)
+
+    def target_now():
+        tr = session["tracker"]
+        return tr.target_altaz() if tr else None
+
+    def pass_now():
+        info, tr = session["info"], session["tracker"]
+        if not info:
+            return None
+        return dict(info, now=clock.now(), source=tr.source if tr else "idle")
+
+    def start_tracking(index=None):
+        if session["thread"] and session["thread"].is_alive():
+            return
+        from .control import Tracker
+
+        def run_session():
+            try:
+                ui["msg"] = "planning pass..."
+                sat = pr.make_satellite(pr.get_tle(cfg))
+                mask = SkyMask.from_config(cfg)
+                rows = list_passes(cfg, sat, site, clock.now() - 60, 24, mask)
+                if not rows:
+                    ui["msg"] = "no passes in the next 24 h"
+                    return
+                if index not in (None, ""):
+                    p, rep, _ = rows[int(index)]
+                else:
+                    cand = [r for r in rows if r[2] == "visible" and r[1]["useful_s"] > 0] or rows
+                    p, rep, _ = cand[0]
+                traj, rep = pr.plan_pass(sat, site, cfg["mount"], p["rise"], p["set"], mask=mask)
+                rise, _ = pr.pass_horizon(sat, site, p)
+                session["traj"] = traj
+                session["info"] = {
+                    "start": traj.t_start, "end": traj.t_end, "rise": rise,
+                    "max_alt": p["max_alt"],
+                    "rise_at": f"{datetime.datetime.fromtimestamp(rise):%H:%M:%S}",
+                    "starts_at": f"{datetime.datetime.fromtimestamp(traj.t_start):%H:%M:%S}"}
+                if rep["useful_s"] <= 0:
+                    ui["msg"] = f"pass at {fmt_t(p['rise'])} is not usable ({describe(rep)})"
+                    return
+                stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+                logs = ROOT / "logs"
+                logs.mkdir(exist_ok=True)
+                tracker = Tracker(cfg, state, mount, cams, clock, traj,
+                                  log=lambda s: ui.__setitem__("msg", s),
+                                  log_path=logs / f"track-{stamp}.csv")
+                session["tracker"] = tracker
+                ui["mode"] = "track"
+                ui["jog"][:] = 0
+                ui["tracking"] = False
+                if main_cfg.get("record") and recorder.available:
+                    recorder.set_enabled(True)
+                tracker.run(on_visibility=lambda visible, why: recorder.set_visible(visible))
+                ui["msg"] = "tracking stopped" if tracker.stop_requested else "pass finished"
+            except Exception as e:
+                ui["msg"] = f"tracking error: {e}"
+            finally:
+                ui["mode"] = "console"
+                session["tracker"] = None
+                recorder.set_enabled(False)
+                try:
+                    mount.stop()
+                except Exception:
+                    pass
+
+        session["thread"] = threading.Thread(target=run_session, name="track-session", daemon=True)
+        session["thread"].start()
+
+    def stop_tracking():
+        tr = session["tracker"]
+        if tr:
+            tr.stop_requested = True
+            ui["msg"] = "stopping tracking..."
+
     def mount_status():
         pos, alt_s, az_s = pointing()
         cal = {}
@@ -414,7 +506,7 @@ def cmd_console(args, cfg):
                 "alt": round(alt_s, 2), "az": round(az_s, 2), "compass": geo.compass(az_s),
                 "speeds": speeds, "speed_index": ui["speed"], "tracking": ui["tracking"],
                 "frame": ui["frame"] if ui["frame"] in jog_frames() else "axes",
-                "frames": jog_frames(), "aborted": aborted(),
+                "frames": jog_frames(), "aborted": aborted(), "mode": ui["mode"],
                 "calibrated_at": state.get("calibrated_at"),
                 "busy": ui["busy"], "msg": ui["msg"], "jog": ui["jog"].tolist(), "cal": cal}
 
@@ -427,8 +519,8 @@ def cmd_console(args, cfg):
         start_preview(cams, state, args.port or cfg["preview"]["port"], status=status_lines,
                       controls=make_controls(cams, recorder, mount_action, mount_status,
                                              estop=emergency_stop, stopped=aborted,
-                                             sky=lambda: sky_payload(cfg, SkyMask.from_config(cfg)),
-                                             pointing=lambda: pointing()[1:]))
+                                             sky=sky_now, pointing=lambda: pointing()[1:],
+                                             target=target_now, pass_info=pass_now))
 
     def run(scr):
         curses.curs_set(0)

@@ -1,0 +1,13 @@
+# Private: real observing site, calibration and captures never go into git
+config.toml
+data/state.json
+captures/
+*.ser
+logs/
+
+# Local tooling and build junk
+.venv/
+.tools/
+__pycache__/
+*.pyc
+firmware/**/build/

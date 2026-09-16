@@ -33,7 +33,7 @@ PAGE = """<!doctype html><html><head><title>ISS tracker</title>
  input{{background:#262a2e;color:#e8e8e8;border:1px solid #5c656e;border-radius:4px;
         padding:4px;width:74px;font-size:14px}}
  .rec{{margin-top:12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}}
- #recbtn.on{{background:#a33;}}
+ #recbtn.on,#trackbtn.on{{background:#a33;}}
  #estop{{background:#b32222;color:#fff;font-weight:600;font-size:15px;padding:9px 18px;
          margin-bottom:10px}}
  #estop:hover{{background:#c93030}}
@@ -48,7 +48,16 @@ async function api(path, params) {{
 }}
 function tgt() {{ return document.getElementById('target').value; }}
 function mnt(action, params) {{ return api('/api/mount', Object.assign({{action}}, params)); }}
+let MODE = 'console';
 function applyMount(m) {{
+  MODE = m.mode || 'console';
+  const tb = document.getElementById('trackbtn');
+  if (tb) {{
+    tb.textContent = MODE === 'track' ? 'Stop tracking' : 'Track next pass';
+    tb.className = MODE === 'track' ? 'on' : '';
+  }}
+  for (const id of ['speedsel', 'framesel', 'target', 'passidx'])
+    {{ const e = document.getElementById(id); if (e) e.disabled = (MODE === 'track' && id !== 'passidx'); }}
   const sel = document.getElementById('speedsel');
   if (sel && !sel.options.length)
     m.speeds.forEach((v, i) => sel.add(new Option(v, i)));
@@ -60,7 +69,8 @@ function applyMount(m) {{
     m.frame === 'axes' ? 'raw mount axes' : 'move target in image';
   document.getElementById('mount-busy').textContent = m.busy ? 'working...' : '';
   document.getElementById('mount-info').textContent =
-    `axis1 ${{m.axis1.toFixed(3)}}  axis2 ${{m.axis2.toFixed(3)}}\\n`
+    `mode ${{MODE}}\\n`
+    + `axis1 ${{m.axis1.toFixed(3)}}  axis2 ${{m.axis2.toFixed(3)}}\\n`
     + `alt ${{m.alt.toFixed(2)}}  az ${{m.az.toFixed(2)}} ${{m.compass}}\\n`
     + `jog ${{m.jog}}  sidereal ${{m.tracking ? 'on' : 'off'}}\\n${{m.msg || ''}}`;
   const cal = Object.entries(m.cal).map(([n, c]) =>
@@ -239,6 +249,10 @@ MOUNT = """<div class="panel"><h2>mount <span id="mount-busy"></span></h2>
  <input id="target" placeholder="vega / jupiter / 18.6 38.8" style="width:150px">
  <button onclick="mnt('goto',{target:tgt()})">goto</button>
  <button onclick="mnt('sync',{target:tgt()})">sync</button></div>
+<div class="ctl"><label>pass</label>
+ <button id="trackbtn" onclick="mnt(MODE==='track' ? 'untrack' : 'track',
+   {pass: document.getElementById('passidx').value})">Track next pass</button>
+ <input id="passidx" placeholder="next" style="width:56px" title="pass index from 'passes', or blank for the next usable one"></div>
 <div class="ctl"><label></label>
  <button onclick="if(confirm('Set current position as home?')) mnt('home',{})">set home</button>
  <button onclick="mnt('calibrate',{})">calibrate cameras</button>

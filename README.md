@@ -204,6 +204,13 @@ already uses 8080). Both cameras appear side by side, each with:
   frame and dropped counts. Each start writes a new `captures/iss-*.ser`; recording pauses by itself
   whenever the ISS is in shadow or behind a mapped obstruction.
 
+**One session can do the whole evening.** `console` has a **Track next pass** button: it plans the next
+usable pass (or an index from `passes`), hands the mount to the tracker, and switches the page to
+tracking mode - the jog/goto/calibrate controls grey out, the sky chart shows the pass and a countdown,
+and recording starts if configured. **Stop tracking** gives the mount back. The separate
+`./issctl.sh track` command still exists for a headless one-shot run, but the button avoids juggling
+two processes that would fight over the serial port and cameras.
+
 `console` adds a **mount panel**: a cross-shaped jog pad with a speed selector, sidereal tracking on/off,
 goto/sync by target name, set home, calibrate cameras, and a mask-point readout - plus live axis
 angles, alt/az and the current calibration. With `--web` there is no terminal UI at all, which suits
