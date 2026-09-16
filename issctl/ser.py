@@ -22,9 +22,9 @@ class RecordControl:
         self.out_dir = out_dir
         self.bayer, self.telescope, self.instrument, self.prefix = bayer, telescope, instrument, prefix
         self.writer = None
-        self.enabled = False
-        self.visible = True
-        self.last = None  # summary of the most recently closed file
+        self.enabled = False   # the user (or config) wants to record
+        self.gate_ok = True    # the tracker says there is something worth recording
+        self.last = None       # summary of the most recently closed file
 
     @property
     def available(self):
@@ -33,31 +33,34 @@ class RecordControl:
     def set_enabled(self, on):
         if not self.available:
             return
-        if on and self.writer is None:
-            self.out_dir.mkdir(parents=True, exist_ok=True)
-            path = self.out_dir / f"{self.prefix}-{time.strftime('%Y%m%d-%H%M%S')}.ser"
-            self.writer = SerWriter(path, self.cam.width, self.cam.height, bayer=self.bayer,
-                                    telescope=self.telescope, instrument=self.instrument)
-            self.cam.sinks.append(self.writer)
         self.enabled = bool(on)
         self._apply()
         if not on:
             self.close()
 
-    def set_visible(self, visible):
-        self.visible = bool(visible)
+    def set_gate(self, ok):
+        """Tracker's verdict: is the target trackable, visible and actually acquired right now?"""
+        self.gate_ok = bool(ok)
         self._apply()
 
     def _apply(self):
+        want = self.enabled and self.gate_ok
+        if want and self.writer is None:
+            # open the file only when frames are really about to be written
+            self.out_dir.mkdir(parents=True, exist_ok=True)
+            path = self.out_dir / f"{self.prefix}-{time.strftime('%Y%m%d-%H%M%S')}.ser"
+            self.writer = SerWriter(path, self.cam.width, self.cam.height, bayer=self.bayer,
+                                    telescope=self.telescope, instrument=self.instrument)
+            self.cam.sinks.append(self.writer)
         if self.writer:
-            self.writer.active = self.enabled and self.visible
+            self.writer.active = want
 
     def state(self):
         if not self.available:
             return None
         w = self.writer
         return {"available": True, "recording": self.enabled,
-                "paused": self.enabled and not self.visible,
+                "waiting": self.enabled and not self.gate_ok,
                 "frames": w.frames if w else 0, "dropped": w.dropped if w else 0,
                 "path": w.path.name if w else None}
 

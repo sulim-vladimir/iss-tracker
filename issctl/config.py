@@ -11,12 +11,26 @@ STATE_FILE = ROOT / "data" / "state.json"
 SIM_STATE_FILE = ROOT / "data" / "state-sim.json"  # keep simulated calibration out of the real one
 
 
+def _merge(base, override):
+    out = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            out[key] = _merge(base[key], value)
+        else:
+            out[key] = value
+    return out
+
+
 def load_config(path=None):
+    """Your config layered over config.example.toml, so new keys get sensible defaults
+    instead of raising KeyError on a config written before they existed."""
+    with open(ROOT / "config.example.toml", "rb") as f:
+        defaults = tomllib.load(f)
     path = Path(path) if path else ROOT / "config.toml"
     if not path.exists():
-        path = ROOT / "config.example.toml"
+        return defaults
     with open(path, "rb") as f:
-        return tomllib.load(f)
+        return _merge(defaults, tomllib.load(f))
 
 
 def load_state(path=None):

@@ -97,6 +97,7 @@ max_time_offset_s = 20
 main_handoff_frames = 3       # consecutive main-camera detections before trusting it
 lost_timeout_s = 1.5          # fall back to guide / pure prediction after this
 shadow_threshold = 0.25       # sunlit fraction below which we stop believing the cameras
+record_lock_timeout_s = 5     # hold recording if the target has not been seen for this long
 max_offset_jump_arcmin = 25   # reject detections that jump this far once locked (stars, hot pixels)
 reacquire_growth_arcmin_per_s = 8   # widen that limit while coasting blind (clouds/obstructions)
 max_reacquire_arcmin = 240    # never accept a detection further out than this (4 deg of the 17 deg field)

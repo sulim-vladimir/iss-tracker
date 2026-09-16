@@ -25,7 +25,7 @@ def ideal_calibration(cam_cfg, rotation_deg=0.0, dec_cal=0.0, parity=1):
     return {"J": J.tolist(), "dec_cal": dec_cal, "boresight": [(w - 1) / 2, (h - 1) / 2]}
 
 
-def cal_px_per_deg(cal):
+def cal_px_per_deg(cal):  # noqa: D401
     """Image scale in pixels per degree on the sky (axis2 is a pure sky rotation)."""
     return float(np.linalg.norm(np.array(cal["J"], dtype=float)[:, 1]))
 
@@ -44,7 +44,8 @@ def axes_offset_from_pixel(cal, axis2, px):
 
 
 def measure(cam, n=10, timeout=5.0):
-    cam.gate = None
+    if not getattr(cam, "manual", False):
+        cam.gate = None   # but never throw away a target the user picked by hand
     _, _, last = cam.latest()
     pts, deadline = [], time.monotonic() + timeout
     while len(pts) < n and time.monotonic() < deadline:
@@ -66,7 +67,7 @@ def default_step(cam, fraction=0.2):
     return float(np.clip(fraction * cam.height / pixels_per_deg(cam.cfg), 0.02, 3.0))
 
 
-def calibrate_cameras(mount, cams, steps=None, track_rate=None, log=print, abort=None):
+def calibrate_cameras(mount, cams, steps=None, track_rate=None, log=print, abort=None, warnings=None):
     """Needs one bright target visible in every camera (centre it in the main camera first).
 
     Each camera is calibrated with its own step size, so wide and narrow fields both get a
@@ -118,6 +119,15 @@ def calibrate_cameras(mount, cams, steps=None, track_rate=None, log=print, abort
     if "main" in cams and "guide" in cams and final["main"] is not None and final["guide"] is not None:
         m = result["main"]
         dth = np.linalg.solve(np.array(m["J"]), np.array(m["boresight"]) - final["main"])
-        result["guide"]["boresight"] = (final["guide"] + np.array(result["guide"]["J"]) @ dth).tolist()
-        log(f"guide boresight (main camera centre) at {np.round(result['guide']['boresight'], 1)}")
+        boresight = final["guide"] + np.array(result["guide"]["J"]) @ dth
+        result["guide"]["boresight"] = boresight.tolist()
+        # Both cameras must have measured the SAME object for this to mean anything. If the guide
+        # locked onto a different (often brighter) light, the boresight lands far from the centre.
+        centre = np.array([(cams["guide"].width - 1) / 2, (cams["guide"].height - 1) / 2])
+        off_deg = float(np.linalg.norm(boresight - centre)) / cal_px_per_deg(result["guide"])
+        log(f"guide boresight (main camera centre) at {np.round(boresight, 1)}, "
+            f"{off_deg:.2f} deg from frame centre")
+        if off_deg > 2.0 and warnings is not None:
+            warnings.append(f"boresight {off_deg:.1f}° off centre - did both cameras see the "
+                            f"same object? Click the target in each image, then calibrate again.")
     return result

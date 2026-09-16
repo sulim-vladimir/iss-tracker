@@ -14,6 +14,7 @@ import cv2
 import numpy as np
 
 PAGE = """<!doctype html><html><head><title>ISS tracker</title>
+<meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
  body{{background:#2f3439;color:#e8e8e8;font:14px/1.4 system-ui,sans-serif;margin:10px}}
@@ -70,11 +71,11 @@ function applyMount(m) {{
   document.getElementById('mount-busy').textContent = m.busy ? 'working...' : '';
   document.getElementById('mount-info').textContent =
     `mode ${{MODE}}\\n`
-    + `axis1 ${{m.axis1.toFixed(3)}}  axis2 ${{m.axis2.toFixed(3)}}\\n`
-    + `alt ${{m.alt.toFixed(2)}}  az ${{m.az.toFixed(2)}} ${{m.compass}}\\n`
+    + `axis1 ${{m.axis1.toFixed(3)}}°  axis2 ${{m.axis2.toFixed(3)}}°\\n`
+    + `alt ${{m.alt.toFixed(2)}}°  az ${{m.az.toFixed(2)}}° ${{m.compass}}\\n`
     + `jog ${{m.jog}}  sidereal ${{m.tracking ? 'on' : 'off'}}\\n${{m.msg || ''}}`;
   const cal = Object.entries(m.cal).map(([n, c]) =>
-    `${{n}}: ${{c.scale}} px/deg, rot ${{c.rotation}} deg`);
+    `${{n}}: ${{c.scale}} px/°, rotation ${{c.rotation}}°`);
   let head = 'not calibrated yet';
   if (cal.length) {{
     head = 'calibrated';
@@ -85,7 +86,8 @@ function applyMount(m) {{
             : ` ${{(mins / 60).toFixed(1)}} h ago`;
     }}
   }}
-  document.getElementById('cal-info').textContent = [head].concat(cal).join('\\n');
+  const warn = (m.cal_warnings || []).map(w => '! ' + w);
+  document.getElementById('cal-info').textContent = [head].concat(cal, warn).join('\\n');
 }}
 function apply(s) {{
   for (const n of CAMS) {{
@@ -111,8 +113,9 @@ function apply(s) {{
     btn.textContent = r.recording ? 'Stop recording' : 'Start recording';
     btn.className = r.recording ? 'on' : '';
     document.getElementById('recinfo').textContent = r.recording
-      ? (r.path || '') + '  ' + r.frames + ' frames, ' + r.dropped + ' dropped'
-        + (r.paused ? '  (paused: ISS not visible)' : '')
+      ? (r.waiting
+          ? 'armed - waiting until the target is trackable'
+          : (r.path || '') + '  ' + r.frames + ' frames, ' + r.dropped + ' dropped')
       : 'not recording';
   }}
 }}
@@ -175,7 +178,7 @@ function drawSky(s) {{
     const [x, y] = pos(s.target[1], s.target[0]);
     svg.appendChild(el('circle', {{cx: x, cy: y, r: 3.5, fill: '#e2483c'}}));
   }}
-  const fmt = (p, name) => p ? `${{name}} alt ${{p[0].toFixed(1)}}  az ${{p[1].toFixed(1)}}` : '';
+  const fmt = (p, name) => p ? `${{name}} alt ${{p[0].toFixed(1)}}°  az ${{p[1].toFixed(1)}}°` : '';
   document.getElementById('sky-info').textContent =
     [passLine(s.pass), fmt(s.pointing, 'mount'), fmt(s.target, 'ISS  ')].filter(Boolean).join('\\n');
 }}
@@ -188,8 +191,8 @@ function passLine(p) {{
   if (!p) return '';
   const rise = p.rise || p.start;           // horizon crossing, not the trackable segment
   if (p.now < rise)
-    return `next pass in ${{clock(rise - p.now)}} (rises ${{p.rise_at || p.starts_at}}, `
-         + `max alt ${{p.max_alt.toFixed(0)}})`;
+    return `next pass in ${{clock(rise - p.now)}}\\n`
+         + `rises ${{p.rise_at || p.starts_at}}, max alt ${{p.max_alt.toFixed(0)}}°`;
   if (p.now < p.start)
     return `ISS up, trackable in ${{clock(p.start - p.now)}} (at ${{p.starts_at}})`;
   if (p.now <= p.end)
@@ -242,7 +245,7 @@ MOUNT = """<div class="panel"><h2>mount <span id="mount-busy"></span></h2>
  <select id="framesel" onchange="mnt('frame',{frame:this.value})"></select>
  <span id="frame-hint"></span></div>
 <div class="ctl"><label>speed</label>
- <select id="speedsel" onchange="mnt('speed',{index:this.value})"></select> deg/s
+ <select id="speedsel" onchange="mnt('speed',{index:this.value})"></select> °/s
  <button onclick="mnt('track',{on:1})">sidereal on</button>
  <button onclick="mnt('track',{on:0})">off</button></div>
 <div class="ctl"><label>target</label>
@@ -292,10 +295,10 @@ class Preview:
         can_record = bool(self.controls and self.controls.get("record"))
         panels = "".join(PANEL.format(name=n, extra=RECORD if (n == "main" and can_record) else "")
                          for n in self.cams)
-        if self.controls and self.controls.get("sky"):
-            panels += SKY
         if self.controls and self.controls.get("mount_action"):
             panels += MOUNT
+        if self.controls and self.controls.get("sky"):
+            panels += SKY
         estop = ESTOP if (self.controls and self.controls.get("estop")) else ""
         return PAGE.format(panels=panels, cams=json.dumps(list(self.cams)), estop=estop)
 

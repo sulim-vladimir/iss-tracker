@@ -44,12 +44,14 @@ class Tracker:
         self.lit = 1.0
         self.open_sky = 1.0
         self.visible = True
+        self.recordable = False
         self.last_good = -np.inf
         self.rejected = 0
         self.force_accept = False
         self.last_px = {}
         self.stop_requested = False
         self.on_visibility = None
+        self.on_record = None
         self._csv = None
         if log_path:
             self._csv_file = open(log_path, "w", newline="")
@@ -217,6 +219,17 @@ class Tracker:
         if self.visible:
             self._check_timeouts(now)
 
+        # Only worth recording while the pass is actually trackable, the ISS is not in shadow or
+        # behind something, and we have it: otherwise the frames are empty sky.
+        in_window = self.traj.t_start <= now <= self.traj.t_end
+        locked = (now - self.last_good) < self.tr["record_lock_timeout_s"]
+        recordable = bool(in_window and self.visible and locked)
+        if recordable != self.recordable:
+            self.recordable = recordable
+            self.log(f"recording {'armed' if recordable else 'held (target not trackable)'}")
+            if self.on_record:
+                self.on_record(recordable)
+
         t_meas, meas = self.mount.last
         p_meas, _ = self.target(t_meas)
         err = p_meas - meas
@@ -237,8 +250,9 @@ class Tracker:
                                 f"{self.open_sky:.0f}"])
         return err
 
-    def run(self, lead_s=None, on_start=None, on_end=None, on_visibility=None):
+    def run(self, lead_s=None, on_start=None, on_end=None, on_visibility=None, on_record=None):
         self.on_visibility = on_visibility
+        self.on_record = on_record
         lead_s = self.tr["lead_s"] if lead_s is None else lead_s
         traj = self.traj
         self.mount.enable(True)
@@ -273,6 +287,8 @@ class Tracker:
                 self.clock.sleep(self.dt - (time.monotonic() - tick) * self.clock.speed)
         finally:
             self.mount.stop()
+            if self.recordable and self.on_record:
+                self.on_record(False)
             if on_end:
                 on_end()
             if self._csv:

@@ -346,12 +346,15 @@ def cmd_console(args, cfg):
 
     def do_cal():
         ui["msg"] = "calibrating..."
+        warnings = []
         res = calibrate_cameras(mount, cams, track_rate=[SIDEREAL_DEG_S, 0.0] if ui["tracking"] else None,
-                                log=lambda s: ui.__setitem__("msg", s), abort=aborted)
+                                log=lambda s: ui.__setitem__("msg", s), abort=aborted, warnings=warnings)
         state.setdefault("cameras", {}).update(res)
         state["calibrated_at"] = time.time()
+        state["calibration_warnings"] = warnings
         persist()
-        ui["msg"] = f"calibration complete, saved to {(state_path or STATE_FILE).name}"
+        ui["msg"] = ("WARNING: " + warnings[0]) if warnings else \
+                    f"calibration complete, saved to {(state_path or STATE_FILE).name}"
 
     def pointing():
         pos = mount.position()
@@ -472,8 +475,9 @@ def cmd_console(args, cfg):
                 ui["jog"][:] = 0
                 ui["tracking"] = False
                 if main_cfg.get("record") and recorder.available:
-                    recorder.set_enabled(True)
-                tracker.run(on_visibility=lambda visible, why: recorder.set_visible(visible))
+                    recorder.set_enabled(True)  # armed only; the gate below decides when to write
+                recorder.set_gate(False)
+                tracker.run(on_record=recorder.set_gate)
                 ui["msg"] = "tracking stopped" if tracker.stop_requested else "pass finished"
             except Exception as e:
                 ui["msg"] = f"tracking error: {e}"
@@ -481,6 +485,7 @@ def cmd_console(args, cfg):
                 ui["mode"] = "console"
                 session["tracker"] = None
                 recorder.set_enabled(False)
+                recorder.set_gate(True)  # back to manual control in console mode
                 try:
                     mount.stop()
                 except Exception:
@@ -508,6 +513,7 @@ def cmd_console(args, cfg):
                 "frame": ui["frame"] if ui["frame"] in jog_frames() else "axes",
                 "frames": jog_frames(), "aborted": aborted(), "mode": ui["mode"],
                 "calibrated_at": state.get("calibrated_at"),
+                "cal_warnings": state.get("calibration_warnings", []),
                 "busy": ui["busy"], "msg": ui["msg"], "jog": ui["jog"].tolist(), "cal": cal}
 
     from .ser import RecordControl
@@ -761,8 +767,8 @@ def cmd_track(args, cfg):
 
     def on_start():
         if auto_record and recorder.available:
-            recorder.set_enabled(True)
-            print(f"recording {recorder.state()['path']}")
+            recorder.set_enabled(True)  # armed; frames start only once the ISS is trackable and seen
+            print("recording armed, waiting for the target")
 
     def on_end():
         if recorder.writer:
@@ -770,11 +776,8 @@ def cmd_track(args, cfg):
             last = recorder.last
             print(f"recorded {last['frames']} frames, dropped {last['dropped']} -> {last['path']}")
 
-    def on_visibility(visible, reason):
-        recorder.set_visible(visible)  # nothing to record while the ISS is dark or hidden
-
     try:
-        tracker.run(lead_s=lead, on_start=on_start, on_end=on_end, on_visibility=on_visibility)
+        tracker.run(lead_s=lead, on_start=on_start, on_end=on_end, on_record=recorder.set_gate)
     except KeyboardInterrupt:
         print("interrupted")
     finally:
