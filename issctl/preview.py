@@ -64,9 +64,18 @@ function applyMount(m) {{
     + `alt ${{m.alt.toFixed(2)}}  az ${{m.az.toFixed(2)}} ${{m.compass}}\\n`
     + `jog ${{m.jog}}  sidereal ${{m.tracking ? 'on' : 'off'}}\\n${{m.msg || ''}}`;
   const cal = Object.entries(m.cal).map(([n, c]) =>
-    `${{n}}: ${{c.scale}} px/deg, rot ${{c.rotation}} deg, boresight ${{c.boresight}}`);
-  document.getElementById('cal-info').textContent =
-    cal.length ? cal.join('\\n') : 'not calibrated yet';
+    `${{n}}: ${{c.scale}} px/deg, rot ${{c.rotation}} deg`);
+  let head = 'not calibrated yet';
+  if (cal.length) {{
+    head = 'calibrated';
+    if (m.calibrated_at) {{
+      const mins = (Date.now() / 1000 - m.calibrated_at) / 60;
+      head += mins < 1 ? ' just now'
+            : mins < 90 ? ` ${{Math.round(mins)}} min ago`
+            : ` ${{(mins / 60).toFixed(1)}} h ago`;
+    }}
+  }}
+  document.getElementById('cal-info').textContent = [head].concat(cal).join('\\n');
 }}
 function apply(s) {{
   for (const n of CAMS) {{
@@ -84,6 +93,7 @@ function apply(s) {{
       : 'brightest in frame';
   }}
   if (s.mount) applyMount(s.mount);
+  drawSky(s);
   const em = document.getElementById('estop-msg');
   if (em) em.textContent = (s.stopped || (s.mount && s.mount.aborted)) ? 'motors halted' : '';
   const r = s.record, btn = document.getElementById('recbtn');
@@ -96,6 +106,87 @@ function apply(s) {{
       : 'not recording';
   }}
 }}
+// ---- sky chart: zenith at the centre, horizon at the rim, north up, east right ----
+const CX = 165, CY = 165, R = 140;
+let SKY = null;
+const SVGNS = 'http://www.w3.org/2000/svg';
+function pos(az, alt) {{
+  const r = (90 - Math.max(alt, 0)) / 90 * R, a = az * Math.PI / 180;
+  return [CX + r * Math.sin(a), CY - r * Math.cos(a)];
+}}
+function el(tag, attrs) {{
+  const n = document.createElementNS(SVGNS, tag);
+  for (const k in attrs) n.setAttribute(k, attrs[k]);
+  return n;
+}}
+function sector(az0, az1, alt0, alt1) {{
+  const [r0, r1] = [(90 - Math.min(alt1, 90)) / 90 * R, (90 - Math.max(alt0, 0)) / 90 * R];
+  let span = (az1 - az0 + 360) % 360; if (span === 0) span = 360;
+  const big = span > 180 ? 1 : 0;
+  const [ax, ay] = pos(az0, alt1), [bx, by] = pos(az1, alt1);
+  const [cx2, cy2] = pos(az1, alt0), [dx, dy] = pos(az0, alt0);
+  return `M ${{ax}} ${{ay}} A ${{r0}} ${{r0}} 0 ${{big}} 1 ${{bx}} ${{by}}`
+       + ` L ${{cx2}} ${{cy2}} A ${{r1}} ${{r1}} 0 ${{big}} 0 ${{dx}} ${{dy}} Z`;
+}}
+function drawSky(s) {{
+  const svg = document.getElementById('sky');
+  if (!svg || !SKY) return;
+  svg.textContent = '';
+  for (const alt of [0, 30, 60]) {{
+    svg.appendChild(el('circle', {{cx: CX, cy: CY, r: (90 - alt) / 90 * R,
+      fill: 'none', stroke: '#4a525b'}}));
+  }}
+  if (SKY.min_alt > 0)
+    svg.appendChild(el('circle', {{cx: CX, cy: CY, r: (90 - SKY.min_alt) / 90 * R,
+      fill: 'none', stroke: '#7a4a2a', 'stroke-dasharray': '3 3'}}));
+  for (const r of (SKY.mask.openings || []))
+    svg.appendChild(el('path', {{d: sector(r[0], r[1], r[2], r[3]), fill: '#2e7d4b', opacity: 0.22}}));
+  for (const r of (SKY.mask.blockers || []))
+    svg.appendChild(el('path', {{d: sector(r[0], r[1], r[2], r[3]), fill: '#a33', opacity: 0.3}}));
+  for (const [lbl, az] of [['N', 0], ['E', 90], ['S', 180], ['W', 270]]) {{
+    const [x, y] = pos(az, -6);
+    svg.appendChild(el('text', {{x: x, y: y + 4, fill: '#9aa4ae', 'font-size': 12,
+      'text-anchor': 'middle'}})).textContent = lbl;
+  }}
+  // the pass, segment by segment: cyan while sunlit, grey in shadow, red behind an obstruction
+  const trk = SKY.track || [];
+  for (let i = 1; i < trk.length; i++) {{
+    const [az0, alt0] = trk[i - 1], [az1, alt1, lit, open] = trk[i];
+    const [x0, y0] = pos(az0, alt0), [x1, y1] = pos(az1, alt1);
+    svg.appendChild(el('line', {{x1: x0, y1: y0, x2: x1, y2: y1, 'stroke-width': 2,
+      stroke: !open ? '#c0504d' : (lit > 0.5 ? '#3fb9d6' : '#6b7580')}}));
+  }}
+  if (s.pointing) {{
+    const [x, y] = pos(s.pointing[1], s.pointing[0]);
+    svg.appendChild(el('circle', {{cx: x, cy: y, r: 3.5, fill: '#e2483c'}}));  // where the mount looks
+  }}
+  if (s.target) {{
+    const [x, y] = pos(s.target[1], s.target[0]);
+    svg.appendChild(el('circle', {{cx: x, cy: y, r: 5, fill: 'none', stroke: '#ffd24a',
+      'stroke-width': 2}}));
+  }}
+  const fmt = (p, name) => p ? `${{name}} alt ${{p[0].toFixed(1)}}  az ${{p[1].toFixed(1)}}` : '';
+  document.getElementById('sky-info').textContent =
+    [passLine(s.pass), fmt(s.pointing, 'mount'), fmt(s.target, 'ISS  ')].filter(Boolean).join('\\n');
+}}
+function clock(seconds) {{
+  const s = Math.max(0, Math.round(seconds));
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  return (h ? h + 'h ' : '') + (h || m ? m + 'm ' : '') + sec + 's';
+}}
+function passLine(p) {{
+  if (!p) return '';
+  const rise = p.rise || p.start;           // horizon crossing, not the trackable segment
+  if (p.now < rise)
+    return `next pass in ${{clock(rise - p.now)}} (rises ${{p.rise_at || p.starts_at}}, `
+         + `max alt ${{p.max_alt.toFixed(0)}})`;
+  if (p.now < p.start)
+    return `ISS up, trackable in ${{clock(p.start - p.now)}} (at ${{p.starts_at}})`;
+  if (p.now <= p.end)
+    return `tracking  t+${{(p.now - p.start).toFixed(0)}}s  ${{clock(p.end - p.now)}} left`;
+  return 'pass over';
+}}
+(async () => {{ try {{ SKY = await (await fetch('/api/sky')).json(); }} catch (e) {{}} }})();
 setInterval(async () => apply(await (await fetch('/api/state')).json()), 1000);
 </script></body></html>"""
 
@@ -123,6 +214,11 @@ RECORD = """<div class="rec"><button id="recbtn"
 
 ESTOP = """<button id="estop" onclick="api('/api/estop',{})">EMERGENCY STOP</button>
 <span id="estop-msg"></span>"""
+
+SKY = """<div class="panel"><h2>sky</h2>
+<svg id="sky" viewBox="0 0 330 330" style="width:100%;max-width:340px;background:#20242a;
+ border-radius:6px"></svg>
+<div class="info" id="sky-info"></div></div>"""
 
 MOUNT = """<div class="panel"><h2>mount <span id="mount-busy"></span></h2>
 <div class="info" id="mount-info"></div>
@@ -163,12 +259,12 @@ def render(cam, cal, max_width=800):
         img = cv2.resize(img, None, fx=k, fy=k, interpolation=cv2.INTER_AREA)
     if cal:
         bx, by = (int(cal["boresight"][0] * k), int(cal["boresight"][1] * k))
-        cv2.drawMarker(img, (bx, by), (0, 200, 0), cv2.MARKER_CROSS, 30, 1)
+        cv2.drawMarker(img, (bx, by), (0, 220, 0), cv2.MARKER_CROSS, 34, 2)
     if cam.gate:
         gx, gy, gr = cam.gate
-        cv2.circle(img, (int(gx * k), int(gy * k)), int(gr * k), (200, 120, 0), 1)
+        cv2.circle(img, (int(gx * k), int(gy * k)), int(gr * k), (220, 130, 0), 2)
     if det:
-        cv2.circle(img, (int(det.x * k), int(det.y * k)), 12, (0, 0, 255), 1)
+        cv2.circle(img, (int(det.x * k), int(det.y * k)), 14, (0, 0, 255), 2)
     return img
 
 
@@ -182,6 +278,8 @@ class Preview:
         can_record = bool(self.controls and self.controls.get("record"))
         panels = "".join(PANEL.format(name=n, extra=RECORD if (n == "main" and can_record) else "")
                          for n in self.cams)
+        if self.controls and self.controls.get("sky"):
+            panels += SKY
         if self.controls and self.controls.get("mount_action"):
             panels += MOUNT
         estop = ESTOP if (self.controls and self.controls.get("estop")) else ""
@@ -235,6 +333,8 @@ class Preview:
                 if path == "/api/record" and ctl.get("record"):
                     ctl["record"](q.get("on") not in (None, "0", "false"))
                     return self._send(json.dumps(preview.api_state()).encode())
+                if path == "/api/sky" and ctl.get("sky"):
+                    return self._send(json.dumps(ctl["sky"]()).encode())
                 if path == "/api/select" and ctl.get("select"):
                     ctl["select"](q.get("cam"), q.get("fx"), q.get("fy"), q.get("clear"))
                     return self._send(json.dumps(preview.api_state()).encode())

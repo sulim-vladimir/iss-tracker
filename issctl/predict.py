@@ -200,6 +200,16 @@ def sun_state(sat, site, t_unix):
     return float(illumination(sat, t_unix)), float(sun_alt)
 
 
+def pass_horizon(sat, site, p, margin=900.0):
+    """Rise and set at altitude 0 for a pass, rather than at the tracking minimum altitude."""
+    times, events = sat.find_events(site.topos, unix_to_time(p["culm"] - margin),
+                                    unix_to_time(p["culm"] + margin), altitude_degrees=0.0)
+    ev = [(time_to_unix(t), int(e)) for t, e in zip(times, events)]
+    rise = max((t for t, e in ev if e == 0 and t <= p["culm"]), default=p["rise"])
+    set_ = min((t for t, e in ev if e == 2 and t >= p["culm"]), default=p["set"])
+    return rise, set_
+
+
 def find_passes(sat, site, t0_unix, hours):
     times, events = sat.find_events(site.topos, unix_to_time(t0_unix),
                                     unix_to_time(t0_unix + hours * 3600),

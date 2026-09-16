@@ -10,7 +10,7 @@ import numpy as np
 from . import geometry as geo
 from . import predict as pr
 from .clock import Clock
-from .config import ROOT, SIM_STATE_FILE, load_config, load_state, save_state
+from .config import ROOT, SIM_STATE_FILE, STATE_FILE, load_config, load_state, save_state
 from .mask import SkyMask
 
 
@@ -90,13 +90,33 @@ def cmd_passes(args, cfg):
             print(f"   usable: {describe_windows(sat, site, rep, rep['track_start'])}")
 
 
+def sky_payload(cfg, mask, traj=None, site=None):
+    """Static data for the sky chart: the pass track, the mask and the horizon limit."""
+    out = {"mask": {"openings": mask.openings, "blockers": mask.blockers},
+           "min_alt": cfg["site"]["min_altitude"], "track": []}
+    if traj is not None and site is not None:
+        step = max(1, len(traj.t) // 400)
+        a1, a2 = traj.a1[::step], traj.a2[::step]
+        ha, dec = geo.axes_to_hadec(a1, a2)
+        alt, az = geo.hadec_to_altaz(ha, dec, site.lat)
+        lit, open_sky = traj.lit[::step], traj.open_sky[::step]
+        t = traj.t[::step]
+        out["track"] = [[round(float(z), 2), round(float(a), 2), round(float(l), 2), int(o),
+                         round(float(tt - traj.t_start), 1)]
+                        for z, a, l, o, tt in zip(az, alt, lit, open_sky, t) if a > -5]
+    return out
+
+
 def make_controls(cams, recorder=None, mount_action=None, mount_state=None, estop=None, stopped=None,
-                  on_select=None):
+                  on_select=None, sky=None, pointing=None, target=None, pass_info=None):
     """Callbacks the preview page uses for exposure, gain and recording."""
 
     def state():
         out = {"cams": {}, "record": recorder.state() if recorder else None,
-               "stopped": bool(stopped()) if stopped else False}
+               "stopped": bool(stopped()) if stopped else False,
+               "pointing": list(pointing()) if pointing else None,
+               "target": list(target()) if target else None,
+               "pass": pass_info() if pass_info else None}
         for n, c in cams.items():
             _, det, _ = c.latest()
             out["cams"][n] = {"fps": c.fps, "exposure_ms": c.exposure_ms, "gain": c.gain,
@@ -136,7 +156,7 @@ def make_controls(cams, recorder=None, mount_action=None, mount_state=None, esto
     return {"state": state, "exposure": exposure, "gain": gain,
             "record": record if recorder and recorder.available else None,
             "mount_action": mount_action, "mount_state": mount_state, "estop": estop,
-            "select": select}
+            "select": select, "sky": sky}
 
 
 def start_preview(cams, state, port, status=None, controls=None):
@@ -217,13 +237,8 @@ def cmd_console(args, cfg):
         if name != "guide":
             return []
         pos = mount.position()
-        ha_p, dec_p = geo.axes_to_hadec(*pos)
-        alt_p, az_p = geo.hadec_to_altaz(ha_p, dec_p, site.lat)
-        return [
-            f"{datetime.datetime.now():%H:%M:%S}",
-            f"alt {float(alt_p):5.1f}  az {float(az_p):5.1f} {geo.compass(float(az_p))}",
-            f"axis1 {pos[0]:+.3f}  axis2 {pos[1]:+.3f}",
-        ]
+        return [f"{datetime.datetime.now():%H:%M:%S}",
+                f"axis1 {pos[0]:+.3f}  axis2 {pos[1]:+.3f}"]
 
     speeds = [0.004, 0.02, 0.1, 0.5, 2.0]
     ui = {"jog": np.zeros(2), "speed": 2, "tracking": False, "busy": False, "quit": False,
@@ -329,8 +344,9 @@ def cmd_console(args, cfg):
         res = calibrate_cameras(mount, cams, track_rate=[SIDEREAL_DEG_S, 0.0] if ui["tracking"] else None,
                                 log=lambda s: ui.__setitem__("msg", s), abort=aborted)
         state.setdefault("cameras", {}).update(res)
+        state["calibrated_at"] = time.time()
         persist()
-        ui["msg"] = "camera calibration saved"
+        ui["msg"] = f"calibration complete, saved to {(state_path or STATE_FILE).name}"
 
     def pointing():
         pos = mount.position()
@@ -393,13 +409,13 @@ def cmd_console(args, cfg):
         for n, c in state.get("cameras", {}).items():
             J = np.array(c["J"], dtype=float)
             cal[n] = {"scale": round(float(np.linalg.norm(J[:, 1])), 1),
-                      "rotation": round(float(np.degrees(np.arctan2(J[1, 0], J[0, 0]))), 1),
-                      "boresight": [round(float(v), 1) for v in c["boresight"]]}
+                      "rotation": round(float(np.degrees(np.arctan2(J[1, 0], J[0, 0]))), 1)}
         return {"axis1": round(float(pos[0]), 4), "axis2": round(float(pos[1]), 4),
                 "alt": round(alt_s, 2), "az": round(az_s, 2), "compass": geo.compass(az_s),
                 "speeds": speeds, "speed_index": ui["speed"], "tracking": ui["tracking"],
                 "frame": ui["frame"] if ui["frame"] in jog_frames() else "axes",
                 "frames": jog_frames(), "aborted": aborted(),
+                "calibrated_at": state.get("calibrated_at"),
                 "busy": ui["busy"], "msg": ui["msg"], "jog": ui["jog"].tolist(), "cal": cal}
 
     from .ser import RecordControl
@@ -410,7 +426,9 @@ def cmd_console(args, cfg):
     if cfg["preview"]["enabled"]:
         start_preview(cams, state, args.port or cfg["preview"]["port"], status=status_lines,
                       controls=make_controls(cams, recorder, mount_action, mount_status,
-                                             estop=emergency_stop, stopped=aborted))
+                                             estop=emergency_stop, stopped=aborted,
+                                             sky=lambda: sky_payload(cfg, SkyMask.from_config(cfg)),
+                                             pointing=lambda: pointing()[1:]))
 
     def run(scr):
         curses.curs_set(0)
@@ -592,7 +610,11 @@ def cmd_track(args, cfg):
         lead = None
 
     print(f"pass {fmt_t(p['rise'])} max {p['max_alt']:.1f} deg: {describe(rep)}")
+    horizon_rise, horizon_set = pr.pass_horizon(sat, site, p)
     print(f"sky path: {sky_path(sat, site, p)}")
+    print(f"above horizon: {fmt_t(horizon_rise)} .. {datetime.datetime.fromtimestamp(horizon_set):%H:%M:%S} "
+          f"({horizon_set - horizon_rise:.0f}s), trackable from "
+          f"{datetime.datetime.fromtimestamp(traj.t_start):%H:%M:%S}")
     print(f"illumination: {describe_shadow(rep, traj.t_start)} (relative to track start)")
     if rep["windows"]:
         print(f"usable windows: {describe_windows(sat, site, rep, traj.t_start)}")
@@ -614,11 +636,9 @@ def cmd_track(args, cfg):
         if name != "guide":
             return []
         now = clock.now()
-        alt, az = tracker.altaz()
         return [
             f"{datetime.datetime.fromtimestamp(now):%H:%M:%S}  t{now - traj.t_start:+.1f}s",
-            f"alt {alt:5.1f}  az {az:5.1f} {geo.compass(az)}",
-            f"{tracker.source}  dt {tracker.time_offset:+.2f}s  lit {tracker.lit:.2f}",
+            f"src {tracker.source} | TLE dt {tracker.time_offset:+.2f}s | sunlit {tracker.lit:.2f}",
         ]
 
     def stop_tracking():
@@ -636,7 +656,16 @@ def cmd_track(args, cfg):
                                              stopped=lambda: tracker.stop_requested,
                                              on_select=lambda n, x, y: (tracker.select(n, x, y)
                                                                         if x is not None
-                                                                        else tracker.clear_selection(n))))
+                                                                        else tracker.clear_selection(n)),
+                                             sky=lambda: sky_payload(cfg, mask, traj, site),
+                                             pointing=tracker.altaz, target=tracker.target_altaz,
+                                             pass_info=lambda: {
+                                                 "now": clock.now(), "start": traj.t_start,
+                                                 "end": traj.t_end, "max_alt": p["max_alt"],
+                                                 "rise": horizon_rise,
+                                                 "rise_at": f"{datetime.datetime.fromtimestamp(horizon_rise):%H:%M:%S}",
+                                                 "starts_at": f"{datetime.datetime.fromtimestamp(traj.t_start):%H:%M:%S}",
+                                                 "source": tracker.source}))
 
     def on_start():
         if auto_record and recorder.available:

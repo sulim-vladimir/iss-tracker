@@ -58,6 +58,10 @@ class Tracker:
                                 "time_offset", "cross1", "cross2", "source", "det_x", "det_y",
                                 "lit", "open"])
 
+    def target_altaz(self):
+        """Where the ISS should be right now, per the corrected prediction."""
+        return self.altaz(self.target(self.clock.now())[0])
+
     def select(self, name, x, y):
         """User pointed at the ISS in a frame: lock onto it and trust the next detection."""
         cam = self.cams.get(name)
