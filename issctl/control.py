@@ -16,8 +16,10 @@ import time
 import numpy as np
 
 from . import geometry as geo
-from .calib import axes_offset_from_pixel
+from .calib import axes_offset_from_pixel, cal_px_per_deg
 from .mount import limit_correction
+
+SHADOW_OFFSET_CLAMP_S = 5.0
 
 
 class Tracker:
@@ -29,6 +31,7 @@ class Tracker:
         self.kp = m["kp_position"]
         self.cmd_latency = m["command_latency_s"]
         self.cal = state.get("cameras", {})
+        self.lat = cfg["site"]["latitude"]
         self.time_offset = 0.0
         self.cross = np.zeros(2)
         self.cross_rate = np.zeros(2)
@@ -38,14 +41,28 @@ class Tracker:
         self.last_seen = {n: -np.inf for n in cameras}  # last detection of any kind
         self.main_streak = 0
         self.source = "predict"
+        self.lit = 1.0
+        self.open_sky = 1.0
+        self.visible = True
+        self.last_good = -np.inf
+        self.rejected = 0
         self.last_px = {}
         self.stop_requested = False
+        self.on_visibility = None
         self._csv = None
         if log_path:
             self._csv_file = open(log_path, "w", newline="")
             self._csv = csv.writer(self._csv_file)
-            self._csv.writerow(["t", "a1", "a2", "tgt1", "tgt2", "cmd1", "cmd2",
-                                "time_offset", "cross1", "cross2", "source", "det_x", "det_y"])
+            self._csv.writerow(["t", "a1", "a2", "alt", "az", "tgt1", "tgt2", "cmd1", "cmd2",
+                                "time_offset", "cross1", "cross2", "source", "det_x", "det_y",
+                                "lit", "open"])
+
+    def altaz(self, pos=None):
+        """Where the telescope is actually pointing, in the sky the user sees."""
+        pos = self.mount.last[1] if pos is None else pos
+        ha, dec = geo.axes_to_hadec(pos[0], pos[1])
+        alt, az = geo.hadec_to_altaz(ha, dec, self.lat)
+        return float(alt), float(az)
 
     def cross_at(self, t):
         if self.t_update is None:
@@ -57,10 +74,27 @@ class Tracker:
         return p + self.cross_at(t), v + self.cross_rate
 
     # ---- vision ----
-    def _vision(self, name, det):
+    def _jump_allowance(self, lost_for):
+        """How far from the estimate a detection may sit. Grows while we coast blind (clouds),
+        because the prediction drifts, but never far enough to let a random star take over."""
+        extra = self.tr["reacquire_growth_arcmin_per_s"] * max(0.0, lost_for - self.tr["lost_timeout_s"])
+        return min(self.tr["max_offset_jump_arcmin"] + extra, self.tr["max_reacquire_arcmin"])
+
+    def _search_gate(self, name, now):
+        """Restrict the search to where the ISS can plausibly be, instead of the whole frame."""
+        cam = self.cams[name]
         cal = self.cal.get(name)
         if cal is None:
+            cam.gate = None
             return
+        radius = self._jump_allowance(now - self.last_good) / 60.0 * cal_px_per_deg(cal)
+        cam.gate = (cal["boresight"][0], cal["boresight"][1],
+                    min(radius, 0.5 * max(cam.width, cam.height)))
+
+    def _vision(self, name, det):
+        cal = self.cal.get(name)
+        if cal is None or not self.visible:
+            return  # behind a building or in shadow: anything we detect is not the ISS
         self.last_seen[name] = det.t
         if name == "main":
             self.main_streak += 1
@@ -79,6 +113,13 @@ class Tracker:
         p, v = self.traj.at(det.t + self.time_offset)
         o = iss - p - self.cross_at(det.t)
         o[0] = geo.wrap180(o[0])
+
+        # A detection implying a big jump is another object (star, hot pixel, another satellite).
+        jump = float(np.hypot(*(o * geo.sky_metric(meas[1])))) * 60
+        if np.isfinite(self.last_good) and jump > self._jump_allowance(det.t - self.last_good):
+            self.rejected += 1
+            return
+        self.last_good = det.t
 
         g = geo.sky_metric(meas[1]) ** 2
         vv = float(np.sum(g * v * v))
@@ -104,7 +145,7 @@ class Tracker:
                 self.log("main camera lost target, back to guide")
             self.main_streak = 0
         if "guide" in self.cams and now - self.last_seen["guide"] > timeout:
-            self.cams["guide"].gate = None
+            self._search_gate("guide", now)
         if all(now - t > timeout for t in self.last_seen.values()) and self.source != "predict":
             self.log("target lost, following prediction")
             self.source = "predict"
@@ -113,6 +154,29 @@ class Tracker:
     # ---- control ----
     def step(self):
         now = self.clock.now()
+        # The TLE timing error shifts the real shadow entry, but only by seconds. While acquiring,
+        # time_offset also absorbs pointing error and can swing far, so clamp its effect here -
+        # otherwise a wild estimate could make us declare shadow and stop believing the cameras.
+        t_look = now + np.clip(self.time_offset, -SHADOW_OFFSET_CLAMP_S, SHADOW_OFFSET_CLAMP_S)
+        lit = self.traj.illum_at(t_look)
+        open_sky = self.traj.open_at(t_look)
+        visible = lit >= self.tr["shadow_threshold"] and open_sky >= 0.5
+        if visible != self.visible:
+            reason = "shadow" if lit < self.tr["shadow_threshold"] else "blocked"
+            if not visible:
+                self.log(f"ISS {'entering Earths shadow' if reason == 'shadow' else 'behind an obstruction'}"
+                         " - coasting on prediction")
+                self.source = reason
+                self.main_streak = 0
+                self.cross_rate[:] = 0.0
+                for cam in self.cams.values():
+                    cam.gate = None
+            else:
+                self.log("ISS should be back in view - looking for it again")
+                self.source = "predict"
+            if self.on_visibility:
+                self.on_visibility(visible, reason)
+        self.lit, self.open_sky, self.visible = lit, open_sky, visible
         for name, cam in self.cams.items():
             _, det, seq = cam.latest()
             if seq != self.seq[name]:
@@ -121,7 +185,8 @@ class Tracker:
                     self._vision(name, det)
                 elif name == "main":
                     self.main_streak = 0 if self.main_streak < self.tr["main_handoff_frames"] else self.main_streak
-        self._check_timeouts(now)
+        if self.visible:
+            self._check_timeouts(now)
 
         t_meas, meas = self.mount.last
         p_meas, _ = self.target(t_meas)
@@ -134,13 +199,17 @@ class Tracker:
         pos = self.mount.set_rates(*cmd)
         if self._csv:
             px = self.last_px.get(self.source, (np.nan, np.nan))
-            self._csv.writerow([f"{now:.3f}", f"{pos[0]:.5f}", f"{pos[1]:.5f}", f"{p_meas[0]:.5f}",
+            alt, az = self.altaz(pos)
+            self._csv.writerow([f"{now:.3f}", f"{pos[0]:.5f}", f"{pos[1]:.5f}",
+                                f"{alt:.3f}", f"{az:.3f}", f"{p_meas[0]:.5f}",
                                 f"{p_meas[1]:.5f}", f"{cmd[0]:.5f}", f"{cmd[1]:.5f}",
                                 f"{self.time_offset:.3f}", f"{self.cross[0]:.5f}", f"{self.cross[1]:.5f}",
-                                self.source, f"{px[0]:.1f}", f"{px[1]:.1f}"])
+                                self.source, f"{px[0]:.1f}", f"{px[1]:.1f}", f"{self.lit:.3f}",
+                                f"{self.open_sky:.0f}"])
         return err
 
-    def run(self, lead_s=None, on_start=None, on_end=None):
+    def run(self, lead_s=None, on_start=None, on_end=None, on_visibility=None):
+        self.on_visibility = on_visibility
         lead_s = self.tr["lead_s"] if lead_s is None else lead_s
         traj = self.traj
         self.mount.enable(True)
@@ -166,7 +235,10 @@ class Tracker:
                 err = self.step()
                 if now - last_report > 2.0:
                     sky = err * geo.sky_metric(self.mount.last[1][1]) * 60
-                    self.log(f"t{now - traj.t_start:+6.1f}s src={self.source:7s} err=({sky[0]:+6.2f},{sky[1]:+6.2f})' "
+                    alt, az = self.altaz()
+                    self.log(f"t{now - traj.t_start:+6.1f}s src={self.source:7s} "
+                             f"alt {alt:5.1f} az {az:5.1f} {geo.compass(az):3s} "
+                             f"err=({sky[0]:+6.2f},{sky[1]:+6.2f})' "
                              f"dt={self.time_offset:+5.2f}s cross=({self.cross[0] * 60:+5.1f},{self.cross[1] * 60:+5.1f})'")
                     last_report = now
                 self.clock.sleep(self.dt - (time.monotonic() - tick) * self.clock.speed)

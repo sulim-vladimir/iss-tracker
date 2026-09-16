@@ -8,6 +8,7 @@ from scipy.interpolate import CubicSpline
 from skyfield.api import EarthSatellite, load, wgs84
 
 from . import geometry as geo
+from . import mask as mask_mod
 from .config import ROOT
 
 # Historical ISS TLE (2008) used only by the simulator.
@@ -78,7 +79,8 @@ def get_tle(cfg, offline=False):
         except OSError as e:
             print(f"TLE download failed ({e}), using cache")
     if not path.exists():
-        raise RuntimeError(f"no TLE available at {path}")
+        raise RuntimeError(f"no TLE cached at {path} - run once with network access "
+                           f"(without --offline) to fetch one from {cfg['tle']['url']}")
     name, l1, l2 = path.read_text().splitlines()[:3]
     return name.strip(), l1, l2
 
@@ -102,13 +104,29 @@ def sat_hadec(sat, site, t_unix):
 
 # ---- stars / planets via astropy (bundled ephemeris, no downloads) ----
 
+def _init_astropy():
+    """No network in the field, and dates past the bundled Earth-orientation table are fine:
+    the degraded accuracy is at the arcsecond level, far below our pointing errors."""
+    import warnings
+
+    from astropy.utils import iers
+    from astropy.utils.exceptions import AstropyWarning
+
+    iers.conf.auto_download = False
+    warnings.filterwarnings("ignore", message=".*polar motions.*", category=AstropyWarning)
+    warnings.filterwarnings("ignore", message=".*IERS table.*", category=AstropyWarning)
+    try:
+        iers.conf.iers_degraded_accuracy = "ignore"  # option(error, warn, ignore)
+    except (AttributeError, TypeError):  # older astropy, or a different option set
+        pass
+
+
 def _astropy_altaz(coord_fn, site, t_unix):
     import astropy.units as u
     from astropy.coordinates import AltAz, EarthLocation
     from astropy.time import Time
-    from astropy.utils import iers
 
-    iers.conf.auto_download = False
+    _init_astropy()
     loc = EarthLocation(lat=site.lat * u.deg, lon=site.lon * u.deg, height=site.elevation * u.m)
     t = Time(t_unix, format="unix")
     frame = AltAz(obstime=t, location=loc, pressure=site.pressure_mbar * u.hPa,
@@ -140,20 +158,46 @@ def target_hadec(name, site, t_unix):
     return float(ha), float(dec), float(alt), float(az)
 
 
-def sun_state(sat, site, t_unix):
-    """(ISS sunlit, sun altitude at site) at one instant."""
+R_EARTH = 6378.137
+R_ATMOS = R_EARTH + 80.0   # opaque/absorbing shell: the ISS fades before geometric umbra
+R_SUN = 696000.0
+
+
+def sun_vector(t_unix):
+    """Unit vector to the Sun and its distance (km), geocentric, vectorised."""
     import astropy.units as u
     from astropy.coordinates import get_sun
     from astropy.time import Time
 
-    t = Time(t_unix, format="unix")
-    s = get_sun(t).cartesian.xyz.to(u.km).value
-    u_sun = s / np.linalg.norm(s)
-    r = sat.at(unix_to_time(t_unix)).position.km
-    along = r @ u_sun
-    sunlit = along > 0 or np.linalg.norm(r - along * u_sun) > 6371.0
+    _init_astropy()
+
+    s = get_sun(Time(np.atleast_1d(t_unix), format="unix")).cartesian.xyz.to(u.km).value.T
+    d = np.linalg.norm(s, axis=-1)
+    return s / d[:, None], d
+
+
+def illumination(sat, t_unix):
+    """Sunlit fraction: 1 in full sun, 0 in umbra, in between inside the penumbra."""
+    t = np.atleast_1d(np.asarray(t_unix, dtype=float))
+    r = np.atleast_2d(sat.at(unix_to_time(t)).position.km.T)
+    u_sun, d_sun = sun_vector(t)
+    along = np.sum(r * u_sun, axis=1)
+    perp = np.linalg.norm(r - along[:, None] * u_sun, axis=1)
+    behind = along < 0
+    ell = np.abs(along)
+    r_umbra = R_ATMOS * (1.0 - ell / (R_ATMOS * d_sun / (R_SUN - R_ATMOS)))
+    r_penumbra = R_ATMOS * (1.0 + ell / (R_ATMOS * d_sun / (R_SUN + R_ATMOS)))
+    frac = np.clip((perp - r_umbra) / np.maximum(r_penumbra - r_umbra, 1e-6), 0.0, 1.0)
+    out = np.where(behind, frac, 1.0)
+    return out if np.ndim(t_unix) else float(out[0])
+
+
+def sun_state(sat, site, t_unix):
+    """(sunlit fraction, sun altitude at site) at one instant."""
+    from astropy.coordinates import get_sun
+
     sun_alt, _ = _astropy_altaz(lambda tt, loc: get_sun(tt), site, t_unix)
-    return bool(sunlit), float(sun_alt)
+    return float(illumination(sat, t_unix)), float(sun_alt)
 
 
 def find_passes(sat, site, t0_unix, hours):
@@ -192,11 +236,20 @@ def axis_rate_limits(mount_cfg):
 class Trajectory:
     """Mechanical axis angles vs unix time for one pass, one pier side."""
 
-    def __init__(self, t, a1, a2, alt, side, t_start, t_end):
+    def __init__(self, t, a1, a2, alt, side, t_start, t_end, lit=None, open_sky=None):
         self.t, self.a1, self.a2, self.alt, self.side = t, a1, a2, alt, side
         self.t_start, self.t_end = t_start, t_end
+        self.lit = np.ones_like(t) if lit is None else lit
+        self.open_sky = np.ones_like(t) if open_sky is None else np.asarray(open_sky, dtype=float)
         self._s = [CubicSpline(t, a1), CubicSpline(t, a2)]
         self._d = [s.derivative() for s in self._s]
+
+    def illum_at(self, tq):
+        return float(np.interp(tq, self.t, self.lit))
+
+    def open_at(self, tq):
+        """1 where the sky is clear of known obstructions, 0 behind a building/frame."""
+        return float(np.interp(tq, self.t, self.open_sky))
 
     def at(self, tq):
         """Position and velocity (deg, deg/s). Outside the sampled span: endpoint, zero velocity."""
@@ -219,10 +272,19 @@ def _longest_run(mask):
     return best, best_len
 
 
-def plan_pass(sat, site, mount_cfg, rise, set_, dt=0.25, margin=30.0):
-    """Choose the pier side that tracks the longest continuous part of the pass."""
+def shadow_events(t, lit, threshold=0.5):
+    """Times where the ISS crosses into/out of shadow: [(unix, 'enters'|'leaves'), ...]."""
+    above = lit > threshold
+    idx = np.nonzero(np.diff(above.astype(int)))[0]
+    return [(float(t[i + 1]), "leaves" if above[i + 1] else "enters") for i in idx]
+
+
+def plan_pass(sat, site, mount_cfg, rise, set_, dt=0.25, margin=30.0, model=None, mask=None):
+    """Choose the pier side that keeps the ISS trackable, sunlit and unobstructed for longest."""
     t = np.arange(rise - margin, set_ + margin, dt)
-    ha, dec, alt, _ = sat_hadec(sat, site, t)
+    ha, dec, alt, az = sat_hadec(sat, site, t)
+    lit = illumination(sat, t)
+    open_sky = np.ones(len(t), dtype=bool) if mask is None or mask.empty else mask.visible(alt, az)
     vmax = axis_rate_limits(mount_cfg)
     lim = mount_cfg["axis1_hour_limit"]
     best = None
@@ -234,10 +296,18 @@ def plan_pass(sat, site, mount_cfg, rise, set_, dt=0.25, margin=30.0):
         ok = (alt >= site.min_altitude) & (np.abs(a1) <= lim) & (np.abs(v1) <= vmax[0]) & (np.abs(v2) <= vmax[1])
         (i0, i1), n = _longest_run(ok)
         vis = alt >= site.min_altitude
+        tracked = np.zeros_like(ok)
+        if n > 1:
+            tracked[i0:i1 + 1] = True
         report = {
             "side": side,
             "track_start": float(t[i0]), "track_end": float(t[i1]),
             "tracked_s": float(t[i1] - t[i0]) if n > 1 else 0.0,
+            "useful_s": float(np.sum(tracked & (lit > 0.5) & open_sky) * dt),
+            "sunlit_s": float(np.sum(vis & (lit > 0.5)) * dt),
+            "blocked_s": float(np.sum(vis & (lit > 0.5) & ~open_sky) * dt),
+            "windows": mask_mod.segments(t, tracked & (lit > 0.5) & open_sky),
+            "shadow": shadow_events(t[vis], lit[vis]),
             "visible_s": float(vis.sum() * dt),
             "max_rate": [float(np.abs(v1[vis]).max()), float(np.abs(v2[vis]).max())],
             "rate_limit": vmax.tolist(),
@@ -248,8 +318,10 @@ def plan_pass(sat, site, mount_cfg, rise, set_, dt=0.25, margin=30.0):
                 ("axis2_rate", np.any(vis & (np.abs(v2) > vmax[1]))),
             ) if bad],
         }
-        if best is None or report["tracked_s"] > best[0]["tracked_s"]:
+        key = (report["useful_s"], report["tracked_s"])
+        if best is None or key > (best[0]["useful_s"], best[0]["tracked_s"]):
             best = (report, a1, a2)
     report, a1, a2 = best
-    traj = Trajectory(t, a1, a2, alt, report["side"], report["track_start"], report["track_end"])
+    traj = Trajectory(t, a1, a2, alt, report["side"], report["track_start"], report["track_end"],
+                      lit, open_sky.astype(float))
     return traj, report

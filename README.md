@@ -97,6 +97,66 @@ an imperfect camera calibration (3% scale, 2° rotation). Current result for a 6
 main camera in control 99% of the time, true error median 12″ / 95th percentile 41″
 (main camera half-height is 7.3′).
 
+## Earth's shadow
+
+The ISS is only visible while sunlit, and passes routinely fade out partway through (evening) or
+appear partway in (morning). `illumination()` computes a conical umbra/penumbra with an 80 km
+absorbing shell, so the fade takes a few seconds, as it does in reality.
+
+* `issctl passes` reports `lit` (sunlit seconds above the horizon), `usable` (trackable **and** lit)
+  and when the ISS enters or leaves shadow. Passes are chosen by `usable`, not by altitude.
+* While the ISS is in shadow the tracker ignores the cameras entirely and coasts on prediction,
+  keeping the learned time offset and axis offsets but freezing their rates. This matters: with the
+  ISS invisible, the brightest blob in the frame is a **star**, and following it would drag the mount
+  away. On shadow exit the gates reopen and it re-acquires.
+* Detections that imply a jump larger than `max_offset_jump_arcmin` are rejected once locked, which
+  covers stars, hot pixels and satellites crossing the frame.
+* SER recording pauses in shadow.
+
+Coasting accuracy in simulation (165 s of shadow after a 104 s lit segment): median 199", 95th
+percentile 693". That stays inside the main camera 69% of the time, and always inside a wide guide
+field, so a morning re-acquisition should succeed.
+
+## Obstructions and clouds
+
+Two different problems, handled differently.
+
+**Mapped obstructions** (balcony walls, window frame, neighbouring buildings) go in `config.toml` as
+azimuth/altitude rectangles:
+
+```toml
+[site.sky]
+openings = [[100, 260, 18, 80]]   # a south-facing balcony
+blockers = [[168, 176, 0, 90]]    # a window frame post
+```
+
+`issctl passes` then reports `blocked` seconds and splits each pass into **usable windows**, and
+picks passes by usable time rather than altitude. The tracker coasts through a mapped obstruction
+exactly as it does through shadow, and looks again on the far side. To build the mask, point at an
+obstruction edge in the console and press `m` - it prints the azimuth/altitude to put in the config.
+
+**Clouds** cannot be predicted, so the tracker keeps following its model and keeps looking. Two
+mechanisms stop it locking onto a star in the gap:
+
+* detections that imply a jump beyond `max_offset_jump_arcmin` are rejected, and that limit grows by
+  `reacquire_growth_arcmin_per_s` while coasting (the prediction drifts), capped at
+  `max_reacquire_arcmin`;
+* the search is restricted to a circle around the boresight that grows the same way, instead of
+  accepting the brightest thing anywhere in the frame.
+
+Simulated results for the same pass (104 s lit, then shadow):
+
+| Case | Median error while coasting | Inside main FOV |
+|---|---|---|
+| 3 cloud gaps (4-12 s) | 54" | 100% |
+| Mapped building (30 s) | 184" | 100% |
+| Earth's shadow (165 s) | 209" | 68% |
+
+```bash
+python -m issctl track --sim --clouds 3          # unpredicted gaps
+python -m issctl track --sim --config mask.toml  # mapped obstruction
+```
+
 ## Known limits / next steps
 
 * **Equatorial geometry**: high passes need fast RA rates and can cross axis1 limits. In the sim pass

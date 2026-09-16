@@ -11,6 +11,7 @@ from . import geometry as geo
 from . import predict as pr
 from .clock import Clock
 from .config import ROOT, load_config, load_state, save_state
+from .mask import SkyMask
 
 
 def fmt_t(u):
@@ -20,16 +21,57 @@ def fmt_t(u):
 def describe(rep):
     lim = ",".join(rep["limited_by"]) or "-"
     return (f"side={rep['side']:12s} track {rep['tracked_s']:4.0f}/{rep['visible_s']:4.0f}s "
+            f"lit {rep['sunlit_s']:4.0f}s blocked {rep['blocked_s']:4.0f}s usable {rep['useful_s']:4.0f}s "
             f"peak {rep['max_rate'][0]:.2f}/{rep['max_rate'][1]:.2f} deg/s "
             f"axis1 {rep['axis1_range'][0]:+.0f}..{rep['axis1_range'][1]:+.0f} limits: {lim}")
 
 
-def list_passes(cfg, sat, site, t0, hours):
+compass = geo.compass
+
+
+def altaz_at(sat, site, times):
+    _, _, alt, az = pr.sat_hadec(sat, site, np.atleast_1d(np.asarray(times, dtype=float)))
+    return np.atleast_1d(alt), np.atleast_1d(az)
+
+
+def sky_path(sat, site, p):
+    """Where the pass sits in the sky: rise -> culmination -> set."""
+    alt, az = altaz_at(sat, site, [p["rise"], p["culm"], p["set"]])
+    return (f"rises az {az[0]:3.0f} {compass(az[0]):3s} -> alt {alt[1]:2.0f} az {az[1]:3.0f} "
+            f"{compass(az[1]):3s} -> sets az {az[2]:3.0f} {compass(az[2]):3s}")
+
+
+def describe_windows(sat, site, rep, t_ref):
+    out = []
+    for a, b in rep["windows"]:
+        alt, az = altaz_at(sat, site, [a, b])
+        out.append(f"{a - t_ref:+.0f}..{b - t_ref:+.0f}s (alt {alt[0]:.0f}->{alt[1]:.0f}, "
+                   f"az {az[0]:.0f} {compass(az[0])}->{az[1]:.0f} {compass(az[1])})")
+    return ", ".join(out)
+
+
+def describe_shadow(rep, t_ref=None):
+    if not rep["shadow"]:
+        return "sunlit throughout" if rep["sunlit_s"] > 0 else "in shadow throughout"
+    return ", ".join(f"{what} shadow at " + (f"{t - t_ref:+.0f}s" if t_ref else fmt_t(t))
+                     for t, what in rep["shadow"])
+
+
+def list_passes(cfg, sat, site, t0, hours, mask=None):
     rows = []
     for p in pr.find_passes(sat, site, t0, hours):
-        _, rep = pr.plan_pass(sat, site, cfg["mount"], p["rise"], p["set"])
-        sunlit, sun_alt = pr.sun_state(sat, site, p["culm"])
-        vis = "visible" if sunlit and sun_alt < -4 else ("day" if sun_alt >= -4 else "shadow")
+        _, rep = pr.plan_pass(sat, site, cfg["mount"], p["rise"], p["set"], mask=mask)
+        _, sun_alt = pr.sun_state(sat, site, p["culm"])
+        if sun_alt >= -4:
+            vis = "day"
+        elif rep["sunlit_s"] <= 0:
+            vis = "shadow"
+        elif rep["useful_s"] <= 0:
+            vis = "blocked" if rep["blocked_s"] > 0 else "shadow"
+        elif rep["useful_s"] < 20:
+            vis = "brief"
+        else:
+            vis = "visible"
         rows.append((p, rep, vis))
     return rows
 
@@ -37,10 +79,15 @@ def list_passes(cfg, sat, site, t0, hours):
 def cmd_passes(args, cfg):
     site = pr.Site(cfg)
     sat = pr.make_satellite(pr.get_tle(cfg, offline=args.offline))
+    mask = SkyMask.from_config(cfg)
     now = time.time()
-    print(f"TLE age {pr.tle_age_days(sat, now):.1f} days")
-    for i, (p, rep, vis) in enumerate(list_passes(cfg, sat, site, now, args.hours)):
+    print(f"TLE age {pr.tle_age_days(sat, now):.1f} days | sky: {mask.describe()}")
+    for i, (p, rep, vis) in enumerate(list_passes(cfg, sat, site, now, args.hours, mask)):
         print(f"{i:2d} {fmt_t(p['rise'])}  max {p['max_alt']:4.1f}  {vis:7s} {describe(rep)}")
+        print(f"   {sky_path(sat, site, p)}"
+              + (f" | {describe_shadow(rep)}" if rep["shadow"] else ""))
+        if rep["windows"]:
+            print(f"   usable: {describe_windows(sat, site, rep, rep['track_start'])}")
 
 
 def start_preview(cams, state, port):
@@ -218,6 +265,11 @@ def cmd_console(args, cfg):
                     persist()
                     ui["msg"] = "camera calibration saved"
                 busy(do_cal)
+            elif k == ord("m"):
+                pos = mount.position()
+                ha_m, dec_m = geo.axes_to_hadec(*pos)
+                alt_m, az_m = geo.hadec_to_altaz(ha_m, dec_m, site.lat)
+                ui["msg"] = f"sky mask point: az {float(az_m):.1f} alt {float(alt_m):.1f}"
             elif k == ord("x") and cam_names:
                 sel = (sel + 1) % len(cam_names)
             elif k in (ord("-"), ord("=")) and cam_names:
@@ -231,7 +283,7 @@ def cmd_console(args, cfg):
             scr.erase()
             lines = [
                 "ISS mount console   q quit | arrows jog (toggle) | space stop | 1-5 speed | t sidereal",
-                "                    H set home | s sync | g goto | c calibrate cams | x select cam | -/= exposure",
+                "                    H set home | s sync | g goto | c calibrate cams | m mask point | x cam | -/= exposure",
                 "",
                 f"axis1 {pos[0]:+9.4f}   axis2 {pos[1]:+9.4f}   side {'east_looking' if pos[1] <= 90 else 'west_looking'}",
                 f"HA {float(ha):+8.3f}   Dec {float(dec):+8.3f}   Alt {float(alt):6.2f}   Az {float(az):6.2f}",
@@ -281,14 +333,25 @@ def cmd_track(args, cfg):
 
         site = pr.Site(cfg)
         sat = pr.make_satellite(pr.SIM_TLE)
+        mask = SkyMask.from_config(cfg)
         passes = pr.find_passes(sat, site, pr.time_to_unix(sat.epoch), 48)
-        p = passes[args.pass_index] if args.pass_index is not None else max(passes, key=lambda p: p["max_alt"])
-        traj, rep = pr.plan_pass(sat, site, cfg["mount"], p["rise"], p["set"])
+        if args.pass_index is not None:
+            p = passes[args.pass_index]
+            traj, rep = pr.plan_pass(sat, site, cfg["mount"], p["rise"], p["set"], mask=mask)
+        else:  # prefer a pass the ISS is actually visible for, else the highest
+            plans = [(p, *pr.plan_pass(sat, site, cfg["mount"], p["rise"], p["set"], mask=mask)) for p in passes]
+            p, traj, rep = max(plans, key=lambda x: (x[2]["useful_s"], x[0]["max_alt"]))
         clock = Clock(start_unix=traj.t_start - args.sim_lead, speed=args.speed)
         state = {"index": HOME.tolist()}
         start = traj.at(traj.t_start)[0] + [1.0, -0.5] if args.sim_lead < 60 else HOME
         mount = SimMount(cfg, state, clock, start=start)
-        world = SimWorld(cfg, sat, site, mount, time_error_s=args.time_error)
+        clouds = []
+        if args.clouds:
+            from .sim import random_clouds
+            clouds = random_clouds(traj.t_start, traj.t_end, args.clouds, seed=args.cloud_seed)
+            print("clouds at " + ", ".join(f"{a - traj.t_start:+.0f}..{b - traj.t_start:+.0f}s" for a, b in clouds))
+        world = SimWorld(cfg, sat, site, mount, time_error_s=args.time_error, traj=traj,
+                         mask=mask, clouds=clouds)
         state["cameras"] = world.calibration_estimate()
         cams = {n: SimCamera(n, cfg["cameras"][n], clock, world).start() for n in ("guide", "main")}
         lead = args.sim_lead
@@ -296,16 +359,17 @@ def cmd_track(args, cfg):
         clock = Clock()
         site = pr.Site(cfg)
         sat = pr.make_satellite(pr.get_tle(cfg, offline=args.offline))
-        rows = list_passes(cfg, sat, site, time.time() - 60, 24)
+        mask = SkyMask.from_config(cfg)
+        rows = list_passes(cfg, sat, site, time.time() - 60, 24, mask)
         if not rows:
             print("no passes in the next 24 h")
             return
         if args.pass_index is not None:
             p, rep, vis = rows[args.pass_index]
         else:
-            cand = [r for r in rows if r[2] == "visible" and r[1]["tracked_s"] > 0] or rows
+            cand = [r for r in rows if r[2] == "visible" and r[1]["useful_s"] > 0] or rows
             p, rep, vis = cand[0]
-        traj, rep = pr.plan_pass(sat, site, cfg["mount"], p["rise"], p["set"])
+        traj, rep = pr.plan_pass(sat, site, cfg["mount"], p["rise"], p["set"], mask=mask)
         if "cameras" not in state:
             print("warning: no camera calibration in data/state.json - run console and press 'c'")
         mount = open_mount(cfg, state, clock)
@@ -313,6 +377,10 @@ def cmd_track(args, cfg):
         lead = None
 
     print(f"pass {fmt_t(p['rise'])} max {p['max_alt']:.1f} deg: {describe(rep)}")
+    print(f"sky path: {sky_path(sat, site, p)}")
+    print(f"illumination: {describe_shadow(rep, traj.t_start)} (relative to track start)")
+    if rep["windows"]:
+        print(f"usable windows: {describe_windows(sat, site, rep, traj.t_start)}")
     if rep["tracked_s"] <= 0:
         print("pass not trackable with current limits")
         return
@@ -344,15 +412,19 @@ def cmd_track(args, cfg):
             recorder.close()
             print(f"recorded {recorder.frames} frames, dropped {recorder.dropped}")
 
+    def on_visibility(visible, reason):
+        if recorder:
+            recorder.active = visible  # nothing to record while the ISS is dark or hidden
+
     try:
-        tracker.run(lead_s=lead, on_start=on_start, on_end=on_end)
+        tracker.run(lead_s=lead, on_start=on_start, on_end=on_end, on_visibility=on_visibility)
     except KeyboardInterrupt:
         print("interrupted")
     finally:
         for c in cams.values():
             c.stop()
         mount.close()
-    print(f"log: {log_path}")
+    print(f"log: {log_path}  (rejected detections: {tracker.rejected})")
     if args.sim:
         from .sim import evaluate
         evaluate(world, cfg, log_path)
@@ -385,6 +457,8 @@ def main(argv=None):
     p.add_argument("--speed", type=float, default=1.0, help="simulation speed factor")
     p.add_argument("--sim-lead", type=float, default=20.0, help="seconds before track start to begin")
     p.add_argument("--time-error", type=float, default=1.5, help="simulated TLE timing error, s")
+    p.add_argument("--clouds", type=int, default=0, help="simulate N unpredicted cloud gaps")
+    p.add_argument("--cloud-seed", type=int, default=0)
 
     args = ap.parse_args(argv)
     cfg = load_config(args.config)

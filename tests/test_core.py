@@ -9,7 +9,8 @@ from issctl.clock import Clock
 from issctl.config import load_config
 from issctl.detect import detect
 from issctl.mount import SimMount
-from issctl.predict import SIM_TLE, Site, find_passes, make_satellite, plan_pass, time_to_unix
+from issctl.predict import (SIM_TLE, Site, find_passes, illumination, make_satellite, plan_pass,
+                            shadow_events, sun_vector, time_to_unix, unix_to_time)
 
 
 @pytest.fixture(scope="module")
@@ -83,6 +84,33 @@ def test_sim_mount_move(cfg):
     target = m.position() + [1.0, -0.5]
     end = m.move_to(target, timeout=10)
     assert np.all(np.abs(end - target) < 0.005)
+
+
+def test_illumination_geometry(cfg):
+    sat = make_satellite(SIM_TLE)
+    t0 = time_to_unix(sat.epoch)
+    t = t0 + np.arange(0, 5600, 10.0)  # one full orbit
+    lit = illumination(sat, t)
+    assert np.all((lit >= 0) & (lit <= 1))
+    assert lit.max() > 0.99 and lit.min() < 0.01           # a low orbit has day and night
+    assert 0.25 < np.mean(lit > 0.5) < 0.85                 # roughly a third in shadow
+    # sunward of Earth the satellite is always fully lit
+    r = sat.at(unix_to_time(t)).position.km.T
+    u_sun, _ = sun_vector(t)
+    assert np.all(lit[np.sum(r * u_sun, axis=1) > 0] == 1.0)
+    # entering/leaving shadow takes a few seconds, not instants
+    fine = t0 + np.arange(0, 5600, 0.5)
+    lf = illumination(sat, fine)
+    partial = np.sum((lf > 0.02) & (lf < 0.98)) * 0.5
+    assert 2 < partial < 120
+
+
+def test_shadow_events():
+    t = np.arange(0, 100, 1.0)
+    lit = np.where((t > 30) & (t < 70), 0.0, 1.0)
+    ev = shadow_events(t, lit)
+    assert [e[1] for e in ev] == ["enters", "leaves"]
+    assert abs(ev[0][0] - 31) < 1.5 and abs(ev[1][0] - 70) < 1.5
 
 
 def test_pass_planning(cfg):

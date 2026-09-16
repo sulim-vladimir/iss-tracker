@@ -36,6 +36,14 @@ def hadec_to_altaz(ha, dec, lat):
     return alt, az
 
 
+COMPASS = ("N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
+           "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW")
+
+
+def compass(az):
+    return COMPASS[int((float(az) % 360) / 22.5 + 0.5) % 16]
+
+
 def wrap180(x):
     return (np.asarray(x) + 180.0) % 360.0 - 180.0
 

@@ -25,6 +25,11 @@ def ideal_calibration(cam_cfg, rotation_deg=0.0, dec_cal=0.0, parity=1):
     return {"J": J.tolist(), "dec_cal": dec_cal, "boresight": [(w - 1) / 2, (h - 1) / 2]}
 
 
+def cal_px_per_deg(cal):
+    """Image scale in pixels per degree on the sky (axis2 is a pure sky rotation)."""
+    return float(np.linalg.norm(np.array(cal["J"], dtype=float)[:, 1]))
+
+
 def jacobian(cal, axis2):
     J = np.array(cal["J"], dtype=float)
     dec = float(geo.axis2_to_dec(axis2))
