@@ -13,6 +13,64 @@ def _ticks(unix):
     return int((unix + UNIX_TO_SER_TICKS) * 1e7)
 
 
+class RecordControl:
+    """Start/stop recording on demand. Each start opens a new SER file; recording is also
+    suspended automatically whenever the ISS is not visible (shadow, obstruction)."""
+
+    def __init__(self, cam, out_dir, bayer=None, telescope="", instrument="", prefix="iss"):
+        self.cam = cam
+        self.out_dir = out_dir
+        self.bayer, self.telescope, self.instrument, self.prefix = bayer, telescope, instrument, prefix
+        self.writer = None
+        self.enabled = False
+        self.visible = True
+        self.last = None  # summary of the most recently closed file
+
+    @property
+    def available(self):
+        return self.cam is not None
+
+    def set_enabled(self, on):
+        if not self.available:
+            return
+        if on and self.writer is None:
+            self.out_dir.mkdir(parents=True, exist_ok=True)
+            path = self.out_dir / f"{self.prefix}-{time.strftime('%Y%m%d-%H%M%S')}.ser"
+            self.writer = SerWriter(path, self.cam.width, self.cam.height, bayer=self.bayer,
+                                    telescope=self.telescope, instrument=self.instrument)
+            self.cam.sinks.append(self.writer)
+        self.enabled = bool(on)
+        self._apply()
+        if not on:
+            self.close()
+
+    def set_visible(self, visible):
+        self.visible = bool(visible)
+        self._apply()
+
+    def _apply(self):
+        if self.writer:
+            self.writer.active = self.enabled and self.visible
+
+    def state(self):
+        if not self.available:
+            return None
+        w = self.writer
+        return {"available": True, "recording": self.enabled,
+                "paused": self.enabled and not self.visible,
+                "frames": w.frames if w else 0, "dropped": w.dropped if w else 0,
+                "path": w.path.name if w else None}
+
+    def close(self):
+        if self.writer:
+            if self.writer in self.cam.sinks:
+                self.cam.sinks.remove(self.writer)
+            self.writer.close()
+            self.last = {"path": self.writer.path, "frames": self.writer.frames,
+                         "dropped": self.writer.dropped}
+            self.writer = None
+
+
 class SerWriter:
     def __init__(self, path, width, height, bayer=None, telescope="", instrument=""):
         self.path = path

@@ -17,6 +17,7 @@ class Camera:
         self.width = cam_cfg["width"] // cam_cfg["bin"]
         self.height = cam_cfg["height"] // cam_cfg["bin"]
         self.exposure_ms = cam_cfg["exposure_ms"]
+        self.gain = cam_cfg["gain"]
         self.gate = None
         self.sinks = []
         self.fps = 0.0
@@ -32,6 +33,12 @@ class Camera:
 
     def _close(self):
         pass
+
+    def set_exposure(self, ms):
+        self.exposure_ms = max(0.001, float(ms))
+
+    def set_gain(self, gain):
+        self.gain = max(0, int(gain))
 
     def _grab(self):
         raise NotImplementedError
@@ -103,11 +110,12 @@ class AsiCamera(Camera):
         self.cam, self._asi = cam, asi
 
     def set_exposure(self, ms):
-        self.exposure_ms = ms
-        self.cam.set_control_value(self._asi.ASI_EXPOSURE, int(ms * 1000))
+        super().set_exposure(ms)
+        self.cam.set_control_value(self._asi.ASI_EXPOSURE, int(self.exposure_ms * 1000))
 
     def set_gain(self, gain):
-        self.cam.set_control_value(self._asi.ASI_GAIN, int(gain))
+        super().set_gain(gain)
+        self.cam.set_control_value(self._asi.ASI_GAIN, self.gain)
 
     def _grab(self):
         try:

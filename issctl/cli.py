@@ -90,10 +90,39 @@ def cmd_passes(args, cfg):
             print(f"   usable: {describe_windows(sat, site, rep, rep['track_start'])}")
 
 
-def start_preview(cams, state, port):
+def make_controls(cams, recorder=None):
+    """Callbacks the preview page uses for exposure, gain and recording."""
+
+    def state():
+        out = {"cams": {}, "record": recorder.state() if recorder else None}
+        for n, c in cams.items():
+            _, det, _ = c.latest()
+            out["cams"][n] = {"fps": c.fps, "exposure_ms": c.exposure_ms, "gain": c.gain,
+                              "det": [round(det.x, 1), round(det.y, 1)] if det else None}
+        return out
+
+    def exposure(name, ms=None, factor=None):
+        cam = cams.get(name)
+        if cam:
+            cam.set_exposure(float(ms) if ms else cam.exposure_ms * float(factor))
+
+    def gain(name, value=None, delta=None):
+        cam = cams.get(name)
+        if cam:
+            cam.set_gain(int(float(value)) if value else cam.gain + int(float(delta)))
+
+    def record(on):
+        if recorder:
+            recorder.set_enabled(on)
+
+    return {"state": state, "exposure": exposure, "gain": gain,
+            "record": record if recorder and recorder.available else None}
+
+
+def start_preview(cams, state, port, status=None, controls=None):
     from .preview import Preview
     try:
-        Preview(cams, state, port).start()
+        Preview(cams, state, port, status=status, controls=controls).start()
         print(f"preview on http://localhost:{port}/")
     except OSError as e:
         print(f"preview unavailable on port {port}: {e} (use --port)")
@@ -156,8 +185,26 @@ def cmd_console(args, cfg):
         mount, cams = SimMount(cfg, state, clock), {}
     else:
         mount, cams = open_mount(cfg, state, clock), open_cameras(cfg, clock)
+    def status_lines(name):
+        if name != "guide":
+            return []
+        pos = mount.position()
+        ha_p, dec_p = geo.axes_to_hadec(*pos)
+        alt_p, az_p = geo.hadec_to_altaz(ha_p, dec_p, site.lat)
+        return [
+            f"{datetime.datetime.now():%H:%M:%S}",
+            f"alt {float(alt_p):5.1f}  az {float(az_p):5.1f} {geo.compass(float(az_p))}",
+            f"axis1 {pos[0]:+.3f}  axis2 {pos[1]:+.3f}",
+        ]
+
+    from .ser import RecordControl
+    main_cfg = cfg["cameras"]["main"]
+    recorder = RecordControl(cams.get("main"), ROOT / main_cfg["record_dir"],
+                             bayer=main_cfg.get("bayer"), telescope=f"{main_cfg['focal_length_mm']}mm",
+                             instrument=main_cfg["name_match"])
     if cams and cfg["preview"]["enabled"]:
-        start_preview(cams, state, args.port or cfg["preview"]["port"])
+        start_preview(cams, state, args.port or cfg["preview"]["port"], status=status_lines,
+                      controls=make_controls(cams, recorder))
 
     speeds = [0.004, 0.02, 0.1, 0.5, 2.0]
     ui = {"jog": np.zeros(2), "speed": 2, "tracking": False, "busy": False, "quit": False, "msg": ""}
@@ -276,6 +323,12 @@ def cmd_console(args, cfg):
                 cam = cams[cam_names[sel]]
                 if hasattr(cam, "set_exposure"):
                     cam.set_exposure(cam.exposure_ms * (1.5 if k == ord("=") else 1 / 1.5))
+                    ui["msg"] = f"{cam.name} exposure {cam.exposure_ms:.2f} ms"
+            elif k in (ord("["), ord("]")) and cam_names:
+                cam = cams[cam_names[sel]]
+                if hasattr(cam, "set_gain"):
+                    cam.set_gain(cam.gain + (25 if k == ord("]") else -25))
+                    ui["msg"] = f"{cam.name} gain {cam.gain}"
 
             pos = mount.position()
             ha, dec = geo.axes_to_hadec(*pos)
@@ -283,7 +336,7 @@ def cmd_console(args, cfg):
             scr.erase()
             lines = [
                 "ISS mount console   q quit | arrows jog (toggle) | space stop | 1-5 speed | t sidereal",
-                "                    H set home | s sync | g goto | c calibrate cams | m mask point | x cam | -/= exposure",
+                "                    H home | s sync | g goto | c calibrate | m mask point | x cam | -/= exposure | [/] gain",
                 "",
                 f"axis1 {pos[0]:+9.4f}   axis2 {pos[1]:+9.4f}   side {'east_looking' if pos[1] <= 90 else 'west_looking'}",
                 f"HA {float(ha):+8.3f}   Dec {float(dec):+8.3f}   Alt {float(alt):6.2f}   Az {float(az):6.2f}",
@@ -295,7 +348,8 @@ def cmd_console(args, cfg):
                 _, det, _ = cams[n].latest()
                 d = f"det ({det.x:7.1f},{det.y:7.1f}) flux {det.flux:8.0f}" if det else "no detection"
                 mark = ">" if i == sel else " "
-                lines.append(f"{mark}{n:5s} {cams[n].fps:5.1f} fps  exp {cams[n].exposure_ms:6.2f} ms  {d}")
+                lines.append(f"{mark}{n:5s} {cams[n].fps:5.1f} fps  exp {cams[n].exposure_ms:6.2f} ms  "
+                             f"gain {cams[n].gain:4.0f}  {d}")
             lines += ["", ui["msg"]]
             for i, line in enumerate(lines):
                 try:
@@ -310,6 +364,7 @@ def cmd_console(args, cfg):
     finally:
         ui["quit"] = True
         time.sleep(0.1)
+        recorder.close()
         persist()
         for c in cams.values():
             c.stop()
@@ -352,7 +407,8 @@ def cmd_track(args, cfg):
             print("clouds at " + ", ".join(f"{a - traj.t_start:+.0f}..{b - traj.t_start:+.0f}s" for a, b in clouds))
         world = SimWorld(cfg, sat, site, mount, time_error_s=args.time_error, traj=traj,
                          mask=mask, clouds=clouds)
-        state["cameras"] = world.calibration_estimate()
+        state["cameras"] = world.calibration_estimate(scale_error=args.cal_scale_error,
+                                                      rot_error_deg=args.cal_rot_error)
         cams = {n: SimCamera(n, cfg["cameras"][n], clock, world).start() for n in ("guide", "main")}
         lead = args.sim_lead
     else:
@@ -385,36 +441,44 @@ def cmd_track(args, cfg):
         print("pass not trackable with current limits")
         return
 
-    recorder = None
+    from .ser import RecordControl
     main_cfg = cfg["cameras"]["main"]
-    if "main" in cams and (main_cfg.get("record") and not args.sim or args.record):
-        from .ser import SerWriter
-        out = ROOT / main_cfg["record_dir"]
-        out.mkdir(exist_ok=True)
-        recorder = SerWriter(out / f"iss-{stamp}.ser", cams["main"].width, cams["main"].height,
+    recorder = RecordControl(cams.get("main"), ROOT / main_cfg["record_dir"],
                              bayer=main_cfg.get("bayer"), telescope=f"{main_cfg['focal_length_mm']}mm",
                              instrument=main_cfg["name_match"])
-        cams["main"].sinks.append(recorder)
-
-    if cams and cfg["preview"]["enabled"] and not args.no_preview:
-        start_preview(cams, state, args.port or cfg["preview"]["port"])
+    auto_record = bool(main_cfg.get("record") and not args.sim or args.record)
 
     log_path = logs / f"track-{stamp}{'-sim' if args.sim else ''}.csv"
     tracker = Tracker(cfg, state, mount, cams, clock, traj, log_path=log_path)
 
+    def status_lines(name):
+        if name != "guide":
+            return []
+        now = clock.now()
+        alt, az = tracker.altaz()
+        return [
+            f"{datetime.datetime.fromtimestamp(now):%H:%M:%S}  t{now - traj.t_start:+.1f}s",
+            f"alt {alt:5.1f}  az {az:5.1f} {geo.compass(az)}",
+            f"{tracker.source}  dt {tracker.time_offset:+.2f}s  lit {tracker.lit:.2f}",
+        ]
+
+    if cams and cfg["preview"]["enabled"] and not args.no_preview:
+        start_preview(cams, state, args.port or cfg["preview"]["port"], status=status_lines,
+                      controls=make_controls(cams, recorder))
+
     def on_start():
-        if recorder:
-            recorder.active = True
-            print(f"recording {recorder.path}")
+        if auto_record and recorder.available:
+            recorder.set_enabled(True)
+            print(f"recording {recorder.state()['path']}")
 
     def on_end():
-        if recorder:
-            recorder.close()
-            print(f"recorded {recorder.frames} frames, dropped {recorder.dropped}")
+        if recorder.writer:
+            recorder.set_enabled(False)
+            last = recorder.last
+            print(f"recorded {last['frames']} frames, dropped {last['dropped']} -> {last['path']}")
 
     def on_visibility(visible, reason):
-        if recorder:
-            recorder.active = visible  # nothing to record while the ISS is dark or hidden
+        recorder.set_visible(visible)  # nothing to record while the ISS is dark or hidden
 
     try:
         tracker.run(lead_s=lead, on_start=on_start, on_end=on_end, on_visibility=on_visibility)
@@ -457,6 +521,10 @@ def main(argv=None):
     p.add_argument("--speed", type=float, default=1.0, help="simulation speed factor")
     p.add_argument("--sim-lead", type=float, default=20.0, help="seconds before track start to begin")
     p.add_argument("--time-error", type=float, default=1.5, help="simulated TLE timing error, s")
+    p.add_argument("--cal-rot-error", type=float, default=2.0,
+                   help="simulated camera-calibration rotation error, deg")
+    p.add_argument("--cal-scale-error", type=float, default=1.03,
+                   help="simulated camera-calibration scale error (1.0 = perfect)")
     p.add_argument("--clouds", type=int, default=0, help="simulate N unpredicted cloud gaps")
     p.add_argument("--cloud-seed", type=int, default=0)
 

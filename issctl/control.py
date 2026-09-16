@@ -101,7 +101,10 @@ class Tracker:
             if self.main_streak < self.tr["main_handoff_frames"]:
                 return
         elif self.main_streak >= self.tr["main_handoff_frames"]:
-            return  # main camera is in charge
+            # Main camera is in charge; keep the guide gate on the boresight (where the ISS must
+            # be) so a handback starts from the right place instead of a stale position.
+            self._search_gate(name, det.t)
+            return
         meas = self.mount.position_at(det.t)
         if meas is None:
             return
