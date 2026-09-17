@@ -22,19 +22,20 @@ PAGE = """<!doctype html><html><head><title>ISS tracker</title>
  .panel{{background:#3b4147;border-radius:6px;padding:8px;flex:1 1 380px;min-width:320px;
           max-width:560px;box-sizing:border-box}}
  .panel img{{width:100%;display:block;border-radius:4px;background:#000}}
- h2{{font-size:15px;margin:0 0 6px}}
- .ctl{{display:flex;align-items:center;gap:6px;margin-top:8px;flex-wrap:wrap}}
+ h2{{font-size:15px;margin:0 0 5px}}
+ .ctl{{display:flex;align-items:center;gap:6px;margin-top:5px;flex-wrap:wrap}}
  .ctl label{{width:62px;color:#b9c1c8}}
- .info{{font:13px/1.5 ui-monospace,monospace;color:#cfd6dd;margin-top:6px;min-height:4.5em;
+ .info{{font:13px/1.45 ui-monospace,monospace;color:#cfd6dd;margin:4px 0 0;
         white-space:pre-wrap;overflow-wrap:anywhere}}
- .pad{{display:grid;grid-template-areas:". u ." "l c r" ". d .";gap:5px;width:170px;margin:8px 0}}
+ .info:empty{{display:none}}
+ .pad{{display:grid;grid-template-areas:". u ." "l c r" ". d .";gap:5px;width:170px;margin:6px 0}}
  .pad button{{padding:8px 0}}
  button{{background:#4d555d;color:#e8e8e8;border:0;border-radius:4px;padding:5px 11px;
          font-size:14px;cursor:pointer}}
  button:hover{{background:#5c656e}}
  input{{background:#262a2e;color:#e8e8e8;border:1px solid #5c656e;border-radius:4px;
         padding:4px;width:74px;font-size:14px}}
- .rec{{margin-top:12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}}
+ .rec{{margin-top:8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}}
  #recbtn.on,#trackbtn.on{{background:#a33;}}
  #estop{{background:#b32222;color:#fff;font-weight:600;font-size:15px;padding:9px 18px;
          margin-bottom:10px}}
@@ -183,10 +184,11 @@ function drawSky(s) {{
     svg.appendChild(el('line', {{x1: x0, y1: y0, x2: x1, y2: y1, 'stroke-width': 2,
       stroke: !open ? '#c0504d' : (lit > 0.5 ? '#3fb9d6' : '#6b7580')}}));
   }}
-  if (s.pointing) {{  // where the mount looks: open yellow circle
+  if (s.pointing) {{  // where the mount looks
     const [x, y] = pos(s.pointing[1], s.pointing[0]);
     svg.appendChild(el('circle', {{cx: x, cy: y, r: 6, fill: 'none', stroke: '#ffd24a',
       'stroke-width': 2}}));
+    svg.appendChild(el('circle', {{cx: x, cy: y, r: 1.5, fill: '#ffd24a'}}));
   }}
   if (s.target) {{  // the ISS itself: solid red dot, drawn on top
     const [x, y] = pos(s.target[1], s.target[0]);
@@ -273,8 +275,7 @@ MOUNT = """<div class="panel"><h2>mount <span id="mount-busy"></span></h2>
 <div class="ctl"><label></label>
  <button id="motorbtn" onclick="mnt('motors',{on: MOTORS ? 0 : 1})">motors off</button>
  <button onclick="if(confirm('Set current position as home?')) mnt('home',{})">set home</button>
- <button onclick="mnt('calibrate',{})">calibrate cameras</button>
- <button onclick="mnt('mask',{})">mask point</button></div>
+ <button onclick="mnt('calibrate',{})">calibrate cameras</button></div>
 <div class="info" id="cal-info"></div></div>"""
 
 

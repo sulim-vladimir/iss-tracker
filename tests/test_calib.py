@@ -61,3 +61,12 @@ def test_image_jog_gives_up_near_the_pole():
     assert image_jog_rates(cal, axis2=90.0, jog=(1, 0), speed=0.1) is None
     assert image_jog_rates(cal, axis2=88.0, jog=(0, 1), speed=0.1) is None
     assert image_jog_rates(cal, axis2=60.0, jog=(1, 0), speed=0.1) is not None
+
+
+def test_scale_check_is_blind_at_the_pole():
+    """Calibrated at dec 90 the clamps cancel, so the check cannot see an axis1 problem at all -
+    which is why calibration warns you to move away from the pole instead."""
+    cal = ideal_calibration(GUIDE)
+    J = jacobian(cal, axis2=90.0)          # what the tracker would use if calibrated at home
+    _, _, factor = scale_check(J, GUIDE, dec_cal=90.0)
+    assert np.allclose(factor, 1.0, rtol=1e-6)

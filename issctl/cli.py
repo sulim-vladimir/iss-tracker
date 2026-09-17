@@ -326,25 +326,26 @@ def cmd_console(args, cfg):
     speeds = [0.004, 0.02, 0.1, 0.5, 2.0]
     ui = {"jog": np.zeros(2), "speed": 2, "tracking": False, "busy": False, "quit": False,
           "msg": "", "frame": "guide", "abort": threading.Event(), "mode": "console",
-          "motors": True}
+          "motors": True, "jog_rates": np.zeros(2)}
 
     def jog_frames():
         return ["axes"] + [n for n in cams if n in state.get("cameras", {})]
 
-    def jog_rates():
-        """Jog in the frame the user is looking at: arrows move the target in the image.
+    def refresh_jog_rates():
+        """Work out the jog rates ONCE per key press, like a hand controller.
 
-        A rotated camera makes raw axis jogging confusing, so the calibration matrix converts
-        the screen direction (right, up) into the axis rates that produce it. Near the pole that
-        is impossible, and we fall back to raw axes.
+        Recomputing them every cycle made the mount oscillate: near the pole the image-frame
+        mapping switches to raw axes, and as the mount drifted across that boundary the commanded
+        direction flipped back and forth.
         """
         j = ui["jog"]
         if not j.any():
-            return np.zeros(2)
+            ui["jog_rates"] = np.zeros(2)
+            return
         cal = state.get("cameras", {}).get(ui["frame"])
         rates = None if cal is None else image_jog_rates(cal, mount.position()[1], j, speeds[ui["speed"]])
         ui["jog_raw"] = rates is None
-        return j * speeds[ui["speed"]] if rates is None else rates
+        ui["jog_rates"] = j * speeds[ui["speed"]] if rates is None else rates
 
     def keepalive():
         while not ui["quit"]:
@@ -353,7 +354,7 @@ def cmd_console(args, cfg):
             elif aborted():
                 mount.set_rates(0.0, 0.0)
             elif not ui["busy"]:
-                r = jog_rates()
+                r = ui["jog_rates"]
                 if ui["tracking"]:
                     r = r + [SIDEREAL_DEG_S, 0.0]
                 mount.set_rates(*r)
@@ -468,6 +469,7 @@ def cmd_console(args, cfg):
             # Graceful cancel: drop the jog and, if a goto/sync/calibration is running, ask it to
             # give up. The axes decelerate normally instead of losing steps like the estop does.
             ui["jog"][:] = 0
+            refresh_jog_rates()
             if ui["busy"]:
                 ui["abort"].set()
                 say("slew cancelled")
@@ -487,12 +489,15 @@ def cmd_console(args, cfg):
         if action == "jog":
             axis = int(params.get("axis", 1)) - 1
             ui["jog"][axis] = float(params.get("dir", 0))
+            refresh_jog_rates()
         elif action == "speed":
             ui["speed"] = max(0, min(len(speeds) - 1, int(params.get("index", 2))))
+            refresh_jog_rates()
         elif action == "frame":
             frame = params.get("frame", "axes")
             if frame in jog_frames():
                 ui["frame"] = frame
+                refresh_jog_rates()
                 ui["msg"] = (f"arrows move the target in the {frame} image" if frame != "axes"
                              else "arrows drive the mount axes directly")
         elif action == "track":
@@ -654,18 +659,23 @@ def cmd_console(args, cfg):
                 break
             elif k == curses.KEY_RIGHT:
                 ui["jog"][0] = 0 if ui["jog"][0] < 0 else 1
+                refresh_jog_rates()
             elif k == curses.KEY_LEFT:
                 ui["jog"][0] = 0 if ui["jog"][0] > 0 else -1
+                refresh_jog_rates()
             elif k == curses.KEY_UP:
                 ui["jog"][1] = 0 if ui["jog"][1] < 0 else 1
+                refresh_jog_rates()
             elif k == curses.KEY_DOWN:
                 ui["jog"][1] = 0 if ui["jog"][1] > 0 else -1
+                refresh_jog_rates()
             elif k == ord(" "):
                 mount_action("stop", {})
             elif k == ord("X"):
                 emergency_stop()
             elif ord("1") <= k <= ord("5"):
                 ui["speed"] = k - ord("1")
+                refresh_jog_rates()
             elif k == ord("t"):
                 ui["tracking"] = not ui["tracking"]
             elif k == ord("H"):

@@ -83,6 +83,11 @@ def default_step(cam, fraction=0.2):
     return float(np.clip(fraction * cam.height / pixels_per_deg(cam.cfg), 0.02, 3.0))
 
 
+def implied_focal_length(px_per_deg, cam_cfg):
+    """Focal length that would give this image scale, in mm."""
+    return px_per_deg * cam_cfg["pixel_um"] * cam_cfg["bin"] / 1000.0 / np.tan(np.radians(1.0))
+
+
 def scale_check(J, cam_cfg, dec_cal):
     """Compare measured pixels-per-axis-degree with what the optics imply.
 
@@ -155,6 +160,11 @@ def calibrate_cameras(mount, cams, steps=None, track_rate=None, log=print, abort
             mount.move_to(start - d, track_rate=track_rate, abort=abort)
             mount.move_to(start, track_rate=track_rate, abort=abort)
     dec_cal = float(geo.axis2_to_dec(mount.position()[1]))
+    if abs(np.cos(np.radians(dec_cal))) < 0.5 and warnings is not None:
+        # Near the pole axis1 rotates the field instead of shifting it, so its column is
+        # meaningless and cos(dec_cal) rescaling blows up everywhere else.
+        warnings.append(f"calibrated at dec {dec_cal:.0f}° - too close to the pole for axis1 to "
+                        f"move the image. Point below dec 60° (well away from home) and redo it.")
 
     result = {}
     scale_factors = []
@@ -167,16 +177,19 @@ def calibrate_cameras(mount, cams, steps=None, track_rate=None, log=print, abort
 
         expected, measured, factor = scale_check(J, cam.cfg, dec_cal)
         log(f"{n}: optics say {expected:.1f} px/deg; measured {measured.round(1)} "
-            f"-> axis moved {1 / factor[0]:.2f}x / {1 / factor[1]:.2f}x of what was commanded")
+            f"-> axis moved {1 / factor[0]:.2f}x / {1 / factor[1]:.2f}x of what was commanded; "
+            f"that scale means focal length {implied_focal_length(measured[1], cam.cfg):.1f} mm "
+            f"(config says {cam.cfg['focal_length_mm']:g})")
         scale_factors.append(factor)
 
     if scale_factors and warnings is not None:
         factor = np.mean(scale_factors, axis=0)
         if np.any(np.abs(factor - 1) > 0.15):
             warnings.append(
-                f"axis scale is off: multiply gear_ratio by {factor[0]:.2f} (axis1) and "
-                f"{factor[1]:.2f} (axis2), or check microsteps/worm_teeth. Calibrate on a DISTANT "
-                f"target - a nearby one shifts wrongly as the mount swings.")
+                f"scale mismatch x{factor[0]:.2f}/{factor[1]:.2f}: EITHER focal_length_mm is wrong "
+                f"(see the implied focal length above) OR the axes under/over-move, in which case "
+                f"multiply gear_ratio by that factor. Check with axis-scale, and calibrate on a "
+                f"DISTANT target.")
     if "main" in cams and "guide" in cams:
         m = result["main"]
         dth = np.linalg.solve(np.array(m["J"]), np.array(m["boresight"]) - at_start["main"])
