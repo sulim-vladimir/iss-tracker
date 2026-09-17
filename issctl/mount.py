@@ -94,10 +94,15 @@ class Mount:
         self.query()
         return delta
 
-    def move_to(self, target, tol=0.003, timeout=120.0, track_rate=None, abort=None):
-        """Accel-aware position loop. track_rate adds a constant feed-forward (e.g. sidereal)."""
+    def move_to(self, target, tol=0.003, timeout=120.0, track_rate=None, abort=None, max_rate=None):
+        """Accel-aware position loop. track_rate adds a constant feed-forward (e.g. sidereal).
+
+        max_rate caps the slew for this move: stepper motors skip silently when pushed too fast on
+        a stiff or unbalanced axis, and the step counter keeps counting as if nothing happened.
+        """
         target = np.array(target, dtype=float)
         ff = np.zeros(2) if track_rate is None else np.asarray(track_rate, dtype=float)
+        cap = self.max_rate if max_rate is None else np.minimum(self.max_rate, abs(max_rate))
         dt = 1.0 / self.cfg["control_hz"]
         kp = self.cfg["kp_position"]
         t0 = self.clock.now()
@@ -108,7 +113,7 @@ class Mount:
             now = self.clock.now()
             err = (target + ff * (now - t0)) - self.last[1]
             cmd = limit_correction(kp * err, err, self.max_accel) + ff
-            self.set_rates(*cmd)
+            self.set_rates(*np.clip(cmd, -cap, cap))
             if np.all(np.abs(err) < tol):
                 settled += 1
                 if settled > 5:

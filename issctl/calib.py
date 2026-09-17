@@ -102,11 +102,13 @@ def scale_check(J, cam_cfg, dec_cal):
     return expected, measured, expected / np.maximum(measured, 1e-9)
 
 
-def calibrate_cameras(mount, cams, steps=None, track_rate=None, log=print, abort=None, warnings=None):
+def calibrate_cameras(mount, cams, steps=None, track_rate=None, log=print, abort=None,
+                      warnings=None, slew_rate=0.5):
     """Needs one bright target visible in every camera (centre it in the main camera first).
 
     Each camera is calibrated with its own step size, so wide and narrow fields both get a
-    well-measured shift.
+    well-measured shift. Moves are deliberately slow (slew_rate): a skipped step during calibration
+    silently corrupts the measurement, because the counter keeps counting.
     """
     steps = dict(steps or {})
     start = mount.position()
@@ -144,11 +146,11 @@ def calibrate_cameras(mount, cams, steps=None, track_rate=None, log=print, abort
             check_abort()
             d = np.zeros(2)
             d[axis] = step_deg
-            mount.move_to(start - d, track_rate=track_rate, abort=abort)
-            mount.move_to(start, track_rate=track_rate, abort=abort)  # approach from + side
+            mount.move_to(start - d, track_rate=track_rate, abort=abort, max_rate=slew_rate)
+            mount.move_to(start, track_rate=track_rate, abort=abort, max_rate=slew_rate)  # from + side
             time.sleep(0.5)
             base = measure(cam)
-            mount.move_to(start + d, track_rate=track_rate, abort=abort)
+            mount.move_to(start + d, track_rate=track_rate, abort=abort, max_rate=slew_rate)
             time.sleep(0.5)
             moved = measure(cam)
             check_abort()
@@ -157,8 +159,8 @@ def calibrate_cameras(mount, cams, steps=None, track_rate=None, log=print, abort
                                    f"by {step_deg:.3f} deg")
             cols[name][axis] = (moved - base) / step_deg
             log(f"{name}: axis{axis + 1} +{step_deg:.3f} deg -> {(moved - base).round(1)} px")
-            mount.move_to(start - d, track_rate=track_rate, abort=abort)
-            mount.move_to(start, track_rate=track_rate, abort=abort)
+            mount.move_to(start - d, track_rate=track_rate, abort=abort, max_rate=slew_rate)
+            mount.move_to(start, track_rate=track_rate, abort=abort, max_rate=slew_rate)
     dec_cal = float(geo.axis2_to_dec(mount.position()[1]))
     if abs(np.cos(np.radians(dec_cal))) < 0.5 and warnings is not None:
         # Near the pole axis1 rotates the field instead of shifting it, so its column is
