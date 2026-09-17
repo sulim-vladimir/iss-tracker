@@ -43,6 +43,22 @@ def axes_offset_from_pixel(cal, axis2, px):
     return np.linalg.solve(jacobian(cal, axis2), np.asarray(cal["boresight"]) - np.asarray(px))
 
 
+def image_jog_rates(cal, axis2, jog, speed, min_cos_dec=0.15):
+    """Axis rates that move the target in the image the way the arrows were pressed.
+
+    jog is (right, up) in screen terms. Returns None when this cannot work: near the pole axis1
+    only rotates the field instead of shifting it, so a screen direction has no sensible mapping
+    and the caller should drive the axes directly.
+    """
+    dec = float(geo.axis2_to_dec(axis2))
+    if abs(np.cos(np.radians(dec))) < min_cos_dec:
+        return None
+    want_px = np.array([jog[0], -jog[1]], dtype=float)   # screen up is -y in image coordinates
+    d = np.linalg.solve(jacobian(cal, axis2), want_px)
+    peak = float(np.max(np.abs(d)))
+    return d / peak * speed if peak > 1e-9 else np.zeros(2)
+
+
 def measure(cam, n=10, timeout=5.0):
     if not getattr(cam, "manual", False):
         cam.gate = None   # but never throw away a target the user picked by hand
@@ -67,6 +83,20 @@ def default_step(cam, fraction=0.2):
     return float(np.clip(fraction * cam.height / pixels_per_deg(cam.cfg), 0.02, 3.0))
 
 
+def scale_check(J, cam_cfg, dec_cal):
+    """Compare measured pixels-per-axis-degree with what the optics imply.
+
+    The optics fix how many pixels one degree of SKY is worth, so a mismatch means the axis did not
+    turn as far as commanded: steps_per_deg is wrong. Returns (expected, measured per axis,
+    correction factor per axis) - multiply gear_ratio by the factor.
+    """
+    J = np.asarray(J, dtype=float)
+    expected = pixels_per_deg(cam_cfg)
+    cos_dec = max(np.cos(np.radians(dec_cal)), 0.05)
+    measured = np.array([np.linalg.norm(J[:, 0]) / cos_dec, np.linalg.norm(J[:, 1])])
+    return expected, measured, expected / np.maximum(measured, 1e-9)
+
+
 def calibrate_cameras(mount, cams, steps=None, track_rate=None, log=print, abort=None, warnings=None):
     """Needs one bright target visible in every camera (centre it in the main camera first).
 
@@ -75,10 +105,29 @@ def calibrate_cameras(mount, cams, steps=None, track_rate=None, log=print, abort
     """
     steps = dict(steps or {})
     start = mount.position()
+    # Measure every camera BEFORE moving anything: this is the only moment all of them are looking
+    # at the same pose, so it is the only reliable basis for the guide->main boresight. Calibrating
+    # a wide guide needs degrees of motion, which throws the target far outside the main frame, and
+    # backlash means the mount does not come back precisely enough to re-measure afterwards.
+    usable, missing, at_start = {}, [], {}
     for name, cam in cams.items():
-        if measure(cam) is None:
-            raise RuntimeError(f"no target detected in {name} camera")
+        at_start[name] = measure(cam)
+        if at_start[name] is None:
+            missing.append(name)
+            continue
+        usable[name] = cam
         steps.setdefault(name, default_step(cam))
+    if not usable:
+        raise RuntimeError(f"no target detected in {' or '.join(cams)} - adjust exposure/gain, "
+                           f"focus, or click the target in the image")
+    if missing:
+        log(f"skipping {', '.join(missing)}: no target detected there")
+        if warnings is not None:
+            warnings.append(f"{', '.join(missing)} not calibrated (no target detected) - without the "
+                            f"main camera there is no boresight, so the handoff is not set up")
+    # Narrow fields first: their small moves keep every target in frame, so if the big guide moves
+    # later drag the main target out of the picture, nothing is lost.
+    cams = {n: usable[n] for n in sorted(usable, key=lambda n: -pixels_per_deg(usable[n].cfg))}
     def check_abort():
         if abort and abort():
             raise RuntimeError("calibration aborted")
@@ -105,21 +154,33 @@ def calibrate_cameras(mount, cams, steps=None, track_rate=None, log=print, abort
             log(f"{name}: axis{axis + 1} +{step_deg:.3f} deg -> {(moved - base).round(1)} px")
             mount.move_to(start - d, track_rate=track_rate, abort=abort)
             mount.move_to(start, track_rate=track_rate, abort=abort)
-    time.sleep(0.5)
-    final = {n: measure(c) for n, c in cams.items()}
     dec_cal = float(geo.axis2_to_dec(mount.position()[1]))
 
     result = {}
+    scale_factors = []
     for n, cam in cams.items():
         J = np.column_stack(cols[n])
         result[n] = {"J": J.tolist(), "dec_cal": dec_cal,
                      "boresight": [(cam.width - 1) / 2, (cam.height - 1) / 2]}
         s = np.linalg.svd(J, compute_uv=False)
         log(f"{n}: scale {s.round(1)} px/deg, rotation {np.degrees(np.arctan2(J[1, 0], J[0, 0])):.1f} deg")
-    if "main" in cams and "guide" in cams and final["main"] is not None and final["guide"] is not None:
+
+        expected, measured, factor = scale_check(J, cam.cfg, dec_cal)
+        log(f"{n}: optics say {expected:.1f} px/deg; measured {measured.round(1)} "
+            f"-> axis moved {1 / factor[0]:.2f}x / {1 / factor[1]:.2f}x of what was commanded")
+        scale_factors.append(factor)
+
+    if scale_factors and warnings is not None:
+        factor = np.mean(scale_factors, axis=0)
+        if np.any(np.abs(factor - 1) > 0.15):
+            warnings.append(
+                f"axis scale is off: multiply gear_ratio by {factor[0]:.2f} (axis1) and "
+                f"{factor[1]:.2f} (axis2), or check microsteps/worm_teeth. Calibrate on a DISTANT "
+                f"target - a nearby one shifts wrongly as the mount swings.")
+    if "main" in cams and "guide" in cams:
         m = result["main"]
-        dth = np.linalg.solve(np.array(m["J"]), np.array(m["boresight"]) - final["main"])
-        boresight = final["guide"] + np.array(result["guide"]["J"]) @ dth
+        dth = np.linalg.solve(np.array(m["J"]), np.array(m["boresight"]) - at_start["main"])
+        boresight = at_start["guide"] + np.array(result["guide"]["J"]) @ dth
         result["guide"]["boresight"] = boresight.tolist()
         # Both cameras must have measured the SAME object for this to mean anything. If the guide
         # locked onto a different (often brighter) light, the boresight lands far from the centre.

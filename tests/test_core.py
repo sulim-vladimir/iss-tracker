@@ -124,3 +124,26 @@ def test_pass_planning(cfg):
     assert rep["tracked_s"] > 0
     pos, vel = traj.at((traj.t_start + traj.t_end) / 2)
     assert np.all(np.isfinite(pos)) and np.all(np.abs(vel) < 3)
+
+
+def test_pose_choice_prefers_legal_poses(cfg):
+    mount_cfg = dict(cfg["mount"], axis1_hour_limit=120, axis2_limits=[-10, 190])
+    # a target reachable both ways: with no current position, take the lower counterweight
+    best, options = geo.choose_pose(-60.0, 30.0, mount_cfg)
+    assert best["ok"] and abs(best["axes"][0]) == min(abs(o["axes"][0]) for o in options)
+
+    # tightening the Dec travel rules out the pose that swings past the pole
+    tight = dict(mount_cfg, axis2_limits=[0, 95])
+    best, options = geo.choose_pose(112.0, 19.0, tight)
+    assert best is None or best["axes"][1] <= 95
+
+
+def test_pose_choice_avoids_a_pointless_flip(cfg):
+    """From a pose near axis2=46 (Capella side), staying on that side must win over flipping."""
+    mount_cfg = dict(cfg["mount"], axis1_hour_limit=170, axis2_limits=[-10, 190])
+    current = [-22.9, 46.1]
+    best, _ = geo.choose_pose(-100.0, 40.0, mount_cfg, current=current)
+    assert abs(best["axes"][1] - current[1]) < 90     # no swing through the pole
+    assert best["travel"] == min(
+        max(abs(geo.wrap180(o["axes"][0] - current[0])), abs(o["axes"][1] - current[1]))
+        for o in geo.choose_pose(-100.0, 40.0, mount_cfg, current=current)[1] if o["ok"])

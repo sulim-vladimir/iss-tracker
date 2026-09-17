@@ -303,7 +303,9 @@ def plan_pass(sat, site, mount_cfg, rise, set_, dt=0.25, margin=30.0, model=None
         a1 = np.degrees(np.unwrap(np.radians(a1)))
         a1 -= 360.0 * np.round(np.median(a1[alt >= site.min_altitude]) / 360.0) if np.any(alt >= site.min_altitude) else 0
         v1, v2 = np.gradient(a1, t), np.gradient(a2, t)
-        ok = (alt >= site.min_altitude) & (np.abs(a1) <= lim) & (np.abs(v1) <= vmax[0]) & (np.abs(v2) <= vmax[1])
+        a2_lo, a2_hi = mount_cfg.get("axis2_limits", [-10.0, 190.0])
+        ok = ((alt >= site.min_altitude) & (np.abs(a1) <= lim) & (a2 >= a2_lo) & (a2 <= a2_hi)
+              & (np.abs(v1) <= vmax[0]) & (np.abs(v2) <= vmax[1]))
         (i0, i1), n = _longest_run(ok)
         vis = alt >= site.min_altitude
         tracked = np.zeros_like(ok)
@@ -324,6 +326,7 @@ def plan_pass(sat, site, mount_cfg, rise, set_, dt=0.25, margin=30.0, model=None
             "axis1_range": [float(a1[vis].min()), float(a1[vis].max())],
             "limited_by": [name for name, bad in (
                 ("axis1_limit", np.any(vis & (np.abs(a1) > lim))),
+                ("axis2_limit", np.any(vis & ((a2 < a2_lo) | (a2 > a2_hi)))),
                 ("axis1_rate", np.any(vis & (np.abs(v1) > vmax[0]))),
                 ("axis2_rate", np.any(vis & (np.abs(v2) > vmax[1]))),
             ) if bad],

@@ -19,13 +19,14 @@ PAGE = """<!doctype html><html><head><title>ISS tracker</title>
 <style>
  body{{background:#2f3439;color:#e8e8e8;font:14px/1.4 system-ui,sans-serif;margin:10px}}
  .row{{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-start}}
- .panel{{background:#3b4147;border-radius:6px;padding:8px;flex:1 1 380px;min-width:320px}}
+ .panel{{background:#3b4147;border-radius:6px;padding:8px;flex:1 1 380px;min-width:320px;
+          max-width:560px;box-sizing:border-box}}
  .panel img{{width:100%;display:block;border-radius:4px;background:#000}}
  h2{{font-size:15px;margin:0 0 6px}}
  .ctl{{display:flex;align-items:center;gap:6px;margin-top:8px;flex-wrap:wrap}}
  .ctl label{{width:62px;color:#b9c1c8}}
- .info{{font:13px/1.5 ui-monospace,monospace;color:#cfd6dd;white-space:pre;margin-top:6px;
-        min-height:4.5em}}
+ .info{{font:13px/1.5 ui-monospace,monospace;color:#cfd6dd;margin-top:6px;min-height:4.5em;
+        white-space:pre-wrap;overflow-wrap:anywhere}}
  .pad{{display:grid;grid-template-areas:". u ." "l c r" ". d .";gap:5px;width:170px;margin:8px 0}}
  .pad button{{padding:8px 0}}
  button{{background:#4d555d;color:#e8e8e8;border:0;border-radius:4px;padding:5px 11px;
@@ -39,8 +40,12 @@ PAGE = """<!doctype html><html><head><title>ISS tracker</title>
          margin-bottom:10px}}
  #estop:hover{{background:#c93030}}
  #recinfo{{color:#b9c1c8}}
+ .top{{display:flex;align-items:center;gap:14px;margin-bottom:10px}}
+ #clock{{font:16px/1 ui-monospace,monospace;color:#e8e8e8}}
+ #estop{{margin-bottom:0}}
 </style></head><body>
-{estop}<div class="row">{panels}</div>
+<div class="top">{estop}<span id="clock"></span></div>
+<div class="row">{panels}</div>
 <script>
 const CAMS = {cams};
 async function api(path, params) {{
@@ -70,7 +75,9 @@ function applyMount(m) {{
   if (fs && !fs.options.length) m.frames.forEach(f => fs.add(new Option(f, f)));
   if (fs) fs.value = m.frame;
   document.getElementById('frame-hint').textContent =
-    m.frame === 'axes' ? 'raw mount axes' : 'move target in image';
+    m.frame === 'axes' ? 'raw mount axes'
+    : m.jog_raw ? 'near the pole: raw axes for now'
+    : 'move target in image';
   document.getElementById('mount-busy').textContent = m.busy ? 'working...' : '';
   document.getElementById('mount-info').textContent =
     `mode ${{MODE}}\\n`
@@ -109,6 +116,8 @@ function apply(s) {{
       ? (c.det ? 'locked on your pick' : 'your pick - nothing there, click again or go auto')
       : 'brightest in frame';
   }}
+  const clk = document.getElementById('clock');
+  if (clk && s.time) clk.textContent = s.time;
   if (s.mount) applyMount(s.mount);
   drawSky(s);
   const em = document.getElementById('estop-msg');

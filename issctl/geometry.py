@@ -71,6 +71,34 @@ def axis2_to_dec(a2):
     return np.where(a2 <= 90.0, a2, 180.0 - a2)
 
 
+def pose_within_limits(a1, a2, mount_cfg):
+    """Can the mount hold this pose? axis1 is limited from counterweight-down, axis2 by how far
+    the tube may swing past the pole before it meets the tripod."""
+    lo, hi = mount_cfg.get("axis2_limits", [-10.0, 190.0])
+    return bool(abs(float(a1)) <= mount_cfg["axis1_hour_limit"] and lo <= float(a2) <= hi)
+
+
+def choose_pose(ha, dec, mount_cfg, current=None):
+    """Pick the pier side for a target: legal poses first, then the shortest move.
+
+    Minimising |axis1| alone will happily fling the tube far past the pole, and the flip back can
+    be a 115 deg Dec swing. Preferring the nearest legal pose avoids pointless meridian flips.
+    """
+    options = []
+    for side in SIDES:
+        a1, a2 = hadec_to_axes(ha, dec, side)
+        a1, a2 = float(a1), float(a2)
+        travel = 0.0 if current is None else max(abs(wrap180(a1 - current[0])), abs(a2 - current[1]))
+        options.append({"side": side, "axes": [a1, a2], "travel": travel,
+                        "ok": pose_within_limits(a1, a2, mount_cfg)})
+    legal = [o for o in options if o["ok"]]
+    if not legal:
+        return None, options
+    best = min(legal, key=(lambda o: o["travel"]) if current is not None
+               else (lambda o: abs(o["axes"][0])))
+    return best, options
+
+
 def sky_metric(a2):
     """Weights to turn (d_axis1, d_axis2) into on-sky degrees: axis1 scales by cos(dec)."""
     return np.array([np.cos(np.radians(axis2_to_dec(a2))), 1.0])
