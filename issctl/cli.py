@@ -121,6 +121,7 @@ def make_controls(cams, recorder=None, mount_action=None, mount_state=None, esto
         for n, c in cams.items():
             _, det, _ = c.latest()
             out["cams"][n] = {"fps": c.fps, "exposure_ms": c.exposure_ms, "gain": c.gain,
+                              "exposure_unit": getattr(c, "exposure_unit", "ms"),
                               "det": [round(det.x, 1), round(det.y, 1)] if det else None,
                               "manual": c.manual}
         return out
@@ -177,11 +178,15 @@ def open_mount(cfg, state, clock):
 
 
 def open_cameras(cfg, clock):
-    from .camera import AsiCamera
+    from .camera import AsiCamera, V4l2Camera
     cams = {}
     for name in ("guide", "main"):
+        cam_cfg = cfg["cameras"][name]
         try:
-            cams[name] = AsiCamera(name, cfg["cameras"][name], clock, cfg["cameras"]["sdk_lib"]).start()
+            if cam_cfg.get("driver", "asi") == "v4l2":
+                cams[name] = V4l2Camera(name, cam_cfg, clock).start()
+            else:
+                cams[name] = AsiCamera(name, cam_cfg, clock, cfg["cameras"]["sdk_lib"]).start()
         except Exception as e:
             print(f"{name} camera unavailable: {e}")
     return cams
@@ -243,7 +248,8 @@ def cmd_console(args, cfg):
 
     speeds = [0.004, 0.02, 0.1, 0.5, 2.0]
     ui = {"jog": np.zeros(2), "speed": 2, "tracking": False, "busy": False, "quit": False,
-          "msg": "", "frame": "guide", "abort": threading.Event(), "mode": "console"}
+          "msg": "", "frame": "guide", "abort": threading.Event(), "mode": "console",
+          "motors": True}
 
     def jog_frames():
         return ["axes"] + [n for n in cams if n in state.get("cameras", {})]
@@ -380,6 +386,9 @@ def cmd_console(args, cfg):
             return
         if aborted() and action not in ("stop", "frame", "speed"):
             ui["abort"].clear()  # any deliberate command clears the latched stop
+        if action in ("jog", "goto", "track", "calibrate") and not ui["motors"]:
+            mount.enable(True)
+            ui["motors"] = True
         if action == "jog":
             axis = int(params.get("axis", 1)) - 1
             ui["jog"][axis] = float(params.get("dir", 0))
@@ -414,6 +423,15 @@ def cmd_console(args, cfg):
                 in_background(do_cal)
             else:
                 ui["msg"] = "no cameras"
+        elif action == "motors":
+            on = params.get("on") not in (None, "0", "false")
+            ui["jog"][:] = 0
+            if not on:
+                ui["tracking"] = False
+            mount.enable(on)
+            ui["motors"] = on
+            ui["msg"] = ("motors energised" if on else
+                         "motors off - no holding torque, re-sync if the mount slips")
         elif action == "mask":
             _, alt_m, az_m = pointing()
             ui["msg"] = f"sky mask point: az {az_m:.1f} alt {alt_m:.1f}"
@@ -512,7 +530,7 @@ def cmd_console(args, cfg):
                 "speeds": speeds, "speed_index": ui["speed"], "tracking": ui["tracking"],
                 "frame": ui["frame"] if ui["frame"] in jog_frames() else "axes",
                 "frames": jog_frames(), "aborted": aborted(), "mode": ui["mode"],
-                "calibrated_at": state.get("calibrated_at"),
+                "calibrated_at": state.get("calibrated_at"), "motors": ui["motors"],
                 "cal_warnings": state.get("calibration_warnings", []),
                 "busy": ui["busy"], "msg": ui["msg"], "jog": ui["jog"].tolist(), "cal": cal}
 
@@ -681,7 +699,9 @@ def cmd_track(args, cfg):
             print("clouds at " + ", ".join(f"{a - traj.t_start:+.0f}..{b - traj.t_start:+.0f}s" for a, b in clouds))
         pe = args.pointing_error
         world = SimWorld(cfg, sat, site, mount, time_error_s=args.time_error, traj=traj,
-                         mask=mask, clouds=clouds, pointing_error=(pe, -0.7 * pe))
+                         mask=mask, clouds=clouds, pointing_error=(pe, -0.7 * pe),
+                         polar_error_deg=(args.polar_error, -0.6 * args.polar_error),
+                         azimuth_error_deg=args.azimuth_error)
         state["cameras"] = world.calibration_estimate(scale_error=args.cal_scale_error,
                                                       rot_error_deg=args.cal_rot_error)
         cams = {n: SimCamera(n, cfg["cameras"][n], clock, world).start() for n in ("guide", "main")}
@@ -748,7 +768,8 @@ def cmd_track(args, cfg):
             print(f"emergency stop failed: {e}")
         print("EMERGENCY STOP - tracking abandoned, motors halted")
 
-    if cams and cfg["preview"]["enabled"] and not args.no_preview:
+    # serve the page even with no cameras: the sky chart, countdown and stop button still matter
+    if cfg["preview"]["enabled"] and not args.no_preview:
         start_preview(cams, state, args.port or cfg["preview"]["port"], status=status_lines,
                       controls=make_controls(cams, recorder, estop=stop_tracking,
                                              stopped=lambda: tracker.stop_requested,
@@ -819,6 +840,10 @@ def main(argv=None):
     p.add_argument("--speed", type=float, default=1.0, help="simulation speed factor")
     p.add_argument("--sim-lead", type=float, default=20.0, help="seconds before track start to begin")
     p.add_argument("--time-error", type=float, default=1.5, help="simulated TLE timing error, s")
+    p.add_argument("--polar-error", type=float, default=0.0,
+                   help="simulated polar-axis misalignment, deg (a real axis tilt, not an offset)")
+    p.add_argument("--azimuth-error", type=float, default=0.0,
+                   help="simulated mount azimuth error, deg (rotation about the vertical)")
     p.add_argument("--pointing-error", type=float, default=0.35,
                    help="simulated mount pointing error on axis1, deg (axis2 gets -0.7x)")
     p.add_argument("--cal-rot-error", type=float, default=2.0,

@@ -14,6 +14,7 @@
 //   M <maxrate>         max |rate|, steps/s                          -> OK
 //   U <ms1> <ms2>       microstepping 1..32 (only while stopped)     -> OK
 //   E <0|1>             disable/enable drivers (if ENABLE_PIN wired) -> OK
+//   I <ms>              auto-disable drivers after this long idle (0 = never) -> OK
 //   Z [<pos1> <pos2>]   set step counters (default 0 0)              -> OK
 //   S                   decelerate to stop                           -> P line
 //   X                   emergency stop (no ramp)                     -> P line
@@ -33,7 +34,7 @@
 #define AX2_STEP_PIN 7   // PD7
 #define AX2_DIR_PIN  8   // PB0
 const uint8_t MS_PINS[2][3] = {{4, 5, 6}, {9, 10, 11}};  // M0, M1, M2
-// #define ENABLE_PIN 12  // uncomment if DRV8825 EN is wired (active LOW)
+#define ENABLE_PIN 12   // wire both DRV8825 ~EN pins here (active LOW). Comment out if not wired.
 
 #define AX1_STEP_BIT _BV(PD3)
 #define AX2_STEP_BIT _BV(PD7)
@@ -63,6 +64,16 @@ double accelLimit[2] = {4000.0, 4000.0};  // steps/s^2
 double maxRate = 6000.0;                  // steps/s
 unsigned long lastCmdMs = 0;
 unsigned long lastRampUs = 0;
+unsigned long idleDisableMs = 0;   // 0 = keep the drivers powered (full holding torque)
+unsigned long lastMotionMs = 0;
+bool driversOn = false;
+
+void setDrivers(bool on) {
+#ifdef ENABLE_PIN
+  digitalWrite(ENABLE_PIN, on ? LOW : HIGH);
+#endif
+  driversOn = on;
+}
 
 static inline void setDirPin(uint8_t i, int8_t d) {
   if (i == 0) {
@@ -190,6 +201,10 @@ void handleLine(char *line) {
       ax[0].target = clampRate(r1);
       ax[1].target = clampRate(r2);
       lastCmdMs = millis();
+      if (r1 != 0 || r2 != 0) {
+        lastMotionMs = lastCmdMs;
+        if (!driversOn) setDrivers(true);   // motion wanted: power up before stepping
+      }
       sendP();
       break;
     }
@@ -229,11 +244,16 @@ void handleLine(char *line) {
     case 'E': {
       long e = strtol(p, &end, 10);
       if (end == p) { Serial.println(F("ERR args")); return; }
-#ifdef ENABLE_PIN
-      digitalWrite(ENABLE_PIN, e ? LOW : HIGH);
-#else
-      (void)e;
-#endif
+      setDrivers(e != 0);
+      lastMotionMs = millis();
+      Serial.println(F("OK"));
+      break;
+    }
+    case 'I': {
+      double ms = strtod(p, &end);
+      if (end == p || ms < 0) { Serial.println(F("ERR args")); return; }
+      idleDisableMs = (unsigned long)ms;
+      lastMotionMs = millis();
       Serial.println(F("OK"));
       break;
     }
@@ -275,8 +295,8 @@ void setup() {
     for (uint8_t b = 0; b < 3; b++) pinMode(MS_PINS[i][b], OUTPUT);
 #ifdef ENABLE_PIN
   pinMode(ENABLE_PIN, OUTPUT);
-  digitalWrite(ENABLE_PIN, HIGH);  // disabled until host sends E 1
 #endif
+  setDrivers(false);  // stay quiet and cool until the host asks for motion
 
   for (uint8_t i = 0; i < 2; i++) {
     ax[i].acc = 0; ax[i].inc = 0; ax[i].wantDir = 1; ax[i].pinDir = 1;
@@ -319,6 +339,11 @@ void loop() {
     ax[0].target = 0;
     ax[1].target = 0;
   }
+
+  // Drop the holding current once the axes have been still for a while: the coils sing at
+  // microstep holding current, and an idle mount does not need the torque.
+  if (ax[0].rate != 0 || ax[1].rate != 0) lastMotionMs = millis();
+  if (driversOn && idleDisableMs && millis() - lastMotionMs > idleDisableMs) setDrivers(false);
 
   unsigned long now = micros();
   unsigned long el = now - lastRampUs;

@@ -35,7 +35,7 @@ TLE (Celestrak) --> Skyfield --> refracted alt/az --> HA/Dec --> mount axis angl
 | `issctl/predict.py` | TLE fetch, passes, pier-side planning, trajectories |
 | `issctl/geometry.py` | alt/az ↔ HA/Dec ↔ mount axes |
 | `issctl/mount.py` | serial driver + simulated mount |
-| `issctl/camera.py`, `detect.py` | ZWO capture threads, blob detection |
+| `issctl/camera.py`, `detect.py` | ZWO + V4L2 capture threads, blob detection |
 | `issctl/control.py` | tracking controller |
 | `issctl/calib.py` | camera ↔ axis calibration, guide boresight |
 | `issctl/mask.py` | sky obstructions (balcony, window frame, buildings) |
@@ -50,10 +50,55 @@ TLE (Celestrak) --> Skyfield --> refracted alt/az --> HA/Dec --> mount axis angl
 ```bash
 sudo apt install python3-venv
 python3 -m venv --system-site-packages .venv && .venv/bin/pip install -r requirements.txt
-# ZWO SDK: copy the arm64 libASICamera2.so to /usr/local/lib, install asi.rules into /etc/udev/rules.d
-sudo usermod -aG dialout $USER
-cp config.example.toml config.toml   # set site lat/lon/elevation
+sudo usermod -aG dialout $USER       # serial access to the Arduino (log out and back in)
+cp config.example.toml config.toml   # set site lat/lon/elevation - this file is gitignored
 ```
+
+### ZWO camera SDK (`libASICamera2.so`)
+
+The cameras need ZWO's closed-source library, which is **not** on PyPI: the `zwoasi` package is only a
+wrapper around it. Easiest on Debian/Ubuntu/Raspberry Pi OS, from the INDI PPA:
+
+```bash
+sudo add-apt-repository ppa:mutlaqja/ppa   # Raspberry Pi OS: see indilib.org for the repo line
+sudo apt install libasi                    # installs libASICamera2.so + udev rules
+```
+
+Alternatives, in order of convenience:
+
+* **You may already have it.** FireCapture, INDI and the ZWO desktop apps all ship it - e.g.
+  `/opt/FireCapture_v2.7/libASICamera2.so` on this laptop. `find / -name 'libASICamera2*'` will say.
+* **Download from ZWO** (astronomy-imaging-camera.com, "Developers" / ASI Camera SDK), pick the right
+  architecture - **arm64 for a 64-bit Pi**, x86-64 for a PC - and copy it to `/usr/local/lib`, then
+  `sudo ldconfig`.
+
+The code searches `/usr/local/lib`, `/usr/lib`, the multiarch paths (x86-64 and aarch64) and any
+FireCapture install, so usually no config is needed; `[cameras] sdk_lib` overrides the search. If it
+cannot find it the error lists everywhere it looked.
+
+### Non-ZWO guide cameras (V4L2)
+
+Set `driver = "v4l2"` on a camera to use any V4L2 device instead - a **Philips SPC900NC** (`pwc`
+driver), a UVC webcam, a capture stick. With the same 16 mm lens an SPC900NC (640x480, 5.6 um) gives
+**12.8 x 9.6 deg at 72"/px**, against 17.2 x 12.9 deg at 48"/px for the ASI120MM: a slightly smaller
+field, still far more forgiving than the 9x50 finder, and ample for the handoff (a bright ISS
+centroids to ~0.2 px, about 14").
+
+Install `v4l-utils` (`sudo apt install v4l-utils`) so exposure and gain go through `v4l2-ctl`;
+without it the code falls back to OpenCV's properties, which many drivers ignore. Control names
+differ per driver, so list them and put the right ones in the config:
+
+```bash
+v4l2-ctl -d /dev/video0 --list-ctrls        # names, ranges and units
+```
+
+Two caveats: the SPC900NC is a **colour** CCD, so it is 2-3x less sensitive than the mono ASI120MM
+(fine for the ISS, harder for faint calibration stars), and its exposure is capped near 1/25 s
+unless long-exposure modified. The lens also needs an adapter - the SPC900's thread is not CS.
+
+**udev rules matter too**: without them the cameras need root, and USB transfers can be capped. The
+`libasi` package installs them; with a manual SDK copy `asi.rules` into `/etc/udev/rules.d/` (it is in
+the SDK archive) and replug the camera.
 
 Then run everything through `./issctl.sh <command>`, which uses the virtualenv's Python and works
 from any directory. Without it you need `source .venv/bin/activate` first, or the dependencies

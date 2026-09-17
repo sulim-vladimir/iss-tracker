@@ -49,9 +49,12 @@ async function api(path, params) {{
 }}
 function tgt() {{ return document.getElementById('target').value; }}
 function mnt(action, params) {{ return api('/api/mount', Object.assign({{action}}, params)); }}
-let MODE = 'console';
+let MODE = 'console', MOTORS = true;
 function applyMount(m) {{
   MODE = m.mode || 'console';
+  MOTORS = m.motors !== false;
+  const mb = document.getElementById('motorbtn');
+  if (mb) {{ mb.textContent = MOTORS ? 'motors off' : 'motors ON'; mb.className = MOTORS ? '' : 'on'; }}
   const tb = document.getElementById('trackbtn');
   if (tb) {{
     tb.textContent = MODE === 'track' ? 'Stop tracking' : 'Track next pass';
@@ -95,6 +98,8 @@ function apply(s) {{
     const e = document.getElementById('exp-' + n), g = document.getElementById('gain-' + n);
     if (document.activeElement !== e) e.value = c.exposure_ms.toFixed(2);
     if (document.activeElement !== g) g.value = c.gain;
+    const eu = document.getElementById('expunit-' + n);
+    if (eu) eu.textContent = c.exposure_unit || 'ms';
     document.getElementById('stat-' + n).textContent =
       c.fps.toFixed(0) + ' fps  ' + (c.det ? 'detected ' + c.det[0] + ',' + c.det[1] : 'no detection');
     const info = document.getElementById('info-' + n);
@@ -212,7 +217,7 @@ PANEL = """<div class="panel"><h2>{name} <span id="stat-{name}"></span></h2>
  <button onclick="api('/api/select',{{cam:'{name}',clear:1}})">Auto</button></div>
 <div class="ctl"><label>exposure</label>
  <button onclick="api('/api/exposure',{{cam:'{name}',factor:0.667}})">-</button>
- <input id="exp-{name}" onchange="api('/api/exposure',{{cam:'{name}',ms:this.value}})">ms
+ <input id="exp-{name}" onchange="api('/api/exposure',{{cam:'{name}',ms:this.value}})"><span id="expunit-{name}">ms</span>
  <button onclick="api('/api/exposure',{{cam:'{name}',factor:1.5}})">+</button></div>
 <div class="ctl"><label>gain</label>
  <button onclick="api('/api/gain',{{cam:'{name}',delta:-25}})">-</button>
@@ -257,6 +262,7 @@ MOUNT = """<div class="panel"><h2>mount <span id="mount-busy"></span></h2>
    {pass: document.getElementById('passidx').value})">Track next pass</button>
  <input id="passidx" placeholder="next" style="width:56px" title="pass index from 'passes', or blank for the next usable one"></div>
 <div class="ctl"><label></label>
+ <button id="motorbtn" onclick="mnt('motors',{on: MOTORS ? 0 : 1})">motors off</button>
  <button onclick="if(confirm('Set current position as home?')) mnt('home',{})">set home</button>
  <button onclick="mnt('calibrate',{})">calibrate cameras</button>
  <button onclick="mnt('mask',{})">mask point</button></div>

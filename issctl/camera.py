@@ -18,6 +18,7 @@ class Camera:
         self.height = cam_cfg["height"] // cam_cfg["bin"]
         self.exposure_ms = cam_cfg["exposure_ms"]
         self.gain = cam_cfg["gain"]
+        self.exposure_unit = "ms"   # some V4L2 drivers only expose a raw register
         self.gate = None
         self.follow = False   # keep the gate on whatever was picked, frame to frame
         self.manual = False   # picked by the user: the tracker must not move the gate
@@ -95,6 +96,49 @@ class Camera:
             return self._frame, self._det, self._seq
 
 
+SDK_CANDIDATES = [
+    "/usr/local/lib/libASICamera2.so",
+    "/usr/lib/libASICamera2.so",
+    "/usr/lib/x86_64-linux-gnu/libASICamera2.so",
+    "/usr/lib/aarch64-linux-gnu/libASICamera2.so",   # Raspberry Pi OS 64-bit
+    "/opt/FireCapture_v2.7/libASICamera2.so",
+]
+
+
+def find_sdk(configured=None):
+    """The ZWO SDK ships with FireCapture and INDI as well, so look around before giving up."""
+    import glob
+    import os
+
+    seen = []
+    for path in [configured, *SDK_CANDIDATES, *sorted(glob.glob("/opt/FireCapture*/libASICamera2.so"))]:
+        if path and path not in seen:
+            seen.append(path)
+            if os.path.exists(path):
+                return path
+    raise RuntimeError("libASICamera2.so not found - install the ZWO SDK (or point [cameras] "
+                       "sdk_lib at it). Looked in: " + ", ".join(seen))
+
+
+def import_zwoasi():
+    """zwoasi tries to load the SDK from the linker path when imported and logs a scary
+    'ASI SDK library not found' warning if it is not there. We load it explicitly by path a moment
+    later, so drop that one message instead of letting it worry people."""
+    import logging
+
+    class _Quiet(logging.Filter):
+        def filter(self, record):
+            return "ASI SDK library not found" not in record.getMessage()
+
+    quiet = _Quiet()
+    logging.getLogger().addFilter(quiet)
+    try:
+        import zwoasi as asi
+    finally:
+        logging.getLogger().removeFilter(quiet)
+    return asi
+
+
 class AsiCamera(Camera):
     _sdk_ready = False
 
@@ -104,10 +148,13 @@ class AsiCamera(Camera):
         self.cam = None
 
     def _open(self):
-        import zwoasi as asi
+        lib = find_sdk(self.sdk_lib) if not AsiCamera._sdk_ready else None
+        asi = import_zwoasi()
 
         if not AsiCamera._sdk_ready:
-            asi.init(self.sdk_lib)
+            if lib != self.sdk_lib:
+                print(f"using ZWO SDK at {lib}")
+            asi.init(lib)
             AsiCamera._sdk_ready = True
         names = asi.list_cameras()
         match = [i for i, n in enumerate(names) if self.cfg["name_match"] in n]
@@ -145,6 +192,124 @@ class AsiCamera(Camera):
         if self.cam:
             self.cam.stop_video_capture()
             self.cam.close()
+
+
+V4L2_QUERYCTRL = 0xC0445624
+V4L2_S_CTRL = 0xC008561C
+V4L2_NEXT_CTRL = 0x80000000
+_QUERY_FMT = "II32sIIIIi"
+
+
+def v4l2_controls(device):
+    """{slug: (id, min, max)} for a V4L2 device, straight from the driver - no v4l-utils needed."""
+    import fcntl
+    import struct
+
+    out = {}
+    with open(device, "rb", buffering=0) as fd:
+        cid = V4L2_NEXT_CTRL
+        while True:
+            buf = bytearray(struct.pack(_QUERY_FMT, cid, 0, b"\0" * 32, 0, 0, 0, 0, 0))
+            try:
+                fcntl.ioctl(fd, V4L2_QUERYCTRL, buf, True)
+            except OSError:
+                break
+            i, kind, name, lo, hi, step, dflt, flags = struct.unpack(_QUERY_FMT, bytes(buf))
+            slug = name.split(b"\0")[0].decode().lower().replace(", ", "_").replace(" ", "_")
+            if kind != 6:  # skip control-class headers
+                out[slug] = (i, lo, hi)
+            cid = i | V4L2_NEXT_CTRL
+    return out
+
+
+class V4l2Camera(Camera):
+    """Any V4L2 device: a Philips SPC900NC (pwc driver), a UVC webcam, a capture stick.
+
+    Controls are set through V4L2 ioctls, so nothing extra needs installing. Names differ per
+    driver (pwc has "exposure" as a raw 0-255 register and "gain_automatic"; UVC has
+    "exposure_time_absolute" in 100 us units), so they come from the config.
+    """
+
+    def __init__(self, name, cam_cfg, clock):
+        super().__init__(name, cam_cfg, clock)
+        self.device = cam_cfg.get("device", "/dev/video0")
+        self.cap = None
+        self.controls = {}
+        if not cam_cfg.get("v4l2_exposure_unit_ms", 0.1):
+            self.exposure_unit = "raw"   # pwc: 0-255 register, no millisecond mapping
+
+    def _set_ctrl(self, slug, value):
+        import fcntl
+        import struct
+
+        info = self.controls.get(slug)
+        if not info:
+            return False
+        cid, lo, hi = info
+        value = int(max(lo, min(hi, round(value))))
+        try:
+            with open(self.device, "rb", buffering=0) as fd:
+                fcntl.ioctl(fd, V4L2_S_CTRL, struct.pack("Ii", cid, value), True)
+            return True
+        except OSError as e:
+            print(f"{self.name}: cannot set {slug}={value}: {e}")
+            return False
+
+    def _open(self):
+        import cv2
+
+        try:
+            self.controls = v4l2_controls(self.device)
+        except OSError as e:
+            print(f"{self.name}: cannot list controls on {self.device}: {e}")
+        cap = cv2.VideoCapture(self.device, cv2.CAP_V4L2)
+        if not cap.isOpened():
+            raise RuntimeError(f"cannot open {self.device}")
+        if self.cfg.get("fourcc"):
+            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*self.cfg["fourcc"]))
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
+        if self.cfg.get("fps"):
+            cap.set(cv2.CAP_PROP_FPS, self.cfg["fps"])
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)   # we want the newest frame, not a queue
+        self.width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or self.width
+        self.height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or self.height
+        self.cap, self._cv2 = cap, cv2
+        for cmd in self.cfg.get("v4l2_manual", []):   # e.g. "gain_automatic=0"
+            slug, _, value = cmd.partition("=")
+            self._set_ctrl(slug, float(value or 0))
+        self.set_exposure(self.exposure_ms)
+        self.set_gain(self.gain)
+
+    def set_exposure(self, ms):
+        super().set_exposure(ms)
+        if not self.cap:
+            return
+        unit = self.cfg.get("v4l2_exposure_unit_ms", 0.1)
+        # unit = 0 means the driver exposes a raw register (pwc): pass the number through
+        raw = self.exposure_ms if not unit else self.exposure_ms / unit
+        if not self._set_ctrl(self.cfg.get("v4l2_exposure_ctrl", "exposure"), raw):
+            self.cap.set(self._cv2.CAP_PROP_EXPOSURE, raw)
+
+    def set_gain(self, gain):
+        super().set_gain(gain)
+        if not self.cap:
+            return
+        if not self._set_ctrl(self.cfg.get("v4l2_gain_ctrl", "gain"), self.gain):
+            self.cap.set(self._cv2.CAP_PROP_GAIN, self.gain)
+
+    def _grab(self):
+        ok, frame = self.cap.read()
+        if not ok or frame is None:
+            return None, None
+        t = self.clock.now() - self.exposure_ms / 2000.0 - self.cfg["latency_s"]
+        if frame.ndim == 3:   # colour sensor: detection only needs brightness
+            frame = self._cv2.cvtColor(frame, self._cv2.COLOR_BGR2GRAY)
+        return frame, t
+
+    def _close(self):
+        if self.cap:
+            self.cap.release()
 
 
 class SimCamera(Camera):

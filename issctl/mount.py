@@ -146,6 +146,7 @@ class SerialMount(Mount):
         acc = self.max_accel * self.spd
         self._cmd(f"A {acc[0]:.1f} {acc[1]:.1f}")
         self._cmd(f"M {m['firmware_max_step_rate']:.0f}")
+        self._cmd(f"I {1000 * m['idle_disable_s']:.0f}")   # auto power-down when stopped
         self.query()
 
     def _cmd(self, line, expect="OK"):

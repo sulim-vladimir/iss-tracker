@@ -35,6 +35,9 @@ firmware_max_step_rate = 9000 # steps/s, firmware hard cap is 9500
 axis1_hour_limit = 120        # |axis1| limit from counterweight-down, deg (>90 = counterweight up)
 kp_position = 4.0             # 1/s, position error -> rate correction
 command_latency_s = 0.02      # serial + firmware ramp latency, compensated by lead
+idle_disable_s = 10           # cut driver current after this long stopped (0 = always energised).
+                              # Stops the coil whine, but also removes holding torque: balance the
+                              # mount, and re-sync if it slips. Needs DRV8825 ~EN wired to D12.
 
 [mount.axis1]                 # RA axis
 motor_steps = 200
@@ -54,6 +57,18 @@ reverse = false               # flip so that + moves toward the pole on side "ea
 [cameras]
 sdk_lib = "/usr/local/lib/libASICamera2.so"
 
+# driver = "asi" (ZWO, the default) or "v4l2" (Philips SPC900NC, UVC webcams, capture sticks).
+# A Philips SPC900NC with the same 16 mm lens gives 12.8 x 9.6 deg at 72"/px:
+#   driver = "v4l2"
+#   device = "/dev/video0"
+#   pixel_um = 5.6
+#   width = 640
+#   height = 480
+#   fourcc = "YUYV"                        # optional, driver dependent
+#   v4l2_exposure_ctrl = "exposure"        # check: v4l2-ctl -d /dev/video0 --list-ctrls
+#   v4l2_exposure_unit_ms = 0.1            # UVC uses 100 us units; pwc differs
+#   v4l2_gain_ctrl = "gain"
+#   v4l2_manual = ["auto_exposure=1"]      # commands that switch the camera to manual
 [cameras.guide]               # ASI120MM + 16 mm CS lens: 17.2 x 12.9 deg at 48"/px
 name_match = "ASI120"
 focal_length_mm = 16
