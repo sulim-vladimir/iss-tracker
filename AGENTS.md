@@ -46,14 +46,62 @@ Verified only in simulation: acquisition, guide->main handoff (~17" median error
 main field ~100% of the time), shadow coasting, obstruction masks, cloud gaps, SER recording,
 pass planning, click-to-select.
 
+## Two tracking modes, one loop
+
+`control.py` runs the same loop against two references, and which one it gets is the only
+difference between the modes:
+
+* **pass mode** follows a planned `Trajectory`. The feed-forward comes from the orbit, so the
+  mount is already moving at nearly the right rate before the cameras see anything. It needs the
+  mount's orientation to be right to within a few degrees.
+* **servo mode** follows a `FreeRun`: position frozen, velocity zero. `cross`/`cross_rate` then
+  stop being a correction and become the whole estimate of where the target is and how fast it
+  moves, so the feed-forward comes from the camera. It needs no orbit, no site and no alignment -
+  only the camera calibration. Point the tube at the ISS by hand, click it in the guide image,
+  and the loop keeps it on the boresight.
+
+Both are reachable from the one app: in the console press `p` for the next pass or `v` for servo
+(browser actions `track` and `servo`), and headless via `track` / `track --servo`.
+
+**Servo mode is what makes the north balcony work**, because it does not care which way the
+tripod faces. Pass mode on a mount rotated 90 deg in azimuth is 78 DEGREES off; servo mode on the
+same setup, when it locks, holds the ISS to a median 5-7" on the main camera, 100% of the time
+inside the main field, with ~75% of the run under main-camera control.
+
+**"When it locks" is the open problem.** Servo mode is bimodal: the same command, run four times
+(`track --sim --servo --speed 10 --pass 5 --azimuth-error 90`), locked twice and never acquired
+at all the other twice - 80% of the run in `predict`, meaning nothing was ever found. There is no
+middle outcome, which says this is an ACQUISITION failure, not a tracking one. Suspects, in
+order: the first-fix path in `_vision` (in the simulator nothing clicks the target, so there is
+no `force_accept` and the first detection has to pass the gate on its own); the initial search
+gate when `last_good` is still `-inf`; and a race between the first `mount.query()` seeding the
+reference and the first camera frame. Fix this before trusting servo mode on real hardware -
+everything below it is measured on the runs that did lock, so it is all conditional on this.
+
+What servo mode gives up: it cannot know in advance that a pass is reachable, sunlit or clear of
+the window frame. `servo_window()` in `cli.py` answers that from the TLE when one is available -
+illumination and altitude need no alignment - and `Tracker._limit_guard` is the live backstop.
+
+Two things it is genuinely sensitive to, measured:
+
+* **calibration rotation and scale.** 15% scale and 10 deg of rotation together are fine (100% in
+  the main field). 30% scale loses the handoff entirely - the guide holds it, the main never sees
+  it. The control law tolerates far more than that; what breaks first is the handoff and the
+  search gate.
+* **its own gains.** Pass mode's `cross_alpha`/`cross_beta` smooth a residual; in servo mode the
+  same two numbers carry the entire motion. Sharing them cost a factor of five in accuracy
+  (125" -> 23"), which is why `servo_alpha`/`servo_beta` exist.
+
 ## Not built yet
 
-* **Unaligned mount support.** `issctl/model.py` has a fitted 5-parameter pointing model
-  (orientation, Dec index, cone error) that is **not wired into** the planner, mount or tracker.
-  The owner wants to rotate the mount ~90 deg in azimuth to fit a north balcony; measured in
-  simulation, tracking survives ~5 deg of azimuth error and fails by 30 deg. The maths is verified:
-  from 6 points with 5" noise it recovers a 53.66 deg axis tilt and points to 3.6" median.
-  Acceptance test exists: `track --sim --azimuth-error 90` should track as well as an aligned mount.
+* **The fitted pointing model.** `issctl/model.py` has a 5-parameter model (orientation, Dec
+  index, cone error) that is still **not wired into** the planner, mount or pass mode. Servo mode
+  made it unnecessary for tracking, but it is still what would let the PLANNER say whether a pass
+  is reachable before you go outside, and what `sync` should feed instead of shifting the index.
+  The maths is verified: from 6 points with 5" noise it recovers a 53.66 deg axis tilt and points
+  to 3.6" median. Two well-separated points are enough to fix the orientation, and the ISS itself
+  supplies them - but a single-pass fit absorbs the TLE timing error into the orientation, so do
+  not persist one as the mount's alignment.
 * **Sensors** (accelerometer for tilt, magnetometer for repeatability) - discussed, postponed.
 * Backlash compensation; latency tuning from real logs.
 
@@ -71,6 +119,10 @@ Symptoms we have already chased, so you do not chase them again:
 | target ends at the frame edge after calibrating | expected: guide calibration needs degrees of motion; the boresight is taken before any move |
 | mount oscillates while jogging | jog rates were recomputed every cycle near the image/axes fallback boundary; they are latched per key press now |
 | "cannot restart calibration" | it did restart and failed identically; messages are timestamped now |
+| servo run slews away to the home pose instead of holding | the reference was seeded from `mount.last`, which is the placeholder home position until the driver has queried once. Seed from `mount.query()` |
+| servo run never ends when nothing is in the field | the give-up check only fired after a first lock; it now runs from the start of the session |
+| servo loses the target after a one-second glitch and never gets it back | the search gate grew at the pass-mode rate and was still opening when `servo_give_up_s` fired. In servo mode it opens at roughly the ISS's own speed |
+| servo tracks but the main camera never takes over | calibration scale error. 15% is fine, 30% is not - the handoff, not the control law, is what gives out |
 
 Useful when diagnosing: calibration prints the implied focal length beside the measured scale, and
 `axis-scale` compares a commanded move against a measured one and computes the corrected

@@ -138,12 +138,18 @@ def aim_axes(sat, site, t, mount_cfg, model=None, time_error_s=0.0, offset=(0.0,
     with an unaligned mount there is no other way to know where to aim.
     """
     ha, dec, _, _ = sat_hadec(sat, site, t + time_error_s)
+    poses = []
     for side in geo.SIDES:
         a1, a2 = (geo.hadec_to_axes if model is None else model.hadec_to_axes)(ha, dec, side)
-        a1, a2 = float(a1), float(a2)
-        if geo.pose_within_limits(a1, a2, mount_cfg):
-            return np.array([a1, a2]) + np.asarray(offset, dtype=float)
-    raise RuntimeError("the ISS is not reachable from this mount pose on either side")
+        poses.append(np.array([float(a1), float(a2)]))
+        if geo.pose_within_limits(poses[-1][0], poses[-1][1], mount_cfg):
+            return poses[-1] + np.asarray(offset, dtype=float)
+    # Out of limits on both sides. A human would still have pointed the tube there, so the sim
+    # does too, on the side that is closest to legal - and the tracker's guard deals with it.
+    lo, hi = mount_cfg.get("axis2_limits", [-10.0, 190.0])
+    over = lambda q: (max(0.0, abs(q[0]) - mount_cfg["axis1_hour_limit"])
+                      + max(0.0, lo - q[1]) + max(0.0, q[1] - hi))
+    return min(poses, key=over) + np.asarray(offset, dtype=float)
 
 
 def misalignment(lat, polar_error_deg=(0.0, 0.0), azimuth_error_deg=0.0):

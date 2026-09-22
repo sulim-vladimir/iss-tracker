@@ -51,12 +51,17 @@ class FreeRun:
     servo = True
     side = None
 
-    def __init__(self, seed, visibility=None):
-        self.seed = np.asarray(seed, dtype=float).copy()
+    def __init__(self, seed=None, visibility=None):
+        # Seeded lazily from the mount's own reading at the first control cycle: a position taken
+        # at construction time can predate the driver's first query, and anchoring the whole run
+        # to a stale pose sends the mount off to wherever that was.
+        self.seed = None if seed is None else np.asarray(seed, dtype=float).copy()
         self.visibility = visibility
         self.t_start, self.t_end = -np.inf, np.inf
 
     def at(self, tq):
+        if self.seed is None:
+            raise RuntimeError("servo reference used before it was seeded")
         return self.seed.copy(), np.zeros(2)
 
     def reseed(self, pos):
@@ -81,6 +86,17 @@ class Tracker:
         self.cal = state.get("cameras", {})
         self.lat = cfg["site"]["latitude"]
         self.servo = bool(getattr(traj, "servo", False))
+        # Pass mode's gains filter a slow residual around a trajectory that already carries the
+        # motion. In servo mode the same two numbers ARE the motion, so they have to follow the
+        # target itself - a filter tuned to smooth a drift lags a 1 deg/s satellite by arcminutes.
+        self.alpha = tr.get("servo_alpha", 0.5) if self.servo else tr["cross_alpha"]
+        self.beta = tr.get("servo_beta", 0.3) if self.servo else tr["cross_beta"]
+        # How fast the search gate opens after a loss. Pass mode can afford a slow ramp: the
+        # prediction keeps pointing at the target while it is out of sight. Servo mode coasts on
+        # an estimate instead, so its uncertainty grows at roughly the target's own speed - and a
+        # gate that opens slower than give_up_s turns a one-second glitch into a lost pass.
+        self.growth = tr.get("servo_reacquire_growth_arcmin_per_s", 60.0) if self.servo \
+            else tr["reacquire_growth_arcmin_per_s"]
         self.give_up_s = tr.get("servo_give_up_s", 20.0)
         self.reseed_deg = tr.get("servo_reseed_deg", 30.0)
         self.at_limit = [False, False]
@@ -153,7 +169,7 @@ class Tracker:
     def _jump_allowance(self, lost_for):
         """How far from the estimate a detection may sit. Grows while we coast blind (clouds),
         because the prediction drifts, but never far enough to let a random star take over."""
-        extra = self.tr["reacquire_growth_arcmin_per_s"] * max(0.0, lost_for - self.tr["lost_timeout_s"])
+        extra = self.growth * max(0.0, lost_for - self.tr["lost_timeout_s"])
         return min(self.tr["max_offset_jump_arcmin"] + extra, self.tr["max_reacquire_arcmin"])
 
     def _search_gate(self, name, now):
@@ -225,8 +241,8 @@ class Tracker:
             # mode that first fix is the only thing anchoring the whole run.
             self.cross = pred + resid
         else:
-            self.cross = pred + self.tr["cross_alpha"] * resid
-            self.cross_rate = self.cross_rate + self.tr["cross_beta"] * resid / dt
+            self.cross = pred + self.alpha * resid
+            self.cross_rate = self.cross_rate + self.beta * resid / dt
         self.t_update = det.t
 
         if name == "guide" and not self.cams[name].manual:
@@ -286,6 +302,11 @@ class Tracker:
 
     def step(self):
         now = self.clock.now()
+        if self.servo and self.traj.seed is None:
+            # A fresh query, not mount.last: until the driver has asked once, `last` is still the
+            # placeholder home pose, and anchoring the run there would slew the tube away from
+            # the target the user just pointed it at.
+            self.traj.reseed(self.mount.query())
         # The TLE timing error shifts the real shadow entry, but only by seconds. While acquiring,
         # time_offset also absorbs pointing error and can swing far, so clamp its effect here -
         # otherwise a wild estimate could make us declare shadow and stop believing the cameras.
@@ -370,8 +391,11 @@ class Tracker:
                 now = self.clock.now()
                 if now > traj.t_end + 2.0:
                     break
-                if self.servo and np.isfinite(self.last_good) and now - self.last_good > self.give_up_s:
-                    self.log(f"nothing seen for {self.give_up_s:.0f}s - giving up")
+                if self.servo and now - max(self.last_good, self.t0) > self.give_up_s:
+                    self.log(f"nothing seen for {self.give_up_s:.0f}s - giving up"
+                             if np.isfinite(self.last_good) else
+                             f"nothing found in {self.give_up_s:.0f}s - is the target in the "
+                             f"guide field? giving up")
                     break
                 if now < traj.t_start - lead_s:
                     if now - last_report > 10:

@@ -972,6 +972,33 @@ def cmd_console(args, cfg):
 
 # ---------------------------------------------------------------- track
 
+def servo_window(sat, site, p, mount_cfg, model=None, dt=1.0):
+    """The longest stretch of a pass a servo run could actually follow.
+
+    Three conditions, and servo mode can check none of them for itself: the ISS must be up,
+    sunlit (there is nothing to follow but the target), and in a pose the mount can hold. The
+    last one is why this matters even though servo mode needs no alignment - the loop will chase
+    the target straight into an axis limit otherwise.
+    """
+    t = np.arange(p["rise"], p["set"], dt)
+    ha, dec, alt, _ = pr.sat_hadec(sat, site, t)
+    ok = (alt >= site.min_altitude) & (pr.illumination(sat, t) > 0.5)
+    reach = np.zeros(len(t), dtype=bool)
+    for side in geo.SIDES:
+        a1, a2 = (geo.hadec_to_axes if model is None else model.hadec_to_axes)(ha, dec, side)
+        a2_lo, a2_hi = mount_cfg.get("axis2_limits", [-10.0, 190.0])
+        reach |= ((np.abs(geo.wrap180(a1)) <= mount_cfg["axis1_hour_limit"])
+                  & (np.asarray(a2) >= a2_lo) & (np.asarray(a2) <= a2_hi))
+    if (ok & reach).any():
+        ok &= reach
+    elif not ok.any():
+        return None, 0.0, False
+    # else: the target is visible but the mount cannot hold every pose on the way. Say so and
+    # let the run happen anyway - that is the situation the limit guard exists for.
+    (i0, i1), _ = pr._longest_run(ok)
+    return float(t[i0]), float(t[i1] - t[i0]), bool(reach[i0:i1 + 1].all())
+
+
 def cmd_track(args, cfg):
     from .control import Tracker
 
@@ -983,32 +1010,47 @@ def cmd_track(args, cfg):
     if args.sim:
         from .camera import SimCamera
         from .mount import HOME, SimMount
-        from .sim import SimWorld
+        from .sim import SimWorld, misalignment
 
         site = pr.Site(cfg)
         sat = pr.make_satellite(pr.SIM_TLE)
         mask = SkyMask.from_config(cfg)
         passes = pr.find_passes(sat, site, pr.time_to_unix(sat.epoch), 48)
+        model = misalignment(site.lat, (args.polar_error, -0.6 * args.polar_error),
+                             args.azimuth_error)
         if args.pass_index is not None:
             p = passes[args.pass_index]
             traj, rep = pr.plan_pass(sat, site, cfg["mount"], p["rise"], p["set"], mask=mask)
         else:  # prefer a pass the ISS is actually visible for, else the highest
             plans = [(p, *pr.plan_pass(sat, site, cfg["mount"], p["rise"], p["set"], mask=mask)) for p in passes]
-            p, traj, rep = max(plans, key=lambda x: (x[2]["useful_s"], x[0]["max_alt"]))
-        sim_lead = min(args.sim_lead, 5.0) if args.servo else args.sim_lead
-        clock = Clock(start_unix=traj.t_start - sim_lead, speed=args.speed)
+            if args.servo:
+                p, traj, rep = max(plans, key=lambda x: servo_window(sat, site, x[0],
+                                                                    cfg["mount"], model)[1])
+            else:
+                p, traj, rep = max(plans, key=lambda x: (x[2]["useful_s"], x[0]["max_alt"]))
         state = {"index": HOME.tolist()}
         if args.servo:
-            # Nobody slews in servo mode, so the sim has to start where a human would have put
-            # the tube: on the target, off by args.hand_error. With a misaligned mount that pose
-            # has nothing to do with the planned trajectory, which is exactly the point.
-            from .sim import aim_axes, misalignment
-            model = misalignment(site.lat, (args.polar_error, -0.6 * args.polar_error),
-                                 args.azimuth_error)
+            # Nobody slews in servo mode: the run begins when a human has the target in the
+            # guide field, so start the clock where the ISS is up and sunlit and put the tube on
+            # it, off by args.hand_error. With a misaligned mount that pose has nothing to do
+            # with the planned trajectory, which is the whole point of the exercise.
+            from .sim import aim_axes
+            t_begin, follow_s, reachable = servo_window(sat, site, p, cfg["mount"], model)
+            if t_begin is None:
+                print("no part of this pass is up and sunlit - servo mode has nothing to follow")
+                return
+            print(f"servo starts at {fmt_t(t_begin)}, {follow_s:.0f}s to follow"
+                  + ("" if reachable else
+                     " (the mount cannot hold every pose on the way - the limit guard will stop "
+                     "the axes before the end)"))
+            sim_lead = 2.0
+            clock = Clock(start_unix=t_begin - sim_lead, speed=args.speed)
             he = args.hand_error
-            start = aim_axes(sat, site, traj.t_start, cfg["mount"], model, args.time_error,
+            start = aim_axes(sat, site, t_begin, cfg["mount"], model, args.time_error,
                              offset=(he, -0.7 * he))
         else:
+            sim_lead = args.sim_lead
+            clock = Clock(start_unix=traj.t_start - sim_lead, speed=args.speed)
             start = traj.at(traj.t_start)[0] + [1.0, -0.5] if args.sim_lead < 60 else HOME
         mount = SimMount(cfg, state, clock, start=start)
         clouds = []
@@ -1073,7 +1115,7 @@ def cmd_track(args, cfg):
         # The planned pass is kept for the sky chart and the shadow curve, but it is not what the
         # loop follows: the reference is frozen where the tube is now and the cameras do the rest.
         from .control import FreeRun
-        reference = FreeRun(mount.position(), visibility=traj)
+        reference = FreeRun(visibility=traj)
         print("servo mode: following the cameras, not the orbit - point at the target and "
               "click it in the guide image")
     else:
