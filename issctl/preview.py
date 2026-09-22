@@ -97,6 +97,10 @@ function applyMount(m) {{
             : ` ${{(mins / 60).toFixed(1)}} h ago`;
     }}
   }}
+  if (m.position_at) {{
+    const t = new Date(m.position_at * 1000);
+    cal.push('position saved ' + t.toTimeString().slice(0, 8));
+  }}
   const warn = (m.cal_warnings || []).map(w => '! ' + w);
   document.getElementById('cal-info').textContent = [head].concat(cal, warn).join('\\n');
 }}
@@ -220,12 +224,13 @@ setInterval(async () => apply(await (await fetch('/api/state')).json()), 1000);
 </script></body></html>"""
 
 PANEL = """<div class="panel"><h2>{name} <span id="stat-{name}"></span></h2>
-<img src="/{name}.mjpg" title="click the object to track"
+<img src="/{name}.mjpg" title="click to track this object, double-click to centre it"
  onclick="api('/api/select',{{cam:'{name}',fx:event.offsetX/this.clientWidth,
-                             fy:event.offsetY/this.clientHeight}})">
+                             fy:event.offsetY/this.clientHeight}})"
+ ondblclick="mnt('centre',{{cam:'{name}'}})">
 <div class="info" id="info-{name}"></div>
 <div class="ctl"><label>target</label><span id="sel-{name}"></span>
- <button onclick="api('/api/select',{{cam:'{name}',clear:1}})">Auto</button></div>
+ <button onclick="api('/api/select',{{cam:'{name}',clear:1}})">Auto</button>{centre}</div>
 <div class="ctl"><label>exposure</label>
  <button onclick="api('/api/exposure',{{cam:'{name}',factor:0.667}})">-</button>
  <input id="exp-{name}" onchange="api('/api/exposure',{{cam:'{name}',ms:this.value}})"><span id="expunit-{name}">ms</span>
@@ -249,6 +254,9 @@ SKY = """<div class="panel"><h2>sky</h2>
  border-radius:6px"></svg>
 <div class="info" id="sky-info"></div></div>"""
 
+CENTRE = """ <button onclick="mnt('centre',{cam:'NAME'})">centre it</button>
+ <button onclick="mnt('calibrate',{cam:'NAME'})">calibrate NAME</button>"""
+
 MOUNT = """<div class="panel"><h2>mount <span id="mount-busy"></span></h2>
 <div class="info" id="mount-info"></div>
 <div class="pad">
@@ -265,7 +273,8 @@ MOUNT = """<div class="panel"><h2>mount <span id="mount-busy"></span></h2>
  <button onclick="mnt('track',{on:1})">sidereal on</button>
  <button onclick="mnt('track',{on:0})">off</button></div>
 <div class="ctl"><label>target</label>
- <input id="target" placeholder="vega / jupiter / 18.6 38.8" style="width:150px">
+ <input id="target" title="star or planet name, 'RAh Dec', '18:36:56 +38:47:01', or 'altaz ALT AZ'"
+ placeholder="vega / jupiter / 18.6 38.8" style="width:150px">
  <button onclick="mnt('goto',{target:tgt()})">goto</button>
  <button onclick="mnt('sync',{target:tgt()})">sync</button></div>
 <div class="ctl"><label>pass</label>
@@ -309,7 +318,9 @@ class Preview:
 
     def page(self):
         can_record = bool(self.controls and self.controls.get("record"))
-        panels = "".join(PANEL.format(name=n, extra=RECORD if (n == "main" and can_record) else "")
+        can_move = bool(self.controls and self.controls.get("mount_action"))
+        panels = "".join(PANEL.format(name=n, extra=RECORD if (n == "main" and can_record) else "",
+                                      centre=CENTRE.replace("NAME", n) if can_move else "")
                          for n in self.cams)
         if self.controls and self.controls.get("mount_action"):
             panels += MOUNT

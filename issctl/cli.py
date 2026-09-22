@@ -117,6 +117,25 @@ def apply_saved_settings(cams, state):
             cam.set_gain(saved["gain"])
 
 
+def remember_position(state, state_path, mount):
+    """Keep the live axis angles on disk so a restart does not need re-homing."""
+    state["position"] = [float(v) for v in mount.position()]
+    state["position_at"] = time.time()
+    state["index"] = mount.index.tolist()
+    save_state(state, state_path)
+
+
+def restore_position(state, mount, log=print):
+    pos = state.get("position")
+    if not pos:
+        return
+    mount.restore_position(pos)
+    when = state.get("position_at")
+    ago = f", saved {datetime.datetime.fromtimestamp(when):%H:%M:%S}" if when else ""
+    log(f"position restored: axis1 {pos[0]:+.3f} axis2 {pos[1]:+.3f}{ago} "
+        f"- re-home if the mount was moved by hand")
+
+
 def remember_settings(state, state_path, name, cam):
     state.setdefault("camera_settings", {})[name] = {"exposure_ms": cam.exposure_ms, "gain": cam.gain}
     save_state(state, state_path)
@@ -301,7 +320,7 @@ def cmd_console(args, cfg):
     import curses
     import threading
 
-    from .calib import calibrate_cameras, image_jog_rates
+    from .calib import calibrate_cameras, centring_move, image_jog_rates, measure
     from .mount import SIDEREAL_DEG_S, SimMount
 
     state_path = SIM_STATE_FILE if args.sim else None
@@ -319,6 +338,7 @@ def cmd_console(args, cfg):
         cams = {n: SimCamera(n, cfg["cameras"][n], clock, world).start() for n in ("guide", "main")}
     else:
         mount, cams = open_mount(cfg, state, clock), open_cameras(cfg, clock)
+        restore_position(state, mount)
     apply_saved_settings(cams, state)
     def status_lines(name):
         return []   # axis angles and the clock live in the mount panel and the top bar
@@ -348,7 +368,16 @@ def cmd_console(args, cfg):
         ui["jog_rates"] = j * speeds[ui["speed"]] if rates is None else rates
 
     def keepalive():
+        saved = (mount.position().copy(), time.monotonic())
         while not ui["quit"]:
+            # keep the stored position fresh, so a crash or power cut loses at most a few seconds
+            now_pos = mount.position()
+            if time.monotonic() - saved[1] > 5.0 and np.any(np.abs(now_pos - saved[0]) > 0.01):
+                saved = (now_pos.copy(), time.monotonic())
+                try:
+                    persist()
+                except Exception:
+                    pass
             if ui["mode"] == "track":
                 pass  # the tracker owns the mount while a pass is running
             elif aborted():
@@ -361,8 +390,7 @@ def cmd_console(args, cfg):
             time.sleep(0.05)
 
     def persist():
-        state["index"] = mount.index.tolist()
-        save_state(state, state_path)
+        remember_position(state, state_path, mount)
 
     def prompt(scr, text):
         scr.nodelay(False)
@@ -436,17 +464,49 @@ def cmd_console(args, cfg):
         persist()
         ui["msg"] = f"synced on {name}: correction {d.round(3)} deg"
 
-    def do_cal():
+    def do_cal(only=None):
         say("calibrating...")
         warnings = []
         res = calibrate_cameras(mount, cams, track_rate=[SIDEREAL_DEG_S, 0.0] if ui["tracking"] else None,
-                                log=say, abort=aborted, warnings=warnings)
+                                log=say, abort=aborted, warnings=warnings, only=only,
+                                existing=state.get("cameras"))
         state.setdefault("cameras", {}).update(res)
         state["calibrated_at"] = time.time()
         state["calibration_warnings"] = warnings
         persist()
         say(("done, but: " + warnings[0]) if warnings else
             f"calibration complete, saved to {(state_path or STATE_FILE).name}")
+
+    def do_centre(name):
+        """Put the object the camera is showing onto the boresight, iterating out calibration
+        error and backlash."""
+        cam, cal = cams.get(name), state.get("cameras", {}).get(name)
+        if cam is None:
+            say(f"no {name} camera")
+            return
+        if cal is None:
+            say(f"{name} is not calibrated - cannot turn pixels into axis angles")
+            return
+        track = [SIDEREAL_DEG_S, 0.0] if ui["tracking"] else None
+        for _ in range(3):
+            px = measure(cam, n=5, timeout=3.0)
+            if px is None:
+                say(f"nothing detected in the {name} image")
+                return
+            off_px = float(np.hypot(*(np.array(cal["boresight"]) - px)))
+            if off_px < 3.0:
+                break
+            d = centring_move(cal, mount.position()[1], px)
+            if d is None:
+                say(f"{name}: implied move is absurd - check the calibration or pick the target again")
+                return
+            say(f"centring {name}: {off_px:.0f} px off, moving {d.round(3)} deg")
+            mount.move_to(mount.position() + d, track_rate=track, abort=aborted, max_rate=0.5)
+            if aborted():
+                say("centring aborted")
+                return
+            time.sleep(0.4)
+        say(f"{name} target centred ({off_px:.0f} px from the boresight)")
 
     def pointing():
         pos = mount.position()
@@ -483,7 +543,7 @@ def cmd_console(args, cfg):
             return
         if aborted() and action not in ("stop", "frame", "speed"):
             ui["abort"].clear()  # any deliberate command clears the latched stop
-        if action in ("jog", "goto", "track", "calibrate") and not ui["motors"]:
+        if action in ("jog", "goto", "track", "calibrate", "centre") and not ui["motors"]:
             mount.enable(True)
             ui["motors"] = True
         if action == "jog":
@@ -515,10 +575,18 @@ def cmd_console(args, cfg):
             else:
                 ui["jog"][:] = 0
                 in_background(lambda: (do_sync if action == "sync" else goto)(target))
+        elif action == "centre":
+            if cams:
+                ui["jog"][:] = 0
+                in_background(lambda: do_centre(params.get("cam", "guide")))
+            else:
+                ui["msg"] = "no cameras"
         elif action == "calibrate":
             if cams:
                 ui["jog"][:] = 0
-                in_background(do_cal)
+                which = params.get("cam")
+                only = [which] if which in cams else None
+                in_background(lambda: do_cal(only))
             else:
                 ui["msg"] = "no cameras"
         elif action == "motors":
@@ -630,6 +698,7 @@ def cmd_console(args, cfg):
                 "frames": jog_frames(), "aborted": aborted(), "mode": ui["mode"],
                 "jog_raw": ui.get("jog_raw", False),
                 "calibrated_at": state.get("calibrated_at"), "motors": ui["motors"],
+                "position_at": state.get("position_at"),
                 "cal_warnings": state.get("calibration_warnings", []),
                 "busy": ui["busy"], "msg": ui["msg"], "jog": ui["jog"].tolist(), "cal": cal}
 
@@ -831,6 +900,7 @@ def cmd_track(args, cfg):
         if "cameras" not in state:
             print("warning: no camera calibration in data/state.json - run console and press 'c'")
         mount = open_mount(cfg, state, clock)
+        restore_position(state, mount)
         cams = open_cameras(cfg, clock)
         apply_saved_settings(cams, state)
         lead = None
@@ -910,6 +980,8 @@ def cmd_track(args, cfg):
     except KeyboardInterrupt:
         print("interrupted")
     finally:
+        if not args.sim:
+            remember_position(state, None, mount)
         for c in cams.values():
             c.stop()
         mount.close()

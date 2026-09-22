@@ -59,6 +59,16 @@ def image_jog_rates(cal, axis2, jog, speed, min_cos_dec=0.15):
     return d / peak * speed if peak > 1e-9 else np.zeros(2)
 
 
+def centring_move(cal, axis2, px, max_deg=20.0):
+    """Axis move that brings the object at px onto the boresight, or None if it looks absurd.
+
+    A wild answer means the calibration or the detection is wrong, and slewing tens of degrees
+    because of a misdetected pixel is worse than doing nothing.
+    """
+    d = axes_offset_from_pixel(cal, axis2, px)
+    return None if np.max(np.abs(d)) > max_deg else d
+
+
 def measure(cam, n=10, timeout=5.0):
     if not getattr(cam, "manual", False):
         cam.gate = None   # but never throw away a target the user picked by hand
@@ -103,12 +113,16 @@ def scale_check(J, cam_cfg, dec_cal):
 
 
 def calibrate_cameras(mount, cams, steps=None, track_rate=None, log=print, abort=None,
-                      warnings=None, slew_rate=0.5):
+                      warnings=None, slew_rate=0.5, only=None, existing=None):
     """Needs one bright target visible in every camera (centre it in the main camera first).
 
     Each camera is calibrated with its own step size, so wide and narrow fields both get a
     well-measured shift. Moves are deliberately slow (slew_rate): a skipped step during calibration
     silently corrupts the measurement, because the counter keeps counting.
+
+    only=[names] calibrates just those cameras - useful when one of them could not see the target
+    the first time round. The boresight still needs both cameras to see the target now, but the
+    other camera's stored matrix (existing) is reused, so you never have to redo the wide field.
     """
     steps = dict(steps or {})
     start = mount.position()
@@ -134,7 +148,11 @@ def calibrate_cameras(mount, cams, steps=None, track_rate=None, log=print, abort
                             f"main camera there is no boresight, so the handoff is not set up")
     # Narrow fields first: their small moves keep every target in frame, so if the big guide moves
     # later drag the main target out of the picture, nothing is lost.
-    cams = {n: usable[n] for n in sorted(usable, key=lambda n: -pixels_per_deg(usable[n].cfg))}
+    ordered = sorted(usable, key=lambda n: -pixels_per_deg(usable[n].cfg))
+    cams = {n: usable[n] for n in ordered if only is None or n in only}
+    if not cams:
+        raise RuntimeError(f"{' and '.join(only)}: no target detected there")
+    log(f"calibrating {', '.join(cams)}")
     def check_abort():
         if abort and abort():
             raise RuntimeError("calibration aborted")
@@ -192,14 +210,20 @@ def calibrate_cameras(mount, cams, steps=None, track_rate=None, log=print, abort
                 f"(see the implied focal length above) OR the axes under/over-move, in which case "
                 f"multiply gear_ratio by that factor. Check with axis-scale, and calibrate on a "
                 f"DISTANT target.")
-    if "main" in cams and "guide" in cams:
-        m = result["main"]
-        dth = np.linalg.solve(np.array(m["J"]), np.array(m["boresight"]) - at_start["main"])
-        boresight = at_start["guide"] + np.array(result["guide"]["J"]) @ dth
+    # The boresight needs a matrix for each camera - freshly measured or from a previous run - and
+    # both cameras looking at the same object right now.
+    existing = existing or {}
+    jm = result.get("main", existing.get("main"))
+    jg = result.get("guide", existing.get("guide"))
+    if jm and jg and at_start.get("main") is not None and at_start.get("guide") is not None:
+        result.setdefault("guide", dict(jg))
+        dth = np.linalg.solve(np.array(jm["J"]), np.array(jm["boresight"]) - at_start["main"])
+        boresight = at_start["guide"] + np.array(jg["J"]) @ dth
         result["guide"]["boresight"] = boresight.tolist()
         # Both cameras must have measured the SAME object for this to mean anything. If the guide
         # locked onto a different (often brighter) light, the boresight lands far from the centre.
-        centre = np.array([(cams["guide"].width - 1) / 2, (cams["guide"].height - 1) / 2])
+        guide_cam = usable["guide"]
+        centre = np.array([(guide_cam.width - 1) / 2, (guide_cam.height - 1) / 2])
         off_deg = float(np.linalg.norm(boresight - centre)) / cal_px_per_deg(result["guide"])
         log(f"guide boresight (main camera centre) at {np.round(boresight, 1)}, "
             f"{off_deg:.2f} deg from frame centre")

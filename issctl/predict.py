@@ -147,12 +147,26 @@ def target_hadec(name, site, t_unix):
         fn = lambda t, loc: SkyCoord(ra=ra * u.deg, dec=dec * u.deg, frame="icrs")
     elif key in BODIES:
         fn = lambda t, loc: get_body(key, t, loc)
-    else:
+    elif key.startswith("altaz"):
+        # a fixed direction rather than a sky object: handy for landmarks and mask edges
         try:
-            ra_h, dec_d = (float(x) for x in key.replace(",", " ").split())
+            alt_d, az_d = (float(x) for x in key[5:].replace(",", " ").split())
         except ValueError:
-            raise ValueError(f"unknown target '{name}'")
-        fn = lambda t, loc: SkyCoord(ra=ra_h * 15 * u.deg, dec=dec_d * u.deg, frame="icrs")
+            raise ValueError(f"expected 'altaz ALT AZ', got '{name}'")
+        ha, dec = geo.altaz_to_hadec(alt_d, az_d, site.lat)
+        return float(ha), float(dec), alt_d, az_d
+    else:
+        text = name.strip().replace(",", " ")
+        try:                                   # decimal: RA hours, Dec degrees
+            ra_h, dec_d = (float(x) for x in text.split())
+            coord = SkyCoord(ra=ra_h * 15 * u.deg, dec=dec_d * u.deg, frame="icrs")
+        except ValueError:
+            try:                               # sexagesimal: 18:36:56 +38:47:01, or 18h36m56s ...
+                coord = SkyCoord(text, unit=(u.hourangle, u.deg), frame="icrs")
+            except Exception:
+                raise ValueError(f"unknown target '{name}' - try a name, 'RAh Dec', "
+                                 f"'18:36:56 +38:47:01' or 'altaz ALT AZ'")
+        fn = lambda t, loc: coord
     alt, az = _astropy_altaz(fn, site, t_unix)
     ha, dec = geo.altaz_to_hadec(alt, az, site.lat)
     return float(ha), float(dec), float(alt), float(az)

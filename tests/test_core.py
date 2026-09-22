@@ -147,3 +147,59 @@ def test_pose_choice_avoids_a_pointless_flip(cfg):
     assert best["travel"] == min(
         max(abs(geo.wrap180(o["axes"][0] - current[0])), abs(o["axes"][1] - current[1]))
         for o in geo.choose_pose(-100.0, 40.0, mount_cfg, current=current)[1] if o["ok"])
+
+
+def test_position_survives_a_restart(cfg, tmp_path):
+    """The Uno's counters reset when the port opens, so the position has to come from disk."""
+    from issctl.cli import remember_position, restore_position
+    from issctl.config import load_state, save_state
+
+    clock = Clock()
+    state_path = tmp_path / "state.json"
+    mount = SimMount(cfg, {}, clock)
+    mount.query()
+    mount.move_to(mount.position() + [12.0, -20.0], timeout=30)
+    parked = mount.position()
+    state = {}
+    remember_position(state, state_path, mount)
+    assert state["position"] == pytest.approx(list(parked), abs=1e-6)
+
+    # a new session: fresh mount, counters at zero, state read back from disk
+    reloaded = load_state(state_path)
+    restarted = SimMount(cfg, {}, clock)
+    assert not np.allclose(restarted.position(), parked)     # would otherwise claim it is at home
+    restore_position(reloaded, restarted, log=lambda *a: None)
+    assert np.allclose(restarted.position(), parked, atol=1e-6)
+
+
+def test_restore_position_is_a_no_op_without_a_saved_one(cfg):
+    from issctl.cli import restore_position
+
+    mount = SimMount(cfg, {}, Clock())
+    before = mount.position()
+    restore_position({}, mount, log=lambda *a: None)
+    assert np.allclose(mount.position(), before)
+
+
+def test_target_field_accepts_several_notations(cfg):
+    """Names, decimal RA/Dec, sexagesimal and a fixed alt/az direction all resolve."""
+    from issctl.predict import target_hadec
+
+    site = Site(cfg)
+    t = 1_780_000_000.0
+    named = target_hadec("vega", site, t)
+    for text in ("18:36:56 +38:47:01", "18h36m56s +38d47m01s"):
+        got = target_hadec(text, site, t)
+        assert abs(got[0] - named[0]) < 0.05 and abs(got[1] - named[1]) < 0.05
+
+    decimal = target_hadec("18.6 38.8", site, t)
+    assert abs(decimal[0] - named[0]) < 0.5      # 18.6 h is a rounded Vega
+    assert target_hadec("18.6, 38.8", site, t) == decimal
+
+    alt, az = 30.0, 180.0                        # a fixed direction, e.g. a landmark
+    ha, dec, got_alt, got_az = target_hadec(f"altaz {alt} {az}", site, t)
+    assert (got_alt, got_az) == (alt, az)
+    assert np.allclose(geo.hadec_to_altaz(ha, dec, site.lat), (alt, az), atol=1e-6)
+
+    with pytest.raises(ValueError):
+        target_hadec("nonsense", site, t)

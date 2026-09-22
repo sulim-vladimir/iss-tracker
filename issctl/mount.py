@@ -83,6 +83,18 @@ class Mount:
         self.index = HOME.copy()
         self.query()
 
+    def restore_position(self, pos):
+        """Adopt a position saved by an earlier session.
+
+        The Uno resets when the serial port opens, so its counters always start at zero. Without
+        this the driver assumes the mount is still at the last homed pose. Only valid if nobody
+        moved the tube by hand in between - re-home if in doubt.
+        """
+        self.query()
+        mech = self.last[1] - self.index
+        self.index = np.asarray(pos, dtype=float) - mech
+        return self.query()
+
     def sync(self, ha, dec):
         """Correct the index so the current pose reads as (ha, dec). Returns the correction."""
         cur = self.query()

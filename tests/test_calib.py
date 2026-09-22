@@ -3,7 +3,8 @@
 import numpy as np
 import pytest
 
-from issctl.calib import ideal_calibration, image_jog_rates, jacobian, pixels_per_deg, scale_check
+from issctl.calib import (centring_move, ideal_calibration, image_jog_rates, jacobian,
+                          pixels_per_deg, scale_check)
 
 GUIDE = {"pixel_um": 5.6, "bin": 1, "focal_length_mm": 16, "width": 640, "height": 480}
 MAIN = {"pixel_um": 2.9, "bin": 1, "focal_length_mm": 750, "width": 1936, "height": 1096}
@@ -70,3 +71,20 @@ def test_scale_check_is_blind_at_the_pole():
     J = jacobian(cal, axis2=90.0)          # what the tracker would use if calibrated at home
     _, _, factor = scale_check(J, GUIDE, dec_cal=90.0)
     assert np.allclose(factor, 1.0, rtol=1e-6)
+
+
+def test_centring_move_brings_the_target_to_the_boresight():
+    cal = ideal_calibration(GUIDE, rotation_deg=31.0)
+    for axis2 in (35.0, 130.0):
+        offset = np.array([0.6, -0.4])                       # where the object sits, in axis degrees
+        px = np.array(cal["boresight"]) - jacobian(cal, axis2) @ offset
+        move = centring_move(cal, axis2, px)
+        assert np.allclose(move, offset, rtol=1e-6)          # moving by it lands on the boresight
+
+
+def test_centring_move_refuses_absurd_answers():
+    """A misdetection or bad calibration must not trigger a huge slew."""
+    cal = ideal_calibration(GUIDE)
+    px = np.array(cal["boresight"]) - jacobian(cal, 40.0) @ np.array([50.0, 0.0])
+    assert centring_move(cal, 40.0, px) is None
+    assert centring_move(cal, 40.0, px, max_deg=90) is not None
