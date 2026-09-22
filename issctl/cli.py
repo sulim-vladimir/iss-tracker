@@ -586,6 +586,8 @@ def cmd_console(args, cfg):
             return emergency_stop()
         if action == "track":
             return start_tracking(params.get("pass"))
+        if action == "servo":
+            return start_servo()
         if action == "untrack":
             return stop_tracking()
         if action == "stop":
@@ -593,6 +595,10 @@ def cmd_console(args, cfg):
             # give up. The axes decelerate normally instead of losing steps like the estop does.
             ui["jog"][:] = 0
             refresh_jog_rates()
+            if ui["mode"] == "track":
+                # A tracker owns the mount and re-commands at control_hz, so stopping the axes
+                # from here would only produce a stutter. End the session instead.
+                return stop_tracking()
             if ui["busy"]:
                 ui["abort"].set()
                 say("slew cancelled")
@@ -688,6 +694,61 @@ def cmd_console(args, cfg):
             return None
         return dict(info, now=clock.now(), source=tr.source if tr else "idle")
 
+    def run_tracker(tracker, label):
+        """Hand the mount to a tracker until it finishes, then give it back to the console."""
+        session["tracker"] = tracker
+        ui["mode"] = "track"
+        ui["jog"][:] = 0
+        ui["tracking"] = False
+        if main_cfg.get("record") and recorder.available:
+            recorder.set_enabled(True)  # armed only; the gate below decides when to write
+        recorder.set_gate(False)
+        tracker.run(on_record=recorder.set_gate)
+        ui["msg"] = f"{label} stopped" if tracker.stop_requested else f"{label} finished"
+
+    def start_servo():
+        """Follow whatever the cameras can see, with no orbit and no alignment.
+
+        The mount is left exactly where it is pointing and the reference is frozen there, so
+        nothing moves until a detection arrives. Point at the ISS by hand first, then click it
+        in the guide image - that click is what starts the estimate.
+        """
+        if session["thread"] and session["thread"].is_alive():
+            return
+        from .control import FreeRun, Tracker
+
+        def run_session():
+            try:
+                if not state.get("cameras"):
+                    ui["msg"] = "no camera calibration - calibrate first ('c')"
+                    return
+                stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+                logs = ROOT / "logs"
+                logs.mkdir(exist_ok=True)
+                tracker = Tracker(cfg, state, mount, cams, clock,
+                                  FreeRun(mount.position()),
+                                  log=lambda s: ui.__setitem__("msg", s),
+                                  log_path=logs / f"servo-{stamp}.csv")
+                session["info"] = {"mode": "servo", "start": clock.now(), "end": None,
+                                   "rise": None, "max_alt": None, "rise_at": "-",
+                                   "starts_at": f"{datetime.datetime.now():%H:%M:%S}"}
+                say("servo mode: point at the target and click it in the guide image")
+                run_tracker(tracker, "servo")
+            except Exception as e:
+                ui["msg"] = f"servo error: {e}"
+            finally:
+                ui["mode"] = "console"
+                session["tracker"] = None
+                recorder.set_enabled(False)
+                recorder.set_gate(True)
+                try:
+                    mount.stop()
+                except Exception:
+                    pass
+
+        session["thread"] = threading.Thread(target=run_session, name="servo-session", daemon=True)
+        session["thread"].start()
+
     def start_tracking(index=None):
         if session["thread"] and session["thread"].is_alive():
             return
@@ -724,15 +785,7 @@ def cmd_console(args, cfg):
                 tracker = Tracker(cfg, state, mount, cams, clock, traj,
                                   log=lambda s: ui.__setitem__("msg", s),
                                   log_path=logs / f"track-{stamp}.csv")
-                session["tracker"] = tracker
-                ui["mode"] = "track"
-                ui["jog"][:] = 0
-                ui["tracking"] = False
-                if main_cfg.get("record") and recorder.available:
-                    recorder.set_enabled(True)  # armed only; the gate below decides when to write
-                recorder.set_gate(False)
-                tracker.run(on_record=recorder.set_gate)
-                ui["msg"] = "tracking stopped" if tracker.stop_requested else "pass finished"
+                run_tracker(tracker, "tracking")
             except Exception as e:
                 ui["msg"] = f"tracking error: {e}"
             finally:
@@ -837,6 +890,10 @@ def cmd_console(args, cfg):
                     busy(lambda: goto(name))
             elif k == ord("c") and cams:
                 busy(do_cal)
+            elif k == ord("p"):
+                mount_action("track", {})
+            elif k == ord("v"):
+                mount_action("servo", {})
             elif k == ord("m"):
                 mount_action("mask", {})
             elif k == ord("f"):
@@ -865,6 +922,7 @@ def cmd_console(args, cfg):
             lines = [
                 "ISS mount console   q quit | arrows jog (toggle) | space stop jog | X EMERGENCY STOP | 1-5 speed | t sidereal",
                 "                    H home | s sync | g goto | c calibrate | m mask point | f arrow frame",
+                "                    p track next pass | v servo (follow what the camera sees)",
                 "                    x select cam | -/= exposure | [/] gain",
                 "",
                 f"axis1 {pos[0]:+9.4f}   axis2 {pos[1]:+9.4f}   side {'east_looking' if pos[1] <= 90 else 'west_looking'}",
@@ -937,9 +995,21 @@ def cmd_track(args, cfg):
         else:  # prefer a pass the ISS is actually visible for, else the highest
             plans = [(p, *pr.plan_pass(sat, site, cfg["mount"], p["rise"], p["set"], mask=mask)) for p in passes]
             p, traj, rep = max(plans, key=lambda x: (x[2]["useful_s"], x[0]["max_alt"]))
-        clock = Clock(start_unix=traj.t_start - args.sim_lead, speed=args.speed)
+        sim_lead = min(args.sim_lead, 5.0) if args.servo else args.sim_lead
+        clock = Clock(start_unix=traj.t_start - sim_lead, speed=args.speed)
         state = {"index": HOME.tolist()}
-        start = traj.at(traj.t_start)[0] + [1.0, -0.5] if args.sim_lead < 60 else HOME
+        if args.servo:
+            # Nobody slews in servo mode, so the sim has to start where a human would have put
+            # the tube: on the target, off by args.hand_error. With a misaligned mount that pose
+            # has nothing to do with the planned trajectory, which is exactly the point.
+            from .sim import aim_axes, misalignment
+            model = misalignment(site.lat, (args.polar_error, -0.6 * args.polar_error),
+                                 args.azimuth_error)
+            he = args.hand_error
+            start = aim_axes(sat, site, traj.t_start, cfg["mount"], model, args.time_error,
+                             offset=(he, -0.7 * he))
+        else:
+            start = traj.at(traj.t_start)[0] + [1.0, -0.5] if args.sim_lead < 60 else HOME
         mount = SimMount(cfg, state, clock, start=start)
         clouds = []
         if args.clouds:
@@ -954,7 +1024,7 @@ def cmd_track(args, cfg):
         state["cameras"] = world.calibration_estimate(scale_error=args.cal_scale_error,
                                                       rot_error_deg=args.cal_rot_error)
         cams = {n: SimCamera(n, cfg["cameras"][n], clock, world).start() for n in ("guide", "main")}
-        lead = args.sim_lead
+        lead = sim_lead
     else:
         clock = Clock()
         site = pr.Site(cfg)
@@ -987,7 +1057,7 @@ def cmd_track(args, cfg):
     print(f"illumination: {describe_shadow(rep, traj.t_start)} (relative to track start)")
     if rep["windows"]:
         print(f"usable windows: {describe_windows(sat, site, rep, traj.t_start)}")
-    if rep["tracked_s"] <= 0:
+    if rep["tracked_s"] <= 0 and not args.servo:
         print("pass not trackable with current limits")
         return
 
@@ -998,8 +1068,17 @@ def cmd_track(args, cfg):
                              instrument=main_cfg["name_match"])
     auto_record = bool(main_cfg.get("record") and not args.sim or args.record)
 
-    log_path = logs / f"track-{stamp}{'-sim' if args.sim else ''}.csv"
-    tracker = Tracker(cfg, state, mount, cams, clock, traj, log_path=log_path)
+    log_path = logs / f"{'servo' if args.servo else 'track'}-{stamp}{'-sim' if args.sim else ''}.csv"
+    if args.servo:
+        # The planned pass is kept for the sky chart and the shadow curve, but it is not what the
+        # loop follows: the reference is frozen where the tube is now and the cameras do the rest.
+        from .control import FreeRun
+        reference = FreeRun(mount.position(), visibility=traj)
+        print("servo mode: following the cameras, not the orbit - point at the target and "
+              "click it in the guide image")
+    else:
+        reference = traj
+    tracker = Tracker(cfg, state, mount, cams, clock, reference, log_path=log_path)
 
     def status_lines(name):
         if name != "guide":
@@ -1104,6 +1183,12 @@ def main(argv=None):
     p.add_argument("--time-error", type=float, default=1.5, help="simulated TLE timing error, s")
     p.add_argument("--polar-error", type=float, default=0.0,
                    help="simulated polar-axis misalignment, deg (a real axis tilt, not an offset)")
+    p.add_argument("--servo", action="store_true",
+                   help="follow the cameras instead of the orbit: no prediction, no alignment, "
+                        "no slew - the tube is pointed by hand and the loop keeps the target "
+                        "on the boresight")
+    p.add_argument("--hand-error", type=float, default=1.0,
+                   help="simulated hand-pointing error at the start of a --servo run, deg")
     p.add_argument("--azimuth-error", type=float, default=0.0,
                    help="simulated mount azimuth error, deg (rotation about the vertical)")
     p.add_argument("--pointing-error", type=float, default=0.35,

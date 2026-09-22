@@ -122,6 +122,10 @@ record_lock_timeout_s = 5     # hold recording if the target has not been seen f
 max_offset_jump_arcmin = 25   # reject detections that jump this far once locked (stars, hot pixels)
 reacquire_growth_arcmin_per_s = 8   # widen that limit while coasting blind (clouds/obstructions)
 max_reacquire_arcmin = 240    # never accept a detection further out than this (4 deg of the 17 deg field)
+# Servo mode: no orbit, no alignment - the feed-forward is estimated from the camera alone
+# (cross_alpha/cross_beta above become that estimator, so they are shared with pass mode).
+servo_give_up_s = 20          # stop the run after this long with no detection at all
+servo_reseed_deg = 30         # re-anchor the frozen reference once the estimate walks this far
 
 [preview]
 enabled = true

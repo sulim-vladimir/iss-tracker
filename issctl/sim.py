@@ -130,6 +130,22 @@ class CalibWorld:
         return out
 
 
+def aim_axes(sat, site, t, mount_cfg, model=None, time_error_s=0.0, offset=(0.0, 0.0)):
+    """Mechanical axes that really point at the ISS, on whichever side the mount can reach.
+
+    Servo mode never slews to a target: somebody points the tube at it by hand. This is that
+    pointing, plus whatever they were off by - which is the whole starting condition, because
+    with an unaligned mount there is no other way to know where to aim.
+    """
+    ha, dec, _, _ = sat_hadec(sat, site, t + time_error_s)
+    for side in geo.SIDES:
+        a1, a2 = (geo.hadec_to_axes if model is None else model.hadec_to_axes)(ha, dec, side)
+        a1, a2 = float(a1), float(a2)
+        if geo.pose_within_limits(a1, a2, mount_cfg):
+            return np.array([a1, a2]) + np.asarray(offset, dtype=float)
+    raise RuntimeError("the ISS is not reachable from this mount pose on either side")
+
+
 def misalignment(lat, polar_error_deg=(0.0, 0.0), azimuth_error_deg=0.0):
     """Mount whose polar axis is tilted and/or swung in azimuth. Azimuth error is a rotation
     about the local vertical, which for an unaligned tripod is the big one."""

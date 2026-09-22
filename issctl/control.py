@@ -1,13 +1,27 @@
-"""Closed-loop ISS tracker.
+"""Closed-loop ISS tracker, in two modes that share one control loop.
 
-Inner loop (control_hz): rate = trajectory feed-forward + Kp * position error, using the
-firmware's step counts as position feedback.
+Inner loop (control_hz): rate = feed-forward + Kp * position error, using the firmware's step
+counts as position feedback.
 
-Outer loop (every camera detection): the ISS position is converted into mount-axis
-coordinates and compared with the prediction. The residual is split into
+Outer loop (every camera detection): the ISS position is converted into mount-axis coordinates
+and compared with the reference. The residual is split into
   - an along-track part  -> time offset into the TLE trajectory (TLE timing error), and
   - a cross-track part   -> alpha-beta filtered axis offset (pointing/polar/TLE error).
 The main camera takes over from the guide camera after a few consecutive detections.
+
+What differs between the modes is only the REFERENCE the residual is measured against:
+
+  pass mode  - a planned Trajectory. The feed-forward comes from the orbit, so the mount is
+               already moving at very nearly the right rate before the cameras see anything,
+               and the loop only trims. Needs a pointing model good to a few degrees.
+  servo mode - a FreeRun: position frozen, velocity zero. cross/cross_rate then stop being a
+               correction and become the whole estimate of where the target is and how fast it
+               moves, so the feed-forward is derived from the camera instead of the orbit.
+               Needs no orbit, no site, no alignment - only the camera calibration.
+
+Servo mode is what makes an unaligned mount usable: point at the ISS by hand, click it, and the
+loop keeps it on the boresight. What it cannot do is know in advance that the pass is reachable,
+so the mechanical limit guard below is the only thing standing between it and a tripod leg.
 """
 
 import csv
@@ -22,6 +36,40 @@ from .mount import limit_correction
 SHADOW_OFFSET_CLAMP_S = 5.0
 
 
+class FreeRun:
+    """Reference for servo mode: a target that the tracker knows nothing about.
+
+    `at` returns a frozen position and zero velocity, which turns Tracker.cross/cross_rate into a
+    plain alpha-beta estimator of the target's own motion in mount axes. The seed is re-anchored
+    as the estimate walks away from it, so wrapping axis1 stays unambiguous over a long run.
+
+    `visibility` may be a planned Trajectory, used ONLY for its shadow and obstruction curves -
+    both are functions of time alone and need no alignment, so a servo run can still coast
+    through Earth's shadow when a pass has been identified.
+    """
+
+    servo = True
+    side = None
+
+    def __init__(self, seed, visibility=None):
+        self.seed = np.asarray(seed, dtype=float).copy()
+        self.visibility = visibility
+        self.t_start, self.t_end = -np.inf, np.inf
+
+    def at(self, tq):
+        return self.seed.copy(), np.zeros(2)
+
+    def reseed(self, pos):
+        self.seed = np.asarray(pos, dtype=float).copy()
+
+    def illum_at(self, tq):
+        return 1.0 if self.visibility is None else self.visibility.illum_at(tq)
+
+    def open_at(self, tq):
+        return 1.0 if self.visibility is None else self.visibility.open_at(tq)
+
+
+
 class Tracker:
     def __init__(self, cfg, state, mount, cameras, clock, traj, log=print, log_path=None):
         self.cfg, self.mount, self.cams, self.clock, self.traj, self.log = cfg, mount, cameras, clock, traj, log
@@ -32,6 +80,11 @@ class Tracker:
         self.cmd_latency = m["command_latency_s"]
         self.cal = state.get("cameras", {})
         self.lat = cfg["site"]["latitude"]
+        self.servo = bool(getattr(traj, "servo", False))
+        self.give_up_s = tr.get("servo_give_up_s", 20.0)
+        self.reseed_deg = tr.get("servo_reseed_deg", 30.0)
+        self.at_limit = [False, False]
+        self.t0 = None
         self.time_offset = 0.0
         self.cross = np.zeros(2)
         self.cross_rate = np.zeros(2)
@@ -149,19 +202,31 @@ class Tracker:
         elif np.isfinite(self.last_good) and jump > self._jump_allowance(det.t - self.last_good):
             self.rejected += 1
             return
+        first_fix = not np.isfinite(self.last_good)
         self.last_good = det.t
 
-        g = geo.sky_metric(meas[1]) ** 2
-        vv = float(np.sum(g * v * v))
-        dt_obs = float(np.sum(g * o * v)) / vv if vv > 1e-6 else 0.0
-        lim = self.tr["max_time_offset_s"]
-        self.time_offset = float(np.clip(self.time_offset + self.tr["time_gain"] * dt_obs, -lim, lim))
-        resid = o - dt_obs * v
+        resid = o
+        if not self.servo:
+            # Split the residual: how far along its own path the target is (a clock/TLE error)
+            # and how far off it (pointing). In servo mode there is no path to be along, and
+            # v is zero anyway, so the whole residual is positional.
+            g = geo.sky_metric(meas[1]) ** 2
+            vv = float(np.sum(g * v * v))
+            dt_obs = float(np.sum(g * o * v)) / vv if vv > 1e-6 else 0.0
+            lim = self.tr["max_time_offset_s"]
+            self.time_offset = float(np.clip(self.time_offset + self.tr["time_gain"] * dt_obs, -lim, lim))
+            resid = o - dt_obs * v
 
         pred = self.cross_at(det.t)
         dt = self.dt if self.t_update is None else max(det.t - self.t_update, 1e-3)
-        self.cross = pred + self.tr["cross_alpha"] * resid
-        self.cross_rate = self.cross_rate + self.tr["cross_beta"] * resid / dt
+        if first_fix:
+            # Nothing is known yet, so the measurement IS the estimate. Filtering the first fix
+            # would leave the mount crawling toward a target it can already see, and in servo
+            # mode that first fix is the only thing anchoring the whole run.
+            self.cross = pred + resid
+        else:
+            self.cross = pred + self.tr["cross_alpha"] * resid
+            self.cross_rate = self.cross_rate + self.tr["cross_beta"] * resid / dt
         self.t_update = det.t
 
         if name == "guide" and not self.cams[name].manual:
@@ -177,11 +242,48 @@ class Tracker:
         if "guide" in self.cams and now - self.last_seen["guide"] > timeout and not self.cams["guide"].manual:
             self._search_gate("guide", now)
         if all(now - t > timeout for t in self.last_seen.values()) and self.source != "predict":
-            self.log("target lost, following prediction")
             self.source = "predict"
-            self.cross_rate[:] = 0.0
+            if self.servo:
+                # There is no prediction to fall back on - the estimated rate is all we have, so
+                # coast on it. Constant velocity holds the target inside the guide field for tens
+                # of seconds, which covers a cloud gap or a missed frame or two.
+                self.log(f"target lost, coasting at {self.cross_rate.round(3)} deg/s")
+            else:
+                self.log("target lost, following prediction")
+                self.cross_rate[:] = 0.0
 
     # ---- control ----
+    def _limit_guard(self, cmd, pos):
+        """Refuse to drive an axis further past its mechanical limit.
+
+        In pass mode the planner has already walked the whole trajectory and rejected a pass that
+        does not fit. In servo mode nothing has, because nothing knows where the mount points -
+        so this is the only thing between the loop and a counterweight meeting a tripod leg.
+        """
+        m = self.cfg["mount"]
+        lo, hi = m.get("axis2_limits", [-10.0, 190.0])
+        bounds = ((-m["axis1_hour_limit"], m["axis1_hour_limit"]), (lo, hi))
+        cmd = np.asarray(cmd, dtype=float).copy()
+        for i, (a, b) in enumerate(bounds):
+            outside = (pos[i] <= a and cmd[i] < 0) or (pos[i] >= b and cmd[i] > 0)
+            if outside:
+                cmd[i] = 0.0
+                if not self.at_limit[i]:
+                    self.log(f"axis{i + 1} at its limit ({pos[i]:+.1f} deg) - refusing to go further")
+            self.at_limit[i] = outside
+        return cmd
+
+    def _reanchor(self):
+        """Move the frozen servo reference up to the estimate.
+
+        cross is an offset from the seed, and axis1 offsets are wrapped to +/-180. Over a long run
+        the estimate walks far enough from a fixed seed for that wrap to become ambiguous, so the
+        seed follows it. target() is unchanged by the shift.
+        """
+        shift = self.cross.copy()
+        self.traj.reseed(self.traj.seed + shift)
+        self.cross = self.cross - shift
+
     def step(self):
         now = self.clock.now()
         # The TLE timing error shifts the real shadow entry, but only by seconds. While acquiring,
@@ -198,7 +300,8 @@ class Tracker:
                          " - coasting on prediction")
                 self.source = reason
                 self.main_streak = 0
-                self.cross_rate[:] = 0.0
+                if not self.servo:
+                    self.cross_rate[:] = 0.0   # the trajectory carries the motion; in servo mode it is the motion
                 for cam in self.cams.values():
                     if not cam.manual:
                         cam.gate = None
@@ -238,7 +341,10 @@ class Tracker:
         tracking = self.traj.t_start <= now + self.time_offset <= self.traj.t_end
         ff = v if tracking else np.zeros(2)
         cmd = ff + limit_correction(self.kp * err, err, self.mount.max_accel)
+        cmd = self._limit_guard(cmd, meas)
         pos = self.mount.set_rates(*cmd)
+        if self.servo and np.max(np.abs(self.cross)) > self.reseed_deg:
+            self._reanchor()
         if self._csv:
             px = self.last_px.get(self.source, (np.nan, np.nan))
             alt, az = self.altaz(pos)
@@ -258,10 +364,14 @@ class Tracker:
         self.mount.enable(True)
         started = False
         last_report = 0.0
+        self.t0 = self.clock.now() if self.servo else traj.t_start
         try:
             while not self.stop_requested:
                 now = self.clock.now()
                 if now > traj.t_end + 2.0:
+                    break
+                if self.servo and np.isfinite(self.last_good) and now - self.last_good > self.give_up_s:
+                    self.log(f"nothing seen for {self.give_up_s:.0f}s - giving up")
                     break
                 if now < traj.t_start - lead_s:
                     if now - last_report > 10:
@@ -279,7 +389,7 @@ class Tracker:
                 if now - last_report > 2.0:
                     sky = err * geo.sky_metric(self.mount.last[1][1]) * 60
                     alt, az = self.altaz()
-                    self.log(f"t{now - traj.t_start:+6.1f}s src={self.source:7s} "
+                    self.log(f"t{now - self.t0:+6.1f}s src={self.source:7s} "
                              f"alt {alt:5.1f} az {az:5.1f} {geo.compass(az):3s} "
                              f"err=({sky[0]:+6.2f},{sky[1]:+6.2f})' "
                              f"dt={self.time_offset:+5.2f}s cross=({self.cross[0] * 60:+5.1f},{self.cross[1] * 60:+5.1f})'")
