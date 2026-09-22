@@ -46,18 +46,6 @@ Verified only in simulation: acquisition, guide->main handoff (~17" median error
 main field ~100% of the time), shadow coasting, obstruction masks, cloud gaps, SER recording,
 pass planning, click-to-select.
 
-**Open: the Dec axis moves about half of what it is told.** RA measures right (scale check x0.94),
-Dec short (x2.25). Pulleys and belts are identical on both axes and the worm counts are confirmed,
-so the mechanics match the config. Two live hypotheses:
-
-1. the Dec driver is not in 1/16 - the old sketch only ever used 1/2, 1/4 and 1/8, so **M2 has never
-   been driven high on this hardware** and a stuck-high M0 would silently give 1/32 (half motion);
-2. the Dec motor skips steps (imbalance, driver current, acceleration), which the step counter
-   cannot see.
-
-Next step is the A/B: set `microsteps = 8` on both axes (a mode the old sketch proved works), then
-`./issctl.sh axis-scale --axis 2 --move 45` with an inclinometer on the tube.
-
 ## Not built yet
 
 * **Unaligned mount support.** `issctl/model.py` has a fitted 5-parameter pointing model
