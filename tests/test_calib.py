@@ -200,3 +200,20 @@ def test_calibrate_against_reference_cancels_backlash():
     assert np.allclose(np.linalg.norm(J[:, 1]), np.linalg.norm(truth[:, 1]), rtol=0.1)
     angle = np.degrees(np.arctan2(J[1, 0], J[0, 0]) - np.arctan2(truth[1, 0], truth[0, 0]))
     assert abs((angle + 180) % 360 - 180) < 5
+
+
+def test_calibration_order_puts_the_narrow_camera_first_when_it_can():
+    """With a stored reference the narrow camera goes first: its small moves keep every target in
+    frame. Without one the wide camera must go first, whatever that costs."""
+    from issctl.calib import calibration_order
+
+    cams = {"guide": GUIDE, "main": MAIN}
+    order, ref = calibration_order(cams, existing={"guide": {"J": [[1, 0], [0, 1]]}})
+    assert order == ["main", "guide"] and ref == "guide"
+
+    order, ref = calibration_order(cams, existing={})
+    assert order == ["guide", "main"] and ref == "guide"
+
+    # a stale entry without a matrix is not a reference
+    order, _ = calibration_order(cams, existing={"guide": {"boresight": [1, 2]}})
+    assert order == ["guide", "main"]

@@ -85,13 +85,16 @@ def measure(cam, n=10, timeout=5.0):
     return np.mean(pts, axis=0) if len(pts) >= max(3, n // 2) else None
 
 
-def default_step(cam, fraction=0.15):
-    """Move enough to shift the target ~20% of the frame height in THIS camera.
+def default_step(cam, ramp_steps=3, fraction=0.35):
+    """Per-step angle for a ramp that keeps the target inside THIS camera's frame.
 
-    A single step cannot serve both: with a 16 mm guide lens (74 px/deg) and the main camera at
-    750 mm (4500 px/deg), 0.08 deg is 375 px in the main frame but only 6 px in the guide.
+    The whole ramp must fit: starting near the centre, the target may travel about 40% of the
+    frame height before it leaves. One size cannot serve both cameras - with a 16 mm guide lens
+    (50 px/deg) and the main at 1500 mm (9000 px/deg) the same angle is 6 px in one and 1000 in
+    the other.
     """
-    return float(np.clip(fraction * cam.height / pixels_per_deg(cam.cfg), 0.02, 3.0))
+    total = fraction * cam.height / pixels_per_deg(cam.cfg)
+    return float(np.clip(total / max(ramp_steps, 1), 0.002, 3.0))
 
 
 def implied_focal_length(px_per_deg, cam_cfg):
@@ -211,8 +214,7 @@ def calibrate_against(mount, cam, ref_cam, ref_cal, step_deg=None, ramp_steps=3,
     cancel. With S_cam and S_ref the measured shifts per commanded degree, and G the reference
     matrix, the answer is J = S_cam . S_ref^-1 . G.
     """
-    scale = pixels_per_deg(cam.cfg)
-    step_deg = step_deg or float(np.clip(0.2 * cam.height / scale, 0.005, 0.5))
+    step_deg = step_deg or default_step(cam, ramp_steps)
     start = mount.position()
     s_cam, s_ref = [], []
     for axis in (0, 1):
@@ -243,8 +245,26 @@ def calibrate_against(mount, cam, ref_cam, ref_cal, step_deg=None, ramp_steps=3,
         mount.move_to(start, track_rate=track_rate, abort=abort, max_rate=slew_rate)
     S_cam, S_ref = np.column_stack(s_cam), np.column_stack(s_ref)
     if abs(np.linalg.det(S_ref)) < 1e-9:
-        raise RuntimeError(f"{ref_cam.name} barely moved - use a bigger step")
+        raise RuntimeError(f"{ref_cam.name} hardly moved during the ramp - the mount's slack is "
+                           f"eating steps of {step_deg:.3f} deg; reduce the backlash first")
     return S_cam @ np.linalg.inv(S_ref) @ np.array(ref_cal["J"], dtype=float)
+
+
+def calibration_order(cam_cfgs, existing=None):
+    """Which camera to calibrate first, and which is the reference.
+
+    A narrow camera cannot out-step the mount's backlash, so it is calibrated against the wide one,
+    where the slack cancels in the ratio. That reference may be a STORED calibration - a camera's
+    matrix only changes if the camera itself moves - and then the narrow camera goes FIRST, because
+    its small moves keep the target inside every frame. Only without a stored reference must the
+    wide camera go first, and the target then has to be steered back into the narrow field.
+    """
+    if not cam_cfgs:
+        return [], None
+    widest = min(cam_cfgs, key=lambda n: pixels_per_deg(cam_cfgs[n]))
+    have_reference = bool(((existing or {}).get(widest) or {}).get("J"))
+    order = sorted(cam_cfgs, key=lambda n: pixels_per_deg(cam_cfgs[n]), reverse=have_reference)
+    return order, widest
 
 
 def calibrate_cameras(mount, cams, steps=None, track_rate=None, log=print, abort=None,
@@ -276,7 +296,7 @@ def calibrate_cameras(mount, cams, steps=None, track_rate=None, log=print, abort
             missing.append(name)
             continue
         usable[name] = cam
-        steps.setdefault(name, default_step(cam))
+        steps.setdefault(name, default_step(cam, ramp_steps))
     if not usable:
         raise RuntimeError(f"no target detected in {' or '.join(cams)} - adjust exposure/gain, "
                            f"focus, or click the target in the image")
@@ -285,9 +305,7 @@ def calibrate_cameras(mount, cams, steps=None, track_rate=None, log=print, abort
         if warnings is not None:
             warnings.append(f"{', '.join(missing)} not calibrated (no target detected) - without the "
                             f"main camera there is no boresight, so the handoff is not set up")
-    # Widest field first: a narrow camera cannot out-step the mount's backlash, so it is calibrated
-    # against the wide one afterwards, where the slack cancels in the ratio.
-    ordered = sorted(usable, key=lambda n: pixels_per_deg(usable[n].cfg))
+    ordered, widest = calibration_order({n: c.cfg for n, c in usable.items()}, existing)
     cams = {n: usable[n] for n in ordered if only is None or n in only}
     if not cams:
         raise RuntimeError(f"{' and '.join(only)}: no target detected there")
@@ -297,7 +315,9 @@ def calibrate_cameras(mount, cams, steps=None, track_rate=None, log=print, abort
             raise RuntimeError("calibration aborted")
 
     cols = {name: [None, None] for name in cams}
-    reference = ordered[0] if ordered else None            # the widest field we have
+    reference = widest if len(usable) > 1 else None
+    log(f"order: {', '.join(cams)}"
+        + (f" ({reference} is the reference)" if reference else ""))
     for name, cam in cams.items():
         ref_cal = None
         if reference and reference != name:
