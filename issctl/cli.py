@@ -331,7 +331,8 @@ def cmd_console(args, cfg):
         from .camera import SimCamera
         from .sim import CalibWorld
         # start away from the pole: at axis2 = 90 the axis1 measurement degenerates (cos dec -> 0)
-        mount = SimMount(cfg, state, clock, start=[20.0, 40.0])
+        mount = SimMount(cfg, state, clock, start=[20.0, 40.0],
+                         backlash=[0.0, getattr(args, "sim_backlash", 0.0)])
         mount.query()
         # a fixed "distant light" a little off the boresight, to exercise jogging and calibration
         world = CalibWorld(cfg, mount)
@@ -451,7 +452,8 @@ def cmd_console(args, cfg):
                     f"(tube swings past the pole - check clearance)")
                 time.sleep(2.0)
             first = False
-            mount.move_to(best["axes"], track_rate=[SIDEREAL_DEG_S, 0.0], abort=aborted)
+            mount.move_to(best["axes"], track_rate=[SIDEREAL_DEG_S, 0.0], abort=aborted,
+                          approach=state.get("backlash_deg"))
             if aborted():
                 say("goto aborted")
                 return
@@ -476,6 +478,53 @@ def cmd_console(args, cfg):
         persist()
         say(f"calibration done - {len(warnings)} warning(s), see below" if warnings else
             f"calibration complete, saved to {(state_path or STATE_FILE).name}")
+        recover_main()
+
+    def recover_main():
+        """Big moves (guide calibration, backlash) overshoot the main camera's tiny field by more
+        than the mount repeats to. The guide can always put the target back."""
+        main, guide = cams.get("main"), cams.get("guide")
+        if not main or not guide or not state.get("cameras", {}).get("guide"):
+            return
+        if main.latest()[1] is not None or guide.latest()[1] is None:
+            return
+        say("main lost the target during the moves - bringing it back with the guide")
+        do_centre("guide")
+
+    def do_backlash(name=None):
+        """Measure lost motion on both axes.
+
+        The guide sees a wide field, so it can measure slack of any size; the main camera is ~180x
+        finer but can only measure slack smaller than its own field, and says so when it cannot.
+        """
+        from .calib import measure_backlash
+
+        if name not in cams:
+            name = "guide" if "guide" in cams and state.get("cameras", {}).get("guide") else "main"
+        cam, cal = cams.get(name), state.get("cameras", {}).get(name)
+        if cam is None or cal is None:
+            say(f"{name}: need a calibrated camera with a target in view")
+            return
+        track = [SIDEREAL_DEG_S, 0.0] if ui["tracking"] else None
+        out, saturated = [], False
+        for axis in (0, 1):
+            lost, sat = measure_backlash(mount, cam, cal, axis, track_rate=track, log=say,
+                                         abort=aborted)
+            out.append(lost)
+            saturated |= sat
+            if aborted():
+                say("backlash measurement aborted")
+                return
+        if saturated:
+            say(f"{name} cannot resolve this much slack - measure on the guide first, "
+                f"reduce it mechanically, then refine here")
+            recover_main()
+            return
+        state["backlash_deg"] = [round(v, 4) for v in out]
+        persist()
+        say(f"backlash: axis1 {out[0] * 60:.1f}' axis2 {out[1] * 60:.1f}' "
+            f"(measured on {name}, now compensated on goto/centre)")
+        recover_main()
 
     def do_centre(name, where="boresight"):
         """Put the object the camera is showing onto the boresight - or onto the frame centre,
@@ -512,6 +561,8 @@ def cmd_console(args, cfg):
                 say(f"{name}: implied move is absurd - check the calibration or pick the target again")
                 return
             say(f"centring {name}: {off_px:.0f} px off, moving {d.round(3)} deg")
+            # No backlash overshoot here: centring is closed-loop, it measures and corrects again.
+            # An open-loop detour of twice the slack just throws the target out of a narrow field.
             mount.move_to(mount.position() + d, track_rate=track, abort=aborted, max_rate=0.5)
             if aborted():
                 say("centring aborted")
@@ -592,6 +643,12 @@ def cmd_console(args, cfg):
                 ui["jog"][:] = 0
                 in_background(lambda: do_centre(params.get("cam", "guide"),
                                                 params.get("where", "boresight")))
+            else:
+                ui["msg"] = "no cameras"
+        elif action == "backlash":
+            if cams:
+                ui["jog"][:] = 0
+                in_background(lambda: do_backlash(params.get("cam")))
             else:
                 ui["msg"] = "no cameras"
         elif action == "calibrate":
@@ -702,7 +759,9 @@ def cmd_console(args, cfg):
         cal = {}
         for n, c in state.get("cameras", {}).items():
             J = np.array(c["J"], dtype=float)
-            cal[n] = {"scale": round(float(np.linalg.norm(J[:, 1])), 1),
+            scale = float(np.linalg.norm(J[:, 1]))          # px per degree of sky
+            cal[n] = {"scale": round(scale, 1),
+                      "arcsec_px": round(3600.0 / scale, 2) if scale > 1e-6 else None,
                       "rotation": round(float(np.degrees(np.arctan2(J[1, 0], J[0, 0]))), 1)}
         return {"axis1": round(float(pos[0]), 4), "axis2": round(float(pos[1]), 4),
                 "alt": round(alt_s, 2), "az": round(az_s, 2), "compass": geo.compass(az_s),
@@ -711,6 +770,7 @@ def cmd_console(args, cfg):
                 "frames": jog_frames(), "aborted": aborted(), "mode": ui["mode"],
                 "jog_raw": ui.get("jog_raw", False),
                 "calibrated_at": state.get("calibrated_at"), "motors": ui["motors"],
+                "backlash_deg": state.get("backlash_deg"),
                 "position_at": state.get("position_at"),
                 "cal_warnings": state.get("calibration_warnings", []),
                 "busy": ui["busy"], "msg": ui["msg"], "jog": ui["jog"].tolist(), "cal": cal}
@@ -1027,6 +1087,8 @@ def main(argv=None):
     p = sub.add_parser("console", help="jog, home, sync, goto, calibrate cameras")
     p.add_argument("--sim", action="store_true")
     p.add_argument("--port", type=int, help="preview port (default from config)")
+    p.add_argument("--sim-backlash", type=float, default=0.0,
+                   help="simulated Dec lost motion in degrees, for testing backlash handling")
     p.add_argument("--web", action="store_true",
                    help="browser only, no terminal UI (handy over SSH or from a phone)")
 

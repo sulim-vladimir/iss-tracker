@@ -104,6 +104,29 @@ def test_centring_move_can_aim_at_the_frame_centre():
     assert np.allclose(px + J @ to_frame, centre, atol=1e-6)
 
 
+def test_measure_backlash_flags_slack_it_cannot_resolve():
+    """A step smaller than the slack tells you only 'at least this much' - say so."""
+    from issctl.calib import measure_backlash
+    from issctl.camera import SimCamera
+    from issctl.clock import Clock
+    from issctl.config import load_config
+    from issctl.mount import SimMount
+    from issctl.sim import CalibWorld
+
+    cfg = load_config()
+    clock = Clock()
+    mount = SimMount(cfg, {"index": [0.0, 90.0]}, clock, start=[20.0, 40.0], backlash=[0.0, 0.5])
+    mount.query()
+    cam = SimCamera("guide", cfg["cameras"]["guide"], clock, CalibWorld(cfg, mount, decoys=())).start()
+    try:
+        cal = ideal_calibration(cfg["cameras"]["guide"], rotation_deg=12.0)
+        measured, saturated = measure_backlash(mount, cam, cal, axis=1, step_deg=0.2,
+                                               log=lambda *a: None)
+    finally:
+        cam.stop()
+    assert saturated and measured >= 0.15           # "at least the step", not the true 0.5
+
+
 def test_measure_backlash_recovers_simulated_lost_motion():
     """A simulated mount with known slack must measure as having that much."""
     from issctl.calib import measure_backlash
@@ -122,7 +145,58 @@ def test_measure_backlash_recovers_simulated_lost_motion():
     cam = SimCamera("guide", cfg["cameras"]["guide"], clock, world).start()
     try:
         cal = ideal_calibration(cfg["cameras"]["guide"], rotation_deg=12.0)
-        measured = measure_backlash(mount, cam, cal, axis=1, step_deg=0.4, log=lambda *a: None)
+        measured, saturated = measure_backlash(mount, cam, cal, axis=1, step_deg=0.4,
+                                               log=lambda *a: None)
     finally:
         cam.stop()
     assert abs(measured - slack) < 0.02             # within ~1 arcmin
+    assert not saturated                            # 0.4 deg of travel resolves 0.05 deg of slack
+
+
+def test_orthogonalise_squares_up_a_skewed_matrix():
+    from issctl.calib import axes_angle, orthogonalise
+
+    cal = ideal_calibration(MAIN, rotation_deg=-148.2)
+    J = np.array(cal["J"])
+    tilt = np.radians(11.0)                                   # tilt the Dec column by 11 deg
+    rot = np.array([[np.cos(tilt), -np.sin(tilt)], [np.sin(tilt), np.cos(tilt)]])
+    skew = J.copy()
+    skew[:, 1] = rot @ J[:, 1]
+    assert abs(axes_angle(skew) - 90) == pytest.approx(11.0, abs=0.01)
+    fixed = orthogonalise(skew)
+    assert abs(axes_angle(fixed) - 90) < 1e-6
+    # column lengths are preserved, and each direction moves by about half the error
+    for col in (0, 1):
+        assert np.linalg.norm(fixed[:, col]) == pytest.approx(np.linalg.norm(skew[:, col]))
+        turn = abs(np.degrees(np.arctan2(fixed[1, col], fixed[0, col])
+                              - np.arctan2(skew[1, col], skew[0, col])))
+        assert turn == pytest.approx(5.5, abs=0.1)            # half the error each
+
+
+def test_calibrate_against_reference_cancels_backlash():
+    """The narrow camera is calibrated from the wide one, so mount slack cancels in the ratio."""
+    from issctl.calib import calibrate_against
+    from issctl.camera import SimCamera
+    from issctl.clock import Clock
+    from issctl.config import load_config
+    from issctl.mount import SimMount
+    from issctl.sim import CalibWorld
+
+    cfg = load_config()
+    clock = Clock()
+    # slack far bigger than the narrow camera's own calibration step would be
+    mount = SimMount(cfg, {"index": [0.0, 90.0]}, clock, start=[20.0, 40.0], backlash=[0.03, 0.03])
+    mount.query()
+    world = CalibWorld(cfg, mount, decoys=())
+    guide = SimCamera("guide", cfg["cameras"]["guide"], clock, world).start()
+    main = SimCamera("main", cfg["cameras"]["main"], clock, world).start()
+    try:
+        J = calibrate_against(mount, main, guide, world.true_cal["guide"], step_deg=0.02,
+                              log=lambda *a: None)
+    finally:
+        guide.stop()
+        main.stop()
+    truth = np.array(world.true_cal["main"]["J"])
+    assert np.allclose(np.linalg.norm(J[:, 1]), np.linalg.norm(truth[:, 1]), rtol=0.1)
+    angle = np.degrees(np.arctan2(J[1, 0], J[0, 0]) - np.arctan2(truth[1, 0], truth[0, 0]))
+    assert abs((angle + 180) % 360 - 180) < 5

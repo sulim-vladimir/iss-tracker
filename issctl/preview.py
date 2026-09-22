@@ -86,7 +86,7 @@ function applyMount(m) {{
     + `alt ${{m.alt.toFixed(2)}}°  az ${{m.az.toFixed(2)}}° ${{m.compass}}\\n`
     + `jog ${{m.jog}}  sidereal ${{m.tracking ? 'on' : 'off'}}\\n${{m.msg || ''}}`;
   const cal = Object.entries(m.cal).map(([n, c]) =>
-    `${{n}}: ${{c.scale}} px/°, rotation ${{c.rotation}}°`);
+    `${{n}}: ${{c.arcsec_px}}"/px (${{c.scale}} px/°), rotation ${{c.rotation}}°`);
   let head = 'not calibrated yet';
   if (cal.length) {{
     head = 'calibrated';
@@ -97,6 +97,9 @@ function applyMount(m) {{
             : ` ${{(mins / 60).toFixed(1)}} h ago`;
     }}
   }}
+  if (m.backlash_deg)
+    cal.push('backlash: axis1 ' + (m.backlash_deg[0] * 60).toFixed(1) + "' axis2 "
+             + (m.backlash_deg[1] * 60).toFixed(1) + "'");
   if (m.position_at) {{
     const t = new Date(m.position_at * 1000);
     cal.push('position saved ' + t.toTimeString().slice(0, 8));
@@ -258,7 +261,9 @@ SKY = """<div class="panel"><h2>sky</h2>
 # frame centre, and putting the object there is precisely what hands it over to the main camera.
 CENTRE = """ <button title="move the object to the green cross (where the main camera looks)"
  onclick="mnt('centre',{cam:'NAME'})">LABEL</button>EXTRA
- <button onclick="mnt('calibrate',{cam:'NAME'})">calibrate NAME</button>"""
+ <button onclick="mnt('calibrate',{cam:'NAME'})">calibrate NAME</button>
+ <button title="measure lost motion using this camera"
+ onclick="mnt('backlash',{cam:'NAME'})">backlash</button>"""
 
 # only meaningful where the boresight is not the frame centre, i.e. on the guide
 IN_FRAME = """
@@ -292,8 +297,39 @@ MOUNT = """<div class="panel"><h2>mount <span id="mount-busy"></span></h2>
 <div class="ctl"><label></label>
  <button id="motorbtn" onclick="mnt('motors',{on: MOTORS ? 0 : 1})">motors off</button>
  <button onclick="if(confirm('Set current position as home?')) mnt('home',{})">set home</button>
- <button onclick="mnt('calibrate',{})">calibrate cameras</button></div>
+ <button onclick="mnt('calibrate',{})">calibrate cameras</button>
+ <button title="measure lost motion, then compensate for it on goto and centring"
+ onclick="mnt('backlash',{})">measure backlash</button></div>
 <div class="info" id="cal-info"></div></div>"""
+
+
+def draw_axes(img, cal, length=46, margin=10):
+    """Show which way the mount axes push the image: the camera's rotation is rarely obvious.
+
+    The origin is placed so both arrows and their labels always fit, whatever their directions.
+    """
+    J = np.array(cal["J"], dtype=float)
+    arrows = []
+    for col, colour, label in ((0, (255, 190, 40), "RA+"), (1, (230, 90, 230), "Dec+")):
+        v = J[:, col]
+        n = float(np.linalg.norm(v))
+        if n > 1e-6:
+            arrows.append((v / n, colour, label))
+    if not arrows:
+        return
+    reach = [(v * (length + 18) + np.array([0, 4])) for v, _, _ in arrows]
+    lo = np.minimum(np.min(reach, axis=0), 0) - np.array([16, 0])   # room for a label to the left
+    hi = np.maximum(np.max(reach, axis=0), 0) + np.array([16, 4])
+    origin = np.array([margin, margin]) - lo
+    if origin[1] + hi[1] > img.shape[0]:
+        origin[1] = img.shape[0] - margin - hi[1]
+    for v, colour, label in arrows:
+        tip = origin + v * length
+        cv2.arrowedLine(img, tuple(origin.astype(int)), tuple(tip.astype(int)), colour, 1,
+                        tipLength=0.22)
+        pos = origin + v * (length + 16)
+        cv2.putText(img, label, (int(pos[0]) - 12, int(pos[1]) + 4),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.42, colour, 1)
 
 
 def render(cam, cal, max_width=800):
@@ -313,6 +349,8 @@ def render(cam, cal, max_width=800):
         if abs(bx - cx) > 4 or abs(by - cy) > 4:   # frame centre, when it differs from the boresight
             cv2.drawMarker(img, (cx, cy), (160, 160, 160), cv2.MARKER_CROSS, 26, 1)
         cv2.drawMarker(img, (bx, by), (0, 220, 0), cv2.MARKER_CROSS, 34, 2)
+    if cal:
+        draw_axes(img, cal)     # top-left, positioned so the arrows always fit
     if cam.gate:
         gx, gy, gr = cam.gate
         cv2.circle(img, (int(gx * k), int(gy * k)), int(gr * k), (220, 130, 0), 2)

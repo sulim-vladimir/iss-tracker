@@ -106,13 +106,28 @@ class Mount:
         self.query()
         return delta
 
-    def move_to(self, target, tol=0.003, timeout=120.0, track_rate=None, abort=None, max_rate=None):
+    def move_to(self, target, tol=0.003, timeout=120.0, track_rate=None, abort=None, max_rate=None,
+                approach=None):
         """Accel-aware position loop. track_rate adds a constant feed-forward (e.g. sidereal).
 
         max_rate caps the slew for this move: stepper motors skip silently when pushed too fast on
         a stiff or unbalanced axis, and the step counter keeps counting as if nothing happened.
+
+        approach=per-axis backlash in degrees makes the final approach come from the + side on
+        every move: overshoot, then come back. The slack is then always taken up the same way, so
+        where the counters say the telescope is points is where it actually is.
         """
         target = np.array(target, dtype=float)
+        if approach is not None:
+            # Overshoot only the axes that would otherwise arrive from the - side, and only by a
+            # little more than the slack: every axis then finishes its travel in the + direction.
+            slack = np.maximum(np.asarray(approach, dtype=float), 0.0)
+            over = np.where(target - self.position() < 0, -1.2 * slack, 0.0)
+            if np.any(over < 0):
+                self.move_to(target + over, tol=tol, timeout=timeout, track_rate=track_rate,
+                             abort=abort, max_rate=max_rate)
+                if abort and abort():
+                    return self.position()
         ff = np.zeros(2) if track_rate is None else np.asarray(track_rate, dtype=float)
         cap = self.max_rate if max_rate is None else np.minimum(self.max_rate, abs(max_rate))
         dt = 1.0 / self.cfg["control_hz"]
@@ -218,7 +233,11 @@ class SimMount(Mount):
         super().__init__(cfg, state, clock)
         self.mech = np.array(start, dtype=float) - self.index
         self.backlash = np.broadcast_to(np.asarray(backlash, dtype=float), (2,)).copy()
-        self.play = self.backlash / 2      # where we sit inside the slack band
+        # The step counter lives on the MOTOR side and never sees the slack: mech is what the
+        # firmware reports, axis is where the telescope really points, play is the gap between.
+        self.axis = self.mech.copy()
+        self.play = np.zeros(2)
+        self.phys_history = collections.deque(maxlen=400)
         self.rate = np.zeros(2)
         self.target = np.zeros(2)
         self.pending = collections.deque()
@@ -234,27 +253,41 @@ class SimMount(Mount):
                 self.target = self.pending.popleft()[1]
             dv = np.clip(self.target - self.rate, -self.max_accel * h, self.max_accel * h)
             step = (self.rate + dv / 2) * h
-            # lost motion: the drive takes up slack before the axis follows
-            taken = np.clip(step, -self.play, self.backlash - self.play)
-            self.play += taken
-            self.mech += step - taken
+            self.mech += step                       # the counter always advances
+            play = np.clip(self.play + step, 0.0, self.backlash)
+            self.axis += step - (play - self.play)  # the telescope lags while slack is taken up
+            self.play = play
             self.rate += dv
             self.t += h
         return now
+
+    def physical_at(self, t):
+        """Where the telescope really points, which differs from the counters by the lost motion."""
+        if not self.phys_history:
+            return self.position_at(t)
+        h = np.array(self.phys_history)
+        return np.array([np.interp(t, h[:, 0], h[:, 1]), np.interp(t, h[:, 0], h[:, 2])])
+
+    def _note_physical(self, t):
+        self.phys_history.append((t, *(self.axis + self.index)))
 
     def _set_rates_mech(self, r):
         with self.lock:
             now = self._advance()
             self.pending.append((now + self.latency, np.array(r)))
+            self._note_physical(now)
             return now, self.mech.copy()
 
     def _query_mech(self):
         with self.lock:
-            return self._advance(), self.mech.copy()
+            now = self._advance()
+            self._note_physical(now)
+            return now, self.mech.copy()
 
     def _zero_counters(self):
         with self.lock:
             self._advance()
+            self.axis -= self.mech
             self.mech = np.zeros(2)
 
     def estop(self):

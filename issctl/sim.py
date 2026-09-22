@@ -11,6 +11,11 @@ from .model import unit as sky_unit
 from .predict import sat_hadec
 
 
+def pointing_at(mount, t):
+    """Where the telescope really points: the simulated mount can lag its counters (backlash)."""
+    return getattr(mount, "physical_at", mount.position_at)(t)
+
+
 class SimWorld:
     def __init__(self, cfg, sat, site, mount, time_error_s=1.5, cross_error=(0.05, -0.04),
                  pointing_error=(0.35, -0.25), rotations=None, traj=None, shadow_threshold=0.3,
@@ -35,6 +40,9 @@ class SimWorld:
         for n, cal in self.true_cal.items():
             out[n] = dict(cal, J=(R @ np.array(cal["J"])).tolist())
         return out
+
+    def _pointing_at(self, t):
+        return pointing_at(self.mount, t)
 
     def iss_axes(self, t, near):
         ha, dec, alt, az = sat_hadec(self.sat, self.site, t + self.time_error)
@@ -61,7 +69,7 @@ class SimWorld:
         return _sky_pixel(self.true_cal[cam], p_hat, e1, e2, sky_unit(ha, dec))
 
     def pixel(self, cam, t):
-        m = self.mount.position_at(t)
+        m = self._pointing_at(t)
         if m is None:
             return None
         if self.model is not None:
@@ -104,13 +112,13 @@ class CalibWorld:
         return px if (0 <= px[0] < w and 0 <= px[1] < h) else None
 
     def pixel(self, cam, t):
-        m = self.mount.position_at(t)
+        m = pointing_at(self.mount, t)
         if m is None:
             return None
         return self._project(cam, m + self.pointing_error, self.axes_target)
 
     def blobs(self, cam, t):
-        m = self.mount.position_at(t)
+        m = pointing_at(self.mount, t)
         if m is None:
             return []
         pointing = m + self.pointing_error

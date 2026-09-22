@@ -228,3 +228,30 @@ def test_detect_rejects_sprawling_regions():
     img = _frame_with_blob(900, 500, sigma=6)
     d = detect(img, sigma=5, min_area=20, max_area=20000, edge_margin=8)
     assert d is not None and abs(d.x - 900) < 2 and abs(d.y - 500) < 2
+
+
+def test_move_to_overshoots_only_where_needed(cfg):
+    """Backlash compensation should approach from the + side, not detour on every axis."""
+    clock = Clock()
+    slack = [0.02, 0.05]
+    mount = SimMount(cfg, {"index": [0.0, 90.0]}, clock, start=[10.0, 50.0], backlash=slack)
+    mount.query()
+
+    visited = []
+    original = mount.set_rates
+
+    def watch(r1, r2):
+        pos = original(r1, r2)
+        visited.append(pos.copy())
+        return pos
+
+    mount.set_rates = watch
+    target = [12.0, 45.0]                     # axis1 moves +, axis2 moves -
+    mount.move_to(target, timeout=60, approach=slack)
+    path = np.array(visited)
+    # axis1 already arrives from the - side, so it gets no detour (only the loop's own settling)
+    assert path[:, 0].max() - target[0] < 0.05
+    # axis2 must arrive from the - side too, so it goes past by about the slack and comes back
+    overshoot = target[1] - path[:, 1].min()
+    assert slack[1] <= overshoot < 4 * slack[1]
+    assert np.allclose(mount.position(), target, atol=0.01)
