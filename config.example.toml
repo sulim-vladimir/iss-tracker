@@ -86,6 +86,8 @@ usb_bandwidth = 80
 latency_s = 0.01              # extra delay between mid-exposure and frame arrival
 detect_sigma = 6.0
 detect_min_area = 3
+detect_max_area = 0           # reject sprawling regions (0 = no limit); a lit wall is not a star
+detect_edge_margin = 3        # ignore blobs touching the frame border (vignetting, scenery edges)
 
 [cameras.main]                # 150/750 + ASI290MC
 name_match = "ASI290"
@@ -100,6 +102,8 @@ usb_bandwidth = 80
 latency_s = 0.01
 detect_sigma = 5.0
 detect_min_area = 20
+detect_max_area = 20000       # ~160 px across; the ISS is ~133 px at 1500 mm
+detect_edge_margin = 8
 bayer = "RGGB"
 record = true
 record_dir = "captures"

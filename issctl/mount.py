@@ -214,9 +214,11 @@ class SerialMount(Mount):
 class SimMount(Mount):
     """Accel-limited kinematic mount with a small command latency."""
 
-    def __init__(self, cfg, state, clock, start=HOME, latency=0.015):
+    def __init__(self, cfg, state, clock, start=HOME, latency=0.015, backlash=0.0):
         super().__init__(cfg, state, clock)
         self.mech = np.array(start, dtype=float) - self.index
+        self.backlash = np.broadcast_to(np.asarray(backlash, dtype=float), (2,)).copy()
+        self.play = self.backlash / 2      # where we sit inside the slack band
         self.rate = np.zeros(2)
         self.target = np.zeros(2)
         self.pending = collections.deque()
@@ -231,7 +233,11 @@ class SimMount(Mount):
             while self.pending and self.pending[0][0] <= self.t:
                 self.target = self.pending.popleft()[1]
             dv = np.clip(self.target - self.rate, -self.max_accel * h, self.max_accel * h)
-            self.mech += (self.rate + dv / 2) * h
+            step = (self.rate + dv / 2) * h
+            # lost motion: the drive takes up slack before the axis follows
+            taken = np.clip(step, -self.play, self.backlash - self.play)
+            self.play += taken
+            self.mech += step - taken
             self.rate += dv
             self.t += h
         return now

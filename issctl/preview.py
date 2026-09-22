@@ -254,8 +254,16 @@ SKY = """<div class="panel"><h2>sky</h2>
  border-radius:6px"></svg>
 <div class="info" id="sky-info"></div></div>"""
 
-CENTRE = """ <button onclick="mnt('centre',{cam:'NAME'})">centre it</button>
+# The green cross is the boresight - where the MAIN camera looks. On the guide that is not the
+# frame centre, and putting the object there is precisely what hands it over to the main camera.
+CENTRE = """ <button title="move the object to the green cross (where the main camera looks)"
+ onclick="mnt('centre',{cam:'NAME'})">LABEL</button>EXTRA
  <button onclick="mnt('calibrate',{cam:'NAME'})">calibrate NAME</button>"""
+
+# only meaningful where the boresight is not the frame centre, i.e. on the guide
+IN_FRAME = """
+ <button title="move the object to the middle of this image (grey cross)"
+ onclick="mnt('centre',{cam:'NAME',where:'frame'})">centre in frame</button>"""
 
 MOUNT = """<div class="panel"><h2>mount <span id="mount-busy"></span></h2>
 <div class="info" id="mount-info"></div>
@@ -301,6 +309,9 @@ def render(cam, cal, max_width=800):
         img = cv2.resize(img, None, fx=k, fy=k, interpolation=cv2.INTER_AREA)
     if cal:
         bx, by = (int(cal["boresight"][0] * k), int(cal["boresight"][1] * k))
+        cx, cy = int((cam.width - 1) / 2 * k), int((cam.height - 1) / 2 * k)
+        if abs(bx - cx) > 4 or abs(by - cy) > 4:   # frame centre, when it differs from the boresight
+            cv2.drawMarker(img, (cx, cy), (160, 160, 160), cv2.MARKER_CROSS, 26, 1)
         cv2.drawMarker(img, (bx, by), (0, 220, 0), cv2.MARKER_CROSS, 34, 2)
     if cam.gate:
         gx, gy, gr = cam.gate
@@ -320,7 +331,11 @@ class Preview:
         can_record = bool(self.controls and self.controls.get("record"))
         can_move = bool(self.controls and self.controls.get("mount_action"))
         panels = "".join(PANEL.format(name=n, extra=RECORD if (n == "main" and can_record) else "",
-                                      centre=CENTRE.replace("NAME", n) if can_move else "")
+                                      centre=(CENTRE.replace("EXTRA", "" if n == "main" else IN_FRAME)
+                                              .replace("NAME", n)
+                                              .replace("LABEL", "centre it" if n == "main"
+                                                       else "send to main")
+                                              if can_move else ""))
                          for n in self.cams)
         if self.controls and self.controls.get("mount_action"):
             panels += MOUNT

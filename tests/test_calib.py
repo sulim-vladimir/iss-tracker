@@ -88,3 +88,41 @@ def test_centring_move_refuses_absurd_answers():
     px = np.array(cal["boresight"]) - jacobian(cal, 40.0) @ np.array([50.0, 0.0])
     assert centring_move(cal, 40.0, px) is None
     assert centring_move(cal, 40.0, px, max_deg=90) is not None
+
+
+def test_centring_move_can_aim_at_the_frame_centre():
+    """The boresight is where the main camera looks; the frame centre is a different place."""
+    cal = ideal_calibration(GUIDE, rotation_deg=8.0)
+    cal["boresight"] = [280.0, 210.0]                    # a real guide/main offset
+    centre = [(GUIDE["width"] - 1) / 2, (GUIDE["height"] - 1) / 2]
+    px = np.array([350.0, 180.0])                        # where the object currently sits
+    to_bore = centring_move(cal, 40.0, px)
+    to_frame = centring_move(cal, 40.0, px, target_px=centre)
+    assert not np.allclose(to_bore, to_frame)
+    J = jacobian(cal, 40.0)
+    assert np.allclose(px + J @ to_bore, cal["boresight"], atol=1e-6)
+    assert np.allclose(px + J @ to_frame, centre, atol=1e-6)
+
+
+def test_measure_backlash_recovers_simulated_lost_motion():
+    """A simulated mount with known slack must measure as having that much."""
+    from issctl.calib import measure_backlash
+    from issctl.clock import Clock
+    from issctl.config import load_config
+    from issctl.sim import CalibWorld
+    from issctl.camera import SimCamera
+    from issctl.mount import SimMount
+
+    cfg = load_config()
+    slack = 0.05                                    # 3 arcmin of lost motion on axis2
+    clock = Clock()
+    mount = SimMount(cfg, {"index": [0.0, 90.0]}, clock, start=[20.0, 40.0], backlash=[0.0, slack])
+    mount.query()
+    world = CalibWorld(cfg, mount, decoys=())
+    cam = SimCamera("guide", cfg["cameras"]["guide"], clock, world).start()
+    try:
+        cal = ideal_calibration(cfg["cameras"]["guide"], rotation_deg=12.0)
+        measured = measure_backlash(mount, cam, cal, axis=1, step_deg=0.4, log=lambda *a: None)
+    finally:
+        cam.stop()
+    assert abs(measured - slack) < 0.02             # within ~1 arcmin

@@ -59,13 +59,14 @@ def image_jog_rates(cal, axis2, jog, speed, min_cos_dec=0.15):
     return d / peak * speed if peak > 1e-9 else np.zeros(2)
 
 
-def centring_move(cal, axis2, px, max_deg=20.0):
-    """Axis move that brings the object at px onto the boresight, or None if it looks absurd.
+def centring_move(cal, axis2, px, max_deg=20.0, target_px=None):
+    """Axis move that brings the object at px onto target_px (the boresight by default).
 
     A wild answer means the calibration or the detection is wrong, and slewing tens of degrees
     because of a misdetected pixel is worse than doing nothing.
     """
-    d = axes_offset_from_pixel(cal, axis2, px)
+    want = np.asarray(cal["boresight"] if target_px is None else target_px, dtype=float)
+    d = np.linalg.solve(jacobian(cal, axis2), want - np.asarray(px, dtype=float))
     return None if np.max(np.abs(d)) > max_deg else d
 
 
@@ -94,7 +95,12 @@ def default_step(cam, fraction=0.2):
 
 
 def implied_focal_length(px_per_deg, cam_cfg):
-    """Focal length that would give this image scale, in mm."""
+    """Focal length that would give this image scale, in mm.
+
+    Only as good as its assumptions: that the axis really turned what it was told, and that the
+    target is far enough away. Rotating the mount also translates the camera by its radius r from
+    the axis, so a target at distance d shifts by a factor (1 +/- r/d) - several percent indoors.
+    """
     return px_per_deg * cam_cfg["pixel_um"] * cam_cfg["bin"] / 1000.0 / np.tan(np.radians(1.0))
 
 
@@ -110,6 +116,35 @@ def scale_check(J, cam_cfg, dec_cal):
     cos_dec = max(np.cos(np.radians(dec_cal)), 0.05)
     measured = np.array([np.linalg.norm(J[:, 0]) / cos_dec, np.linalg.norm(J[:, 1])])
     return expected, measured, expected / np.maximum(measured, 1e-9)
+
+
+def measure_backlash(mount, cam, cal, axis, step_deg=None, track_rate=None, log=print,
+                     abort=None, slew_rate=0.3):
+    """How much command an axis swallows before it actually turns, in degrees.
+
+    Take up the slack in one direction, then reverse by a known amount and see how far the image
+    really moved. The difference is lost motion: backlash, belt stretch and worm end-float together.
+    """
+    scale = pixels_per_deg(cam.cfg)
+    step_deg = step_deg or float(np.clip(0.3 * cam.height / scale, 0.02, 1.0))
+    d = np.zeros(2)
+    d[axis] = step_deg
+    start = mount.position()
+    mount.move_to(start + d, track_rate=track_rate, abort=abort, max_rate=slew_rate)  # slack taken up +
+    time.sleep(0.5)
+    before = measure(cam)
+    mount.move_to(start, track_rate=track_rate, abort=abort, max_rate=slew_rate)      # now reverse
+    time.sleep(0.5)
+    after = measure(cam)
+    if before is None or after is None:
+        raise RuntimeError(f"lost the target in {cam.name} while measuring backlash")
+    moved_px = float(np.linalg.norm(after - before))
+    expected_px = scale * step_deg * max(np.cos(np.radians(geo.axis2_to_dec(start[1]))), 0.05) \
+        if axis == 0 else scale * step_deg
+    lost = max(0.0, (expected_px - moved_px) / max(scale, 1e-9))
+    log(f"axis{axis + 1}: reversed {step_deg:.3f} deg, image moved {moved_px:.0f} px of "
+        f"{expected_px:.0f} -> lost motion {lost * 60:.1f} arcmin")
+    return lost
 
 
 def calibrate_cameras(mount, cams, steps=None, track_rate=None, log=print, abort=None,
@@ -175,8 +210,26 @@ def calibrate_cameras(mount, cams, steps=None, track_rate=None, log=print, abort
             if base is None or moved is None:
                 raise RuntimeError(f"lost the target in {name} while moving axis{axis + 1} "
                                    f"by {step_deg:.3f} deg")
-            cols[name][axis] = (moved - base) / step_deg
-            log(f"{name}: axis{axis + 1} +{step_deg:.3f} deg -> {(moved - base).round(1)} px")
+            shift = float(np.linalg.norm(moved - base))
+            expected_shift = pixels_per_deg(cam.cfg) * step_deg
+            if shift < 0.25 * expected_shift and step_deg < 0.5:
+                # The axis barely moved. At small angles stiction and belt wind-up eat the command
+                # before the axis turns, so retry with a step big enough to break free.
+                bigger = min(step_deg * 4, 0.5)
+                log(f"{name}: axis{axis + 1} moved only {shift:.0f} px for {step_deg:.3f} deg "
+                    f"(expected ~{expected_shift:.0f}) - retrying with {bigger:.3f} deg")
+                mount.move_to(start + d * (bigger / step_deg), track_rate=track_rate, abort=abort,
+                              max_rate=slew_rate)
+                time.sleep(0.5)
+                retry = measure(cam)
+                if retry is not None and np.linalg.norm(retry - base) > shift:
+                    moved, step_deg_used = retry, bigger
+                else:
+                    step_deg_used = step_deg
+            else:
+                step_deg_used = step_deg
+            cols[name][axis] = (moved - base) / step_deg_used
+            log(f"{name}: axis{axis + 1} +{step_deg_used:.3f} deg -> {(moved - base).round(1)} px")
             mount.move_to(start - d, track_rate=track_rate, abort=abort, max_rate=slew_rate)
             mount.move_to(start, track_rate=track_rate, abort=abort, max_rate=slew_rate)
     dec_cal = float(geo.axis2_to_dec(mount.position()[1]))
@@ -198,8 +251,9 @@ def calibrate_cameras(mount, cams, steps=None, track_rate=None, log=print, abort
         expected, measured, factor = scale_check(J, cam.cfg, dec_cal)
         log(f"{n}: optics say {expected:.1f} px/deg; measured {measured.round(1)} "
             f"-> axis moved {1 / factor[0]:.2f}x / {1 / factor[1]:.2f}x of what was commanded; "
-            f"that scale means focal length {implied_focal_length(measured[1], cam.cfg):.1f} mm "
-            f"(config says {cam.cfg['focal_length_mm']:g})")
+            f"= focal length {implied_focal_length(measured[1], cam.cfg):.0f} mm if the axes moved "
+            f"exactly as commanded and the target is far away (config says "
+            f"{cam.cfg['focal_length_mm']:g})")
         scale_factors.append(factor)
 
     if scale_factors and warnings is not None:

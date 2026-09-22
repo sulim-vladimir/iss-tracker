@@ -76,7 +76,9 @@ class Camera:
             if img is None:
                 continue
             gate = self.gate  # snapshot: a click may replace it while we are detecting
-            det = detect(img, self.cfg["detect_sigma"], self.cfg["detect_min_area"], self.bayer, gate)
+            det = detect(img, self.cfg["detect_sigma"], self.cfg["detect_min_area"], self.bayer, gate,
+                         max_area=self.cfg.get("detect_max_area", 0),
+                         edge_margin=self.cfg.get("detect_edge_margin", 0))
             if det:
                 det.t = t
                 if self.follow and gate is not None and self.gate is gate:

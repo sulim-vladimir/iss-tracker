@@ -77,6 +77,7 @@ Symptoms we have already chased, so you do not chase them again:
 |---|---|
 | goto lands at the wrong altitude, azimuth roughly right | an axis direction reversed - invisible at home, only shows once the tube is off the pole |
 | calibration scale disagrees with the optics | wrong `focal_length_mm` scales BOTH axes equally; a per-axis difference is drivetrain |
+| implied focal length looks wrong | it conflates three things: true focal length, axis scale, and target distance (indoors the camera's radius from the axis over the target range is several percent). The telescope IS 750 mm; trust a star-based calibration, not an indoor one |
 | calibration returns nonsense for axis1 | calibrated near the pole: axis1 rotates the field instead of shifting it (warns now) |
 | boresight lands degrees off centre | the two cameras locked onto different objects - click the same one in each (warns now) |
 | target ends at the frame edge after calibrating | expected: guide calibration needs degrees of motion; the boresight is taken before any move |

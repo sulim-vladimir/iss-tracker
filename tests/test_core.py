@@ -203,3 +203,28 @@ def test_target_field_accepts_several_notations(cfg):
 
     with pytest.raises(ValueError):
         target_hadec("nonsense", site, t)
+
+
+def _frame_with_blob(x, y, sigma=3.0, amp=150, shape=(1096, 1936), seed=7):
+    rng = np.random.default_rng(seed)
+    img = np.clip(rng.normal(20, 3, shape), 0, 255)
+    yy, xx = np.mgrid[0:shape[0], 0:shape[1]]
+    img += amp * np.exp(-((xx - x) ** 2 + (yy - y) ** 2) / (2 * sigma ** 2))
+    return np.clip(img, 0, 255).astype(np.uint8)
+
+
+def test_detect_rejects_blobs_on_the_frame_edge():
+    """Vignetting and out-of-focus scenery light up the border; that is not a target."""
+    img = _frame_with_blob(1930, 1090)                      # bottom-right corner, like the real case
+    assert detect(img, sigma=5, min_area=20) is not None    # found without the guard
+    assert detect(img, sigma=5, min_area=20, edge_margin=8) is None
+
+
+def test_detect_rejects_sprawling_regions():
+    img = _frame_with_blob(900, 500, sigma=80, amp=200)     # a big soft glow, not a point source
+    assert detect(img, sigma=5, min_area=20) is not None
+    assert detect(img, sigma=5, min_area=20, max_area=20000) is None
+    # a real target of sensible size still passes both guards
+    img = _frame_with_blob(900, 500, sigma=6)
+    d = detect(img, sigma=5, min_area=20, max_area=20000, edge_margin=8)
+    assert d is not None and abs(d.x - 900) < 2 and abs(d.y - 500) < 2

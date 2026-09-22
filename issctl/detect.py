@@ -15,8 +15,13 @@ class Detection:
     t: float = 0.0
 
 
-def detect(img, sigma=6.0, min_area=3, bayer=False, gate=None, max_width=1300):
+def detect(img, sigma=6.0, min_area=3, bayer=False, gate=None, max_width=1300,
+           max_area=0, edge_margin=0):
     """Brightest compact blob above sigma*noise. gate=(x, y, radius) restricts the search.
+
+    max_area rejects sprawling regions (a lit wall, a cloud edge) and edge_margin rejects blobs
+    touching the frame border, where vignetting and out-of-focus scenery produce gradients that
+    look like detections. Both are in full-resolution pixels; 0 disables them.
 
     Coordinates are in full-resolution pixels of the input image.
     """
@@ -53,12 +58,21 @@ def detect(img, sigma=6.0, min_area=3, bayer=False, gate=None, max_width=1300):
     fx = (cx + 0.5) * scale - 0.5
     fy = (cy + 0.5) * scale - 0.5
 
-    valid = stats[:, cv2.CC_STAT_AREA] >= max(1, min_area / (scale * scale))
+    areas = stats[:, cv2.CC_STAT_AREA] * scale * scale
+    valid = areas >= max(1, min_area)
     valid[0] = False
+    if max_area:
+        valid &= areas <= max_area
+    if edge_margin:
+        m = max(1, int(round(edge_margin / scale)))
+        left, top = stats[:, cv2.CC_STAT_LEFT], stats[:, cv2.CC_STAT_TOP]
+        right = left + stats[:, cv2.CC_STAT_WIDTH]
+        bottom = top + stats[:, cv2.CC_STAT_HEIGHT]
+        valid &= (left >= m) & (top >= m) & (right <= w - m) & (bottom <= h - m)
     if gate is not None:
         gx, gy, gr = gate
         valid &= (fx - gx) ** 2 + (fy - gy) ** 2 <= gr * gr
     if not valid.any():
         return None
     i = int(np.argmax(np.where(valid, flux, -np.inf)))
-    return Detection(float(fx[i]), float(fy[i]), float(flux[i]), int(stats[i, cv2.CC_STAT_AREA] * scale * scale))
+    return Detection(float(fx[i]), float(fy[i]), float(flux[i]), int(areas[i]))

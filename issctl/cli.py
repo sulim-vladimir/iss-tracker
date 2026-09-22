@@ -474,12 +474,12 @@ def cmd_console(args, cfg):
         state["calibrated_at"] = time.time()
         state["calibration_warnings"] = warnings
         persist()
-        say(("done, but: " + warnings[0]) if warnings else
+        say(f"calibration done - {len(warnings)} warning(s), see below" if warnings else
             f"calibration complete, saved to {(state_path or STATE_FILE).name}")
 
-    def do_centre(name):
-        """Put the object the camera is showing onto the boresight, iterating out calibration
-        error and backlash."""
+    def do_centre(name, where="boresight"):
+        """Put the object the camera is showing onto the boresight - or onto the frame centre,
+        which is what you want when aligning the guide camera itself."""
         cam, cal = cams.get(name), state.get("cameras", {}).get(name)
         if cam is None:
             say(f"no {name} camera")
@@ -487,16 +487,27 @@ def cmd_console(args, cfg):
         if cal is None:
             say(f"{name} is not calibrated - cannot turn pixels into axis angles")
             return
+        target_px = (None if where == "boresight"
+                     else [(cam.width - 1) / 2, (cam.height - 1) / 2])
+        aim = np.asarray(cal["boresight"] if target_px is None else target_px, dtype=float)
         track = [SIDEREAL_DEG_S, 0.0] if ui["tracking"] else None
-        for _ in range(3):
+        previous = None
+        for _ in range(4):
             px = measure(cam, n=5, timeout=3.0)
             if px is None:
                 say(f"nothing detected in the {name} image")
                 return
-            off_px = float(np.hypot(*(np.array(cal["boresight"]) - px)))
+            off_px = float(np.hypot(*(aim - px)))
             if off_px < 3.0:
                 break
-            d = centring_move(cal, mount.position()[1], px)
+            if previous is not None and off_px > 0.9 * previous:
+                # each move should shrink the error; if it does not, the matrix is wrong for the
+                # optics in use - overshooting by 2x just bounces the target about
+                say(f"{name}: centring is not converging ({previous:.0f} -> {off_px:.0f} px) - "
+                    f"recalibrate this camera, its scale looks wrong for the current optics")
+                return
+            previous = off_px
+            d = centring_move(cal, mount.position()[1], px, target_px=target_px)
             if d is None:
                 say(f"{name}: implied move is absurd - check the calibration or pick the target again")
                 return
@@ -506,7 +517,8 @@ def cmd_console(args, cfg):
                 say("centring aborted")
                 return
             time.sleep(0.4)
-        say(f"{name} target centred ({off_px:.0f} px from the boresight)")
+        say(f"{name} target on the {'frame centre' if target_px else 'boresight'} "
+            f"({off_px:.0f} px off)")
 
     def pointing():
         pos = mount.position()
@@ -578,7 +590,8 @@ def cmd_console(args, cfg):
         elif action == "centre":
             if cams:
                 ui["jog"][:] = 0
-                in_background(lambda: do_centre(params.get("cam", "guide")))
+                in_background(lambda: do_centre(params.get("cam", "guide"),
+                                                params.get("where", "boresight")))
             else:
                 ui["msg"] = "no cameras"
         elif action == "calibrate":
