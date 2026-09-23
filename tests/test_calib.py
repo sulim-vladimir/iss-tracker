@@ -291,7 +291,7 @@ def test_pattern_calibration_recovers_the_matrix_without_a_target():
     """Pattern mode against a wide reference: mount slack still cancels in the ratio.
 
     The tolerances here are loose on purpose, and the reason is structural rather than sloppy.
-    The two cameras differ in scale by ~33x, so a ramp that moves the main camera across most of
+    The two cameras differ in scale by 121x, so a ramp that moves the main camera across most of
     its frame shifts the guide by only a handful of pixels - and a handful of pixels is exactly
     where phase correlation's sub-pixel bias is worst. Measured over five runs: scale 1.03-1.06,
     rotation -1.4 to +5.2 deg. That is inside what tracking tolerates (servo mode holds the ISS

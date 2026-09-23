@@ -110,7 +110,8 @@ Two limits, both real:
   alone, saying so. The guide->main handoff needs one identifiable point in both cameras, at 1 km
   or more - closer than that the parallax across the ~0.2 m camera separation exceeds the main
   camera's 7.3' field.
-* **It is less precise than a blob.** The cameras differ in scale by ~33x, so a ramp that sweeps
+* **It is less precise than a blob.** The cameras differ in scale by 121x (74.5 vs 9028 px/deg),
+  so a ramp that sweeps
   the main camera across its frame shifts the guide by only a few pixels, which is where phase
   correlation's sub-pixel bias is worst. Measured in simulation: scale 1.02-1.06, rotation -2.4
   to +5.4 deg. Inside what tracking tolerates, but redo it on a real point source when one is up.
@@ -153,6 +154,8 @@ Symptoms we have already chased, so you do not chase them again:
 | servo loses the target after a one-second glitch and never gets it back | the search gate grew at the pass-mode rate and was still opening when `servo_give_up_s` fired. In servo mode it opens at roughly the ISS's own speed |
 | servo tracks but the main camera never takes over | calibration scale error. 15% is fine, 30% is not - the handoff, not the control law, is what gives out |
 | "guide camera unavailable: General error" | a control value outside what that body accepts - the SDK reports out-of-range exactly like a dead camera. The ASI120MM Mini's gain range is 0-100, not the 0-600 of the USB3 bodies, and it has no HighSpeedMode control at all. `AsiCamera._control` now clamps to `get_controls()` and skips what is missing, and the error names the step that failed |
+| "lost the target in main after 1 steps" with a hand-picked target | `select()` gives the pick a gate of only 3% of the frame width (58 px on the main camera), and it can only follow while it keeps detecting. A calibration step is 0.014 deg = 128 px, and at 9 fps a slew crosses 500 px between frames, so the target is outside its own gate before the gate can follow. Clear the pick ("Auto") or calibrate on scene |
+| calibration warns "too close to the pole" from a north-facing balcony | the celestial pole sits at alt=latitude due north, so scenery straight north is AT the pole: alt 48.7 az 349 is dec 82.5, where axis1 moves the image 7.7x less than axis2 and the rescaling amplifies the error as much. Point LOW instead - same azimuth at alt 20 is dec 58, at alt 10 is dec 48 |
 | cannot calibrate: nothing in view but lit windows or daylight scenery | blob mode needs a point source, and worse, it does not fail loudly - it locks onto a whole lit window and tracks its wandering centroid. Use pattern mode (`C` in the console, "calibrate on scene" in the browser): phase correlation of the whole frame. Gives J, NOT the boresight |
 | ASI120MM Mini shows up on a USB 2.0 bus in a blue port | expected: the Mini IS a USB 2.0 camera (the -S is the USB3 one). A blue socket wires both a 2.0 and a 3.0 controller; the plug decides which. Not a fault, and not a clue - it shares that bus with the CH340, which matters only for frame rate |
 
