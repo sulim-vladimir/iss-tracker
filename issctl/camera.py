@@ -107,6 +107,48 @@ SDK_CANDIDATES = [
 ]
 
 
+ZWO_VENDOR_ID = "03c3"
+
+
+def usb_diagnosis():
+    """Why a ZWO camera that enumerates might still refuse to open.
+
+    Both of these bite on a Raspberry Pi and neither is guessable from the SDK's "General error".
+    Listing a camera only reads USB descriptors; opening it claims the interface, which needs a
+    udev rule, and streaming needs far more USB buffer than the kernel allows by default.
+    """
+    import glob
+    import os
+
+    notes = []
+    try:
+        with open("/sys/module/usbcore/parameters/usbfs_memory_mb") as f:
+            mb = int(f.read().strip())
+        if mb < 200:
+            notes.append(
+                f"usbfs_memory_mb is {mb}, ZWO needs about 200 - "
+                f"`sudo sh -c 'echo 200 > /sys/module/usbcore/parameters/usbfs_memory_mb'` for "
+                f"now, or add usbcore.usbfs_memory_mb=200 to the kernel command line to keep it")
+    except (OSError, ValueError):
+        pass
+    rules = []
+    for d in ("/etc/udev/rules.d", "/lib/udev/rules.d", "/usr/lib/udev/rules.d"):
+        for path in glob.glob(os.path.join(d, "*.rules")):
+            try:
+                with open(path, errors="ignore") as f:
+                    if ZWO_VENDOR_ID in f.read().lower():
+                        rules.append(path)
+            except OSError:
+                pass
+    if not rules and os.geteuid() != 0:
+        notes.append(
+            f"no udev rule mentions ZWO's vendor id {ZWO_VENDOR_ID}, so only root may claim the "
+            f"camera - install asi.rules from the SDK (`sudo install asi.rules "
+            f"/lib/udev/rules.d/` then `sudo udevadm control --reload`), or confirm the diagnosis "
+            f"by running this once under sudo")
+    return notes
+
+
 def find_sdk(configured=None):
     """The ZWO SDK ships with FireCapture and INDI as well, so look around before giving up."""
     import glob
@@ -148,6 +190,7 @@ class AsiCamera(Camera):
         super().__init__(name, cam_cfg, clock)
         self.sdk_lib = sdk_lib
         self.cam = None
+        self._caps = None
 
     def _open(self):
         lib = find_sdk(self.sdk_lib) if not AsiCamera._sdk_ready else None
@@ -162,25 +205,67 @@ class AsiCamera(Camera):
         match = [i for i, n in enumerate(names) if self.cfg["name_match"] in n]
         if not match:
             raise RuntimeError(f"camera '{self.cfg['name_match']}' not found; connected: {names}")
-        cam = asi.Camera(match[0])
-        cam.stop_video_capture()
-        cam.set_control_value(asi.ASI_BANDWIDTHOVERLOAD, self.cfg["usb_bandwidth"])
-        cam.set_control_value(asi.ASI_HIGH_SPEED_MODE, 1)
-        cam.set_image_type(asi.ASI_IMG_RAW8)
-        cam.set_roi(width=self.width, height=self.height, bins=self.cfg["bin"])
-        self.width, self.height = cam.get_roi()[2:4]
-        cam.set_control_value(asi.ASI_GAIN, int(self.cfg["gain"]))
-        cam.set_control_value(asi.ASI_EXPOSURE, int(self.exposure_ms * 1000))
-        cam.start_video_capture()
+        # The SDK reports almost everything as "General error", so say which step failed: the
+        # camera being listed but refusing to open means something quite different from it
+        # opening and then failing to stream.
+        step = "open the camera"
+        try:
+            cam = asi.Camera(match[0])
+            self._caps = cam.get_controls()
+            step = "stop any capture left running by a previous process"
+            cam.stop_video_capture()
+            step = "set the USB bandwidth"
+            self._control(cam, "BandWidth", asi.ASI_BANDWIDTHOVERLOAD, self.cfg["usb_bandwidth"])
+            self._control(cam, "HighSpeedMode", asi.ASI_HIGH_SPEED_MODE, 1)
+            step = "set the image type"
+            cam.set_image_type(asi.ASI_IMG_RAW8)
+            step = f"set the ROI to {self.width}x{self.height} bin {self.cfg['bin']}"
+            cam.set_roi(width=self.width, height=self.height, bins=self.cfg["bin"])
+            self.width, self.height = cam.get_roi()[2:4]
+            step = "set gain and exposure"
+            self.gain = self._control(cam, "Gain", asi.ASI_GAIN, int(self.cfg["gain"]))
+            self._control(cam, "Exposure", asi.ASI_EXPOSURE, int(self.exposure_ms * 1000))
+            step = "start video capture"
+            cam.start_video_capture()
+        except Exception as e:
+            hints = usb_diagnosis()
+            raise RuntimeError(
+                f"{names[match[0]]} is connected and listed, but the SDK failed to {step}: {e}"
+                + ("\n  - " + "\n  - ".join(hints) if hints else "")) from e
         self.cam, self._asi = cam, asi
+
+    def _control(self, cam, name, ctype, value):
+        """Set a control only if this camera has it, clamped to the range it advertises.
+
+        The SDK reports an out-of-range value as ASI_ERROR_GENERAL_ERROR - the same "General
+        error" it gives for a camera that will not talk at all. A gain that is sensible on one
+        body and twice the maximum on another should not look like a hardware fault, and one
+        camera's settings should not stop a different camera from opening.
+        """
+        caps = (self._caps or {}).get(name)
+        if caps is None:
+            print(f"{self.name}: this camera has no {name} control, skipping it")
+            return None
+        lo, hi = int(caps["MinValue"]), int(caps["MaxValue"])
+        clamped = min(max(int(value), lo), hi)
+        if clamped != int(value):
+            print(f"{self.name}: {name} {int(value)} is outside this camera's range "
+                  f"{lo}..{hi}, using {clamped}")
+        cam.set_control_value(ctype, clamped)
+        return clamped
 
     def set_exposure(self, ms):
         super().set_exposure(ms)
-        self.cam.set_control_value(self._asi.ASI_EXPOSURE, int(self.exposure_ms * 1000))
+        us = self._control(self.cam, "Exposure", self._asi.ASI_EXPOSURE,
+                           int(self.exposure_ms * 1000))
+        if us is not None:
+            self.exposure_ms = us / 1000.0
 
     def set_gain(self, gain):
         super().set_gain(gain)
-        self.cam.set_control_value(self._asi.ASI_GAIN, self.gain)
+        applied = self._control(self.cam, "Gain", self._asi.ASI_GAIN, self.gain)
+        if applied is not None:
+            self.gain = applied
 
     def _grab(self):
         try:
