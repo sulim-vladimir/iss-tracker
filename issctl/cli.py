@@ -466,19 +466,20 @@ def cmd_console(args, cfg):
         persist()
         ui["msg"] = f"synced on {name}: correction {d.round(3)} deg"
 
-    def do_cal(only=None):
-        say("calibrating...")
+    def do_cal(only=None, mode="blob"):
+        say(f"calibrating{' (pattern mode)' if mode == 'pattern' else ''}...")
         warnings = []
         res = calibrate_cameras(mount, cams, track_rate=[SIDEREAL_DEG_S, 0.0] if ui["tracking"] else None,
                                 log=say, abort=aborted, warnings=warnings, only=only,
-                                existing=state.get("cameras"))
+                                existing=state.get("cameras"), mode=mode)
         state.setdefault("cameras", {}).update(res)
         state["calibrated_at"] = time.time()
         state["calibration_warnings"] = warnings
         persist()
         say(f"calibration done - {len(warnings)} warning(s), see below" if warnings else
             f"calibration complete, saved to {(state_path or STATE_FILE).name}")
-        recover_main()
+        if mode != "pattern":
+            recover_main()
 
     def recover_main():
         """Big moves (guide calibration, backlash) overshoot the main camera's tiny field by more
@@ -662,7 +663,8 @@ def cmd_console(args, cfg):
                 ui["jog"][:] = 0
                 which = params.get("cam")
                 only = [which] if which in cams else None
-                in_background(lambda: do_cal(only))
+                mode = "pattern" if params.get("mode") == "pattern" else "blob"
+                in_background(lambda: do_cal(only, mode))
             else:
                 ui["msg"] = "no cameras"
         elif action == "motors":
@@ -890,6 +892,8 @@ def cmd_console(args, cfg):
                     busy(lambda: goto(name))
             elif k == ord("c") and cams:
                 busy(do_cal)
+            elif k == ord("C") and cams:
+                busy(lambda: do_cal(mode="pattern"))
             elif k == ord("p"):
                 mount_action("track", {})
             elif k == ord("v"):
@@ -921,7 +925,8 @@ def cmd_console(args, cfg):
             scr.erase()
             lines = [
                 "ISS mount console   q quit | arrows jog (toggle) | space stop jog | X EMERGENCY STOP | 1-5 speed | t sidereal",
-                "                    H home | s sync | g goto | c calibrate | m mask point | f arrow frame",
+                "                    H home | s sync | g goto | c calibrate | C calibrate on scene | m mask point",
+                "                    f arrow frame",
                 "                    p track next pass | v servo (follow what the camera sees)",
                 "                    x select cam | -/= exposure | [/] gain",
                 "",

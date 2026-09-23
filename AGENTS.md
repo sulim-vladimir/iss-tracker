@@ -92,6 +92,35 @@ Two things it is genuinely sensitive to, measured:
   same two numbers carry the entire motion. Sharing them cost a factor of five in accuracy
   (125" -> 23"), which is why `servo_alpha`/`servo_beta` exist.
 
+## Calibrating with no point source (pattern mode)
+
+From this balcony there is often nothing point-like to calibrate on - just lit windows, or
+daylight scenery. `C` in the console, "calibrate on scene" in the browser, `mode="pattern"` in
+`calibrate_cameras`. It replaces blob detection with `cv2.phaseCorrelate` over the whole frame:
+same displacement-per-degree the ramp was extracting from the blob, no target required.
+
+Blob mode does not fail loudly on such a scene, which is the trap. It locks onto a whole lit
+window - thousands of pixels of it - and tracks the wandering centroid of a shape that is
+drifting out of frame.
+
+Two limits, both real:
+
+* **It cannot measure the boresight.** Each camera correlates against its own reference frame, so
+  positions mean nothing across cameras. Pattern mode measures J and leaves the stored boresight
+  alone, saying so. The guide->main handoff needs one identifiable point in both cameras, at 1 km
+  or more - closer than that the parallax across the ~0.2 m camera separation exceeds the main
+  camera's 7.3' field.
+* **It is less precise than a blob.** The cameras differ in scale by ~33x, so a ramp that sweeps
+  the main camera across its frame shifts the guide by only a few pixels, which is where phase
+  correlation's sub-pixel bias is worst. Measured in simulation: scale 1.02-1.06, rotation -2.4
+  to +5.4 deg. Inside what tracking tolerates, but redo it on a real point source when one is up.
+
+**The simulator cannot properly exercise this.** `CalibWorld` renders a couple of point sources,
+not a textured scene, so anything but a tiny step walks the "scene" out of frame and the
+correlation fails - steps of 0.05 and 0.10 deg fail in the sim for that reason alone. On real
+scenery there is structure everywhere, larger steps should work, and the precision above is
+probably pessimistic. Measure it on the balcony before believing either number.
+
 ## Not built yet
 
 * **The fitted pointing model.** `issctl/model.py` has a 5-parameter model (orientation, Dec
@@ -123,6 +152,9 @@ Symptoms we have already chased, so you do not chase them again:
 | servo run never ends when nothing is in the field | the give-up check only fired after a first lock; it now runs from the start of the session |
 | servo loses the target after a one-second glitch and never gets it back | the search gate grew at the pass-mode rate and was still opening when `servo_give_up_s` fired. In servo mode it opens at roughly the ISS's own speed |
 | servo tracks but the main camera never takes over | calibration scale error. 15% is fine, 30% is not - the handoff, not the control law, is what gives out |
+| "guide camera unavailable: General error" | a control value outside what that body accepts - the SDK reports out-of-range exactly like a dead camera. The ASI120MM Mini's gain range is 0-100, not the 0-600 of the USB3 bodies, and it has no HighSpeedMode control at all. `AsiCamera._control` now clamps to `get_controls()` and skips what is missing, and the error names the step that failed |
+| cannot calibrate: nothing in view but lit windows or daylight scenery | blob mode needs a point source, and worse, it does not fail loudly - it locks onto a whole lit window and tracks its wandering centroid. Use pattern mode (`C` in the console, "calibrate on scene" in the browser): phase correlation of the whole frame. Gives J, NOT the boresight |
+| ASI120MM Mini shows up on a USB 2.0 bus in a blue port | expected: the Mini IS a USB 2.0 camera (the -S is the USB3 one). A blue socket wires both a 2.0 and a 3.0 controller; the plug decides which. Not a fault, and not a clue - it shares that bus with the CH340, which matters only for frame rate |
 
 Useful when diagnosing: calibration prints the implied focal length beside the measured scale, and
 `axis-scale` compares a commanded move against a measured one and computes the corrected

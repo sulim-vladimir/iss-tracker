@@ -217,3 +217,109 @@ def test_calibration_order_puts_the_narrow_camera_first_when_it_can():
     # a stale entry without a matrix is not a reference
     order, _ = calibration_order(cams, existing={"guide": {"boresight": [1, 2]}})
     assert order == ["guide", "main"]
+
+
+# ---- calibrating with no point source in view -------------------------------------------------
+
+class _ScriptedCam:
+    """A camera showing whatever frame the test last handed it, with a fresh sequence number."""
+
+    def __init__(self, frame, bayer=False):
+        self.frame, self.bayer = frame, bayer
+        self.height, self.width = frame.shape[:2]
+        self.seq = 0
+
+    def latest(self):
+        self.seq += 1
+        return self.frame, None, self.seq
+
+    def show(self, frame):
+        self.frame = frame
+
+
+def _windows(shape=(600, 800)):
+    """Blurry bright rectangles - lit windows through a defocused scope, with no point source."""
+    import cv2
+
+    rng = np.random.default_rng(0)
+    img = np.zeros(shape, np.float32)
+    for x, y, w, h in [(180, 90, 140, 300), (420, 70, 150, 320), (240, 450, 100, 110)]:
+        img[y:y + h, x:x + w] = 200
+    return cv2.GaussianBlur(img, (0, 0), 15) + 12 + rng.normal(0, 3, shape).astype(np.float32)
+
+
+def _shifted(img, dx, dy):
+    import cv2
+
+    return cv2.warpAffine(img, np.float32([[1, 0, dx], [0, 1, dy]]), (img.shape[1], img.shape[0]))
+
+
+def test_pattern_tracker_measures_a_shift_with_nothing_point_like_in_frame():
+    """The whole reason this exists: a scene full of structure but no blob to detect."""
+    from issctl.calib import PatternTracker
+    from issctl.detect import detect
+
+    scene = _windows()
+    # Blob mode does not fail loudly here - it "finds" a target. That is the trap: the detection
+    # is a whole lit window, thousands of pixels of it, and its centroid wanders with the edges
+    # as they drift out of frame. A shift measured from that is worse than no shift at all.
+    blob = detect(scene, sigma=6.0, min_area=20, edge_margin=3)
+    assert blob is not None and blob.area > 1000, blob
+    cam = _ScriptedCam(scene)
+    t = PatternTracker(cam)
+    assert t.reset()
+    cam.show(_shifted(scene, 37, -21))
+    moved = t.measure(n=5) - t.origin
+    assert np.allclose(moved, [37, -21], atol=0.5), moved
+
+
+def test_pattern_tracker_refuses_a_frame_it_cannot_correlate():
+    """A featureless frame gives a flat correlation: better to say nothing than invent a shift."""
+    from issctl.calib import PatternTracker
+
+    rng = np.random.default_rng(1)
+    flat = lambda: (np.full((400, 500), 50.0) + rng.normal(0, 0.5, (400, 500))).astype(np.float32)
+    cam = _ScriptedCam(flat())
+    t = PatternTracker(cam, min_response=0.5)
+    t.reset()
+    cam.show(flat())        # same featureless wall, fresh noise: nothing to lock onto
+    assert t.measure(n=5) is None
+    assert t.response < 0.5
+
+
+def test_pattern_calibration_recovers_the_matrix_without_a_target():
+    """Pattern mode against a wide reference: mount slack still cancels in the ratio.
+
+    The tolerances here are loose on purpose, and the reason is structural rather than sloppy.
+    The two cameras differ in scale by ~33x, so a ramp that moves the main camera across most of
+    its frame shifts the guide by only a handful of pixels - and a handful of pixels is exactly
+    where phase correlation's sub-pixel bias is worst. Measured over five runs: scale 1.03-1.06,
+    rotation -1.4 to +5.2 deg. That is inside what tracking tolerates (servo mode holds the ISS
+    in the main field with 15% scale and 10 deg of rotation error) but it is markedly worse than
+    a blob calibration, so redo this on a real point source when one is available.
+    """
+    from issctl.calib import PatternTracker, calibrate_against
+    from issctl.camera import SimCamera
+    from issctl.clock import Clock
+    from issctl.config import load_config
+    from issctl.mount import SimMount
+    from issctl.sim import CalibWorld
+
+    cfg = load_config()
+    clock = Clock()
+    mount = SimMount(cfg, {"index": [0.0, 90.0]}, clock, start=[20.0, 40.0], backlash=[0.03, 0.03])
+    mount.query()
+    world = CalibWorld(cfg, mount, decoys=())
+    guide = SimCamera("guide", cfg["cameras"]["guide"], clock, world).start()
+    main = SimCamera("main", cfg["cameras"]["main"], clock, world).start()
+    try:
+        J = calibrate_against(mount, main, guide, world.true_cal["guide"], step_deg=0.02,
+                              log=lambda *a: None, tracker=PatternTracker(main),
+                              ref_tracker=PatternTracker(guide))
+    finally:
+        guide.stop()
+        main.stop()
+    truth = np.array(world.true_cal["main"]["J"])
+    assert np.allclose(np.linalg.norm(J[:, 1]), np.linalg.norm(truth[:, 1]), rtol=0.12)
+    angle = np.degrees(np.arctan2(J[1, 0], J[0, 0]) - np.arctan2(truth[1, 0], truth[0, 0]))
+    assert abs((angle + 180) % 360 - 180) < 8

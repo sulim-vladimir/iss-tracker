@@ -80,8 +80,10 @@ height = 960
 bin = 1
 # The 16 mm lens has ~11 mm of aperture vs 50 mm for the finder, so a point source gives far fewer
 # photons: start longer/higher and trim from the browser panel once you see the ISS.
+# The ASI120MM Mini's gain range is 0-100, NOT the 0-600 of the USB3 bodies - asking for more
+# makes the SDK refuse to open the camera with a bare "General error".
 exposure_ms = 8.0
-gain = 200
+gain = 100
 usb_bandwidth = 80
 latency_s = 0.01              # extra delay between mid-exposure and frame arrival
 detect_sigma = 6.0

@@ -262,6 +262,8 @@ SKY = """<div class="panel"><h2>sky</h2>
 CENTRE = """ <button title="move the object to the green cross (where the main camera looks)"
  onclick="mnt('centre',{cam:'NAME'})">LABEL</button>EXTRA
  <button onclick="mnt('calibrate',{cam:'NAME'})">calibrate NAME</button>
+ <button title="no star or lamp in view? measure how far the whole SCENE shifts instead. Gives the image scale and rotation, but not the boresight"
+ onclick="mnt('calibrate',{cam:'NAME',mode:'pattern'})">on scene</button>
  <button title="measure lost motion using this camera"
  onclick="mnt('backlash',{cam:'NAME'})">backlash</button>"""
 
@@ -298,6 +300,8 @@ MOUNT = """<div class="panel"><h2>mount <span id="mount-busy"></span></h2>
  <button id="motorbtn" onclick="mnt('motors',{on: MOTORS ? 0 : 1})">motors off</button>
  <button onclick="if(confirm('Set current position as home?')) mnt('home',{})">set home</button>
  <button onclick="mnt('calibrate',{})">calibrate cameras</button>
+ <button title="calibrate by correlating the whole scene - for when there is no point source to detect (lit windows, daylight scenery). Measures J only, not the boresight"
+ onclick="mnt('calibrate',{mode:'pattern'})">calibrate on scene</button>
  <button title="measure lost motion, then compensate for it on goto and centring"
  onclick="mnt('backlash',{})">measure backlash</button></div>
 <div class="info" id="cal-info"></div></div>"""

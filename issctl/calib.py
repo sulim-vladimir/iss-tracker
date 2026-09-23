@@ -70,6 +70,120 @@ def centring_move(cal, axis2, px, max_deg=20.0, target_px=None):
     return None if np.max(np.abs(d)) > max_deg else d
 
 
+class BlobTracker:
+    """Where the target is, from the detected blob. Needs something point-like in view."""
+
+    mode = "blob"
+    absolute = True          # positions mean the same thing in every camera
+
+    def __init__(self, cam):
+        self.cam = cam
+
+    def reset(self):
+        pass
+
+    def measure(self, n=10, timeout=5.0):
+        return measure(self.cam, n, timeout)
+
+
+class PatternTracker:
+    """How far the whole scene has shifted, for a camera with no point source in view.
+
+    Blob detection needs a star, a planet or a distant lamp. From a balcony there may be none -
+    just a wall of lit windows, or daylight scenery - and yet the frame is full of structure.
+    Phase correlation measures the shift of the entire image, which is the same number the
+    calibration was extracting from the blob, so it drops straight into the ramp fit.
+
+    What it CANNOT do is tell two cameras they are looking at the same thing: each tracker's
+    origin is its own reference frame, so positions are comparable only within one camera. That
+    is enough for J and not enough for the boresight, which still needs one identifiable point.
+    """
+
+    mode = "pattern"
+    absolute = False         # positions are relative to this camera's own reference frame
+
+    def __init__(self, cam, origin=None, min_response=0.10):
+        self.cam = cam
+        self.origin = np.array(origin if origin is not None else
+                               [(cam.width - 1) / 2, (cam.height - 1) / 2], dtype=float)
+        self.min_response = min_response
+        self.ref = None
+        self.window = None
+        self.response = None
+
+    def _prepare(self, img):
+        """Grey, mean-subtracted and windowed - the three things phase correlation needs.
+
+        A Bayer frame is binned 2x2 first: its colour checkerboard is a strong signal at the
+        Nyquist frequency and would otherwise dominate the correlation. The shift that comes
+        back is then in binned pixels, so the caller scales it.
+        """
+        import cv2
+
+        g = np.asarray(img)
+        if g.ndim == 3:
+            g = g.mean(axis=2)
+        g = g.astype(np.float32)
+        scale = 1
+        if getattr(self.cam, "bayer", False):
+            h, w = g.shape[0] // 2 * 2, g.shape[1] // 2 * 2
+            g = g[:h:2, :w:2] + g[1:h:2, :w:2] + g[:h:2, 1:w:2] + g[1:h:2, 1:w:2]
+            scale = 2
+        g = np.ascontiguousarray(g - g.mean(), dtype=np.float32)
+        if self.window is None or self.window.shape != g.shape:
+            self.window = cv2.createHanningWindow((g.shape[1], g.shape[0]), cv2.CV_32F)
+        return g, scale
+
+    def reset(self, timeout=5.0):
+        """Take the reference frame every later measurement is compared against."""
+        frame = _fresh_frame(self.cam, timeout)
+        if frame is None:
+            return False
+        self.ref, self._scale = self._prepare(frame)
+        return True
+
+    def measure(self, n=10, timeout=5.0):
+        import cv2
+
+        if self.ref is None and not self.reset(timeout):
+            return None
+        shifts, responses, deadline = [], [], time.monotonic() + timeout
+        last = self.cam.latest()[2]
+        while len(shifts) < n and time.monotonic() < deadline:
+            frame, _, seq = self.cam.latest()
+            if seq != last and frame is not None:
+                last = seq
+                cur, scale = self._prepare(frame)
+                if cur.shape != self.ref.shape:
+                    return None
+                (dx, dy), resp = cv2.phaseCorrelate(self.ref, cur, self.window)
+                shifts.append((dx * scale, dy * scale))
+                responses.append(resp)
+            time.sleep(0.005)
+        if len(shifts) < max(3, n // 2):
+            return None
+        self.response = float(np.median(responses))
+        if self.response < self.min_response:
+            return None       # featureless, or the scene has moved too far to still overlap
+        return self.origin + np.median(shifts, axis=0)
+
+
+def _fresh_frame(cam, timeout=5.0):
+    """The next frame to arrive, not whatever is sitting in the buffer from before a move."""
+    last = cam.latest()[2]
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        frame, _, seq = cam.latest()
+        if seq != last and frame is not None:
+            return frame
+        time.sleep(0.005)
+    return None
+
+
+def make_tracker(cam, mode="blob", origin=None):
+    return PatternTracker(cam, origin) if mode == "pattern" else BlobTracker(cam)
+
+
 def measure(cam, n=10, timeout=5.0):
     if not getattr(cam, "manual", False):
         cam.gate = None   # but never throw away a target the user picked by hand
@@ -205,7 +319,8 @@ def bring_into_view(mount, cam, ref_cam, ref_cal, track_rate=None, log=print, ab
 
 
 def calibrate_against(mount, cam, ref_cam, ref_cal, step_deg=None, ramp_steps=3, track_rate=None,
-                      log=print, abort=None, slew_rate=0.3, measure_frames=10):
+                      log=print, abort=None, slew_rate=0.3, measure_frames=10,
+                      tracker=None, ref_tracker=None):
     """Calibrate a narrow camera by comparing it with an already-calibrated wide one.
 
     A narrow field cannot take a step big enough to beat the mount's backlash, so measuring it
@@ -215,6 +330,8 @@ def calibrate_against(mount, cam, ref_cam, ref_cal, step_deg=None, ramp_steps=3,
     matrix, the answer is J = S_cam . S_ref^-1 . G.
     """
     step_deg = step_deg or default_step(cam, ramp_steps)
+    tracker = tracker or BlobTracker(cam)
+    ref_tracker = ref_tracker or BlobTracker(ref_cam)
     start = mount.position()
     s_cam, s_ref = [], []
     for axis in (0, 1):
@@ -222,6 +339,9 @@ def calibrate_against(mount, cam, ref_cam, ref_cal, step_deg=None, ramp_steps=3,
         d[axis] = step_deg
         mount.move_to(start - d, track_rate=track_rate, abort=abort, max_rate=slew_rate)
         mount.move_to(start, track_rate=track_rate, abort=abort, max_rate=slew_rate)
+        time.sleep(0.4)
+        tracker.reset()
+        ref_tracker.reset()
         angles, here, there = [], [], []
         for k in range(ramp_steps + 1):
             if abort and abort():
@@ -229,7 +349,8 @@ def calibrate_against(mount, cam, ref_cam, ref_cal, step_deg=None, ramp_steps=3,
             if k:
                 mount.move_to(start + d * k, track_rate=track_rate, abort=abort, max_rate=slew_rate)
             time.sleep(0.4)
-            a, b = measure(cam, n=measure_frames), measure(ref_cam, n=measure_frames)
+            a = tracker.measure(n=measure_frames)
+            b = ref_tracker.measure(n=measure_frames)
             if a is None or b is None:
                 raise RuntimeError(f"lost the target in {cam.name if a is None else ref_cam.name} "
                                    f"after {k} steps of {step_deg:.3f} deg")
@@ -269,7 +390,7 @@ def calibration_order(cam_cfgs, existing=None):
 
 def calibrate_cameras(mount, cams, steps=None, track_rate=None, log=print, abort=None,
                       warnings=None, slew_rate=0.5, only=None, existing=None,
-                      ramp_steps=3, measure_frames=10):
+                      ramp_steps=3, measure_frames=10, mode="blob"):
     """Needs one bright target visible in every camera (centre it in the main camera first).
 
     Each camera is calibrated with its own step size, so wide and narrow fields both get a
@@ -284,6 +405,7 @@ def calibrate_cameras(mount, cams, steps=None, track_rate=None, log=print, abort
     other camera's stored matrix (existing) is reused, so you never have to redo the wide field.
     """
     steps = dict(steps or {})
+    trackers = {n: make_tracker(c, mode) for n, c in cams.items()}
     start = mount.position()
     # Measure every camera BEFORE moving anything: this is the only moment all of them are looking
     # at the same pose, so it is the only reliable basis for the guide->main boresight. Calibrating
@@ -291,15 +413,20 @@ def calibrate_cameras(mount, cams, steps=None, track_rate=None, log=print, abort
     # backlash means the mount does not come back precisely enough to re-measure afterwards.
     usable, missing, at_start = {}, [], {}
     for name, cam in cams.items():
-        at_start[name] = measure(cam)
+        at_start[name] = trackers[name].measure()
         if at_start[name] is None:
             missing.append(name)
             continue
         usable[name] = cam
         steps.setdefault(name, default_step(cam, ramp_steps))
     if not usable:
-        raise RuntimeError(f"no target detected in {' or '.join(cams)} - adjust exposure/gain, "
-                           f"focus, or click the target in the image")
+        raise RuntimeError(
+            f"nothing to measure in {' or '.join(cams)} - "
+            + ("the scene has too little structure to correlate; focus it and check the exposure"
+               if mode == "pattern" else
+               "adjust exposure/gain, focus, or click the target in the image. With no point "
+               "source at all (a wall of lit windows, daylight scenery) calibrate in pattern "
+               "mode instead, which tracks the whole scene"))
     if missing:
         log(f"skipping {', '.join(missing)}: no target detected there")
         if warnings is not None:
@@ -333,9 +460,13 @@ def calibrate_cameras(mount, cams, steps=None, track_rate=None, log=print, abort
                                                     (ref_wide.height - 1) / 2])}
             else:
                 ref_cal = stored or None
-        if ref_cal and reference in usable and measure(usable[reference]) is not None:
-            if not bring_into_view(mount, cam, usable[reference], ref_cal, track_rate=track_rate,
-                                   log=log, abort=abort, slew_rate=slew_rate):
+        if ref_cal and reference in usable and trackers[reference].measure() is not None:
+            # Steering the target back by pixel needs an absolute position in a known frame, which
+            # pattern mode does not have - it only knows how far the scene moved. There is nothing
+            # to recover there anyway: the whole scene is the target.
+            if mode != "pattern" and not bring_into_view(
+                    mount, cam, usable[reference], ref_cal, track_rate=track_rate,
+                    log=log, abort=abort, slew_rate=slew_rate):
                 log(f"{name}: target not in view and could not be recovered - skipped")
                 if warnings is not None:
                     warnings.append(f"{name} not calibrated: the target never came back into its "
@@ -344,7 +475,8 @@ def calibrate_cameras(mount, cams, steps=None, track_rate=None, log=print, abort
             log(f"{name}: calibrating against {reference} - the mount's slack cancels in the ratio")
             J = calibrate_against(mount, cam, usable[reference], ref_cal, track_rate=track_rate,
                                   log=log, abort=abort, slew_rate=slew_rate,
-                                  measure_frames=measure_frames, ramp_steps=ramp_steps)
+                                  measure_frames=measure_frames, ramp_steps=ramp_steps,
+                                  tracker=trackers[name], ref_tracker=trackers[reference])
             cols[name] = [J[:, 0], J[:, 1]]
             continue
         step_deg = steps[name]
@@ -357,6 +489,10 @@ def calibrate_cameras(mount, cams, steps=None, track_rate=None, log=print, abort
             # noise, and the fit residual shows whether the axis moved smoothly at all.
             mount.move_to(start - d, track_rate=track_rate, abort=abort, max_rate=slew_rate)
             mount.move_to(start, track_rate=track_rate, abort=abort, max_rate=slew_rate)
+            time.sleep(0.4)
+            # The reference frame is taken here, at the foot of the ramp with the slack already
+            # taken up, so every point in the fit is measured against the same starting scene.
+            trackers[name].reset()
             angles, points = [], []
             for k in range(ramp_steps + 1):
                 check_abort()
@@ -364,10 +500,13 @@ def calibrate_cameras(mount, cams, steps=None, track_rate=None, log=print, abort
                     mount.move_to(start + d * k, track_rate=track_rate, abort=abort,
                                   max_rate=slew_rate)
                 time.sleep(0.4)
-                seen = measure(cam, n=measure_frames)
+                seen = trackers[name].measure(n=measure_frames)
                 if seen is None:
-                    raise RuntimeError(f"lost the target in {name} after {k} steps of "
-                                       f"{step_deg:.3f} deg on axis{axis + 1}")
+                    raise RuntimeError(
+                        f"lost the target in {name} after {k} steps of {step_deg:.3f} deg on "
+                        f"axis{axis + 1}"
+                        + (" - the scene had moved too far to still overlap the reference; "
+                           "use a smaller step" if mode == "pattern" else ""))
                 angles.append(k * step_deg)
                 points.append(seen)
             A = np.vstack([np.array(angles), np.ones(len(angles))]).T
@@ -430,7 +569,17 @@ def calibrate_cameras(mount, cams, steps=None, track_rate=None, log=print, abort
     existing = existing or {}
     jm = result.get("main", existing.get("main"))
     jg = result.get("guide", existing.get("guide"))
-    if jm and jg and at_start.get("main") is not None and at_start.get("guide") is not None:
+    if mode == "pattern" and jm and jg:
+        log("pattern mode: J measured, boresight left alone - correlating a camera against its "
+            "own scene says nothing about where the OTHER camera is looking")
+        if warnings is not None:
+            warnings.append(
+                "boresight not measured: pattern mode cannot tell that two cameras are looking at "
+                "the same thing. The guide->main handoff still uses the stored boresight, so "
+                "redo that part on a point source (a distant lamp, a planet, the Moon) at 1 km "
+                "or more - closer than that the parallax between the two cameras exceeds the "
+                "main camera's field.")
+    elif jm and jg and at_start.get("main") is not None and at_start.get("guide") is not None:
         result.setdefault("guide", dict(jg))
         dth = np.linalg.solve(np.array(jm["J"]), np.array(jm["boresight"]) - at_start["main"])
         boresight = at_start["guide"] + np.array(jg["J"]) @ dth
