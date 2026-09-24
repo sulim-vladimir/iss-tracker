@@ -25,9 +25,9 @@ function applyMount(m) {
   if (fs && !fs.options.length) m.frames.forEach(f => fs.add(new Option(f, f)));
   if (fs) fs.value = m.frame;
   document.getElementById('frame-hint').textContent =
-    m.frame === 'axes' ? 'raw mount axes'
-    : m.jog_raw ? 'near the pole: raw axes for now'
-    : 'move target in image';
+    m.frame === 'axes' ? 'raw axes'
+    : m.jog_raw ? 'near pole: raw axes'
+    : 'target in image';
   document.getElementById('mount-busy').textContent = m.busy ? 'working...' : '';
   // Alt/az sits under the sky chart and the axis angles are not something you read while
   // working, so this panel carries only what has nowhere else to go: what just happened.
@@ -56,7 +56,7 @@ function applyMount(m) {
     const t = new Date(m.position_at * 1000);
     cal.push('position saved ' + t.toTimeString().slice(0, 8));
   }
-  document.getElementById('cal-info').textContent = [head].concat(cal).join('\\n');
+  document.getElementById('cal-info').textContent = [head].concat(cal).join('\n');
   const wbox = document.getElementById('cal-warn');
   wbox.textContent = '';
   (m.cal_warnings || []).forEach(w => {
@@ -77,14 +77,12 @@ function apply(s) {
     document.getElementById('stat-' + n).textContent =
       c.fps.toFixed(0) + ' fps  ' + (c.det ? 'detected ' + c.det[0] + ',' + c.det[1] : 'no detection');
     const info = document.getElementById('info-' + n);
-    if (info) info.textContent = ((s.status || {})[n] || []).join('\\n');
+    if (info) info.textContent = ((s.status || {})[n] || []).join('\n');
     const sel = document.getElementById('sel-' + n);
     if (sel) sel.textContent = c.manual
       ? (c.det ? 'locked on your pick' : 'your pick - nothing there, click again or go auto')
       : 'brightest in frame';
   }
-  const clk = document.getElementById('clock');
-  if (clk && s.time) clk.textContent = s.time;
   if (s.mount) applyMount(s.mount);
   drawSky(s);
   const em = document.getElementById('estop-msg');
@@ -160,9 +158,10 @@ function drawSky(s) {
     const [x, y] = pos(s.target[1], s.target[0]);
     svg.appendChild(el('circle', {cx: x, cy: y, r: 3.5, fill: '#e2483c'}));
   }
-  const fmt = (p, name) => p ? `${name} alt ${p[0].toFixed(1)}°  az ${p[1].toFixed(1)}°` : '';
+  const n5 = v => v.toFixed(1).padStart(5);
+  const fmt = (p, name) => p ? `${name} alt ${n5(p[0])}°  az ${n5(p[1])}°` : '';
   document.getElementById('sky-info').textContent =
-    [passLine(s.pass), fmt(s.pointing, 'mount'), fmt(s.target, 'ISS  ')].filter(Boolean).join('\\n');
+    [passLine(s.pass), fmt(s.pointing, 'mount'), fmt(s.target, 'ISS  ')].filter(Boolean).join('\n');
 }
 function clock(seconds) {
   const s = Math.max(0, Math.round(seconds));
@@ -173,7 +172,7 @@ function passLine(p) {
   if (!p) return '';
   const rise = p.rise || p.start;           // horizon crossing, not the trackable segment
   if (p.now < rise)
-    return `next pass in ${clock(rise - p.now)}\\n`
+    return `next pass in ${clock(rise - p.now)}\n`
          + `rises ${p.rise_at || p.starts_at}, max alt ${p.max_alt.toFixed(0)}°`;
   if (p.now < p.start)
     return `ISS up, trackable in ${clock(p.start - p.now)} (at ${p.starts_at})`;

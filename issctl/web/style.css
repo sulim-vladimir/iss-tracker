@@ -14,23 +14,28 @@ body{background:#2f3439;color:#e8e8e8;font:14px/1.4 system-ui,sans-serif;margin:
  /* The mount controls are several unrelated jobs, so they are separate boxes rather than one
     list to scan. The two readouts differ in kind, not just content: the left one changes only
     when you calibrate, the right one changes every cycle. */
- .panel.box{flex:0 1 auto;min-width:200px;max-width:none}
+ .panel.box{flex:0 1 auto;min-width:0;max-width:none}
  .panel.box.grow{flex:1 1 320px;min-width:260px}
  /* A long calibration warning must not push the rest of the page below the fold. */
  .panel.box .info{max-height:230px;overflow-y:auto}
- /* The controls sit beside the frames rather than below them, in a 2x2 block: slew and
-    targeting on top, calibration and its readout underneath. A single narrow column made every
-    button wrap onto its own line. */
- .row.cams .col{display:grid;grid-template-columns:repeat(2,minmax(190px,1fr));gap:16px;
-                 align-content:start;flex:1 1 440px;min-width:400px;max-width:620px}
+ /* The controls sit beside the frames, and every pixel they do not use goes to the cameras:
+    the two button boxes are sized to their contents, and calibration spans underneath them. */
+ .row.cams .col{display:grid;grid-template-columns:repeat(2,minmax(150px,200px));gap:12px;
+                 align-content:start;flex:0 0 auto}
  .row.cams .col .panel{width:auto;max-width:none;min-width:0;box-sizing:border-box;margin:0}
+ .row.cams .col .panel.calib,
+ .row.cams .col .panel.msgs{grid-column:1 / -1}
+ /* The frames take whatever is left, and the main camera takes the larger share of it. */
+ .row.cams .panel.cam{flex:1 1 420px;max-width:none}
+ .row.cams .panel.cam-main{flex-grow:1.6}
  .panel.msgs .info{margin-top:2px;max-height:150px;overflow-y:auto}
  .info.warn{color:#e3b567}
  .info.warn .w{border-left:3px solid #c9913c;padding:3px 0 3px 9px;margin:8px 0}
  .info.warn .w:first-child{margin-top:2px}
  .info.warn .w:last-child{margin-bottom:2px}
- .panel.box .ctl label{width:auto;min-width:48px}
- .pad{display:grid;grid-template-areas:". u ." "l c r" ". d .";gap:5px;width:170px;margin:6px 0}
+ .panel.box .ctl label{width:auto;min-width:0}
+ .panel.box .ctl{gap:4px}
+ .pad{display:grid;grid-template-areas:". u ." "l c r" ". d .";gap:4px;width:138px;margin:5px 0}
  .pad button{padding:8px 0}
  button{background:#4d555d;color:#e8e8e8;border:0;border-radius:4px;padding:5px 11px;
          font-size:14px;cursor:pointer}
@@ -39,15 +44,18 @@ body{background:#2f3439;color:#e8e8e8;font:14px/1.4 system-ui,sans-serif;margin:
         padding:4px;width:74px;font-size:14px}
  .rec{margin-top:8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
  #recbtn.on,#trackbtn.on{background:#a33;}
- #estop{background:#b32222;color:#fff;font-weight:600;font-size:15px;padding:9px 18px;
-         margin-bottom:10px}
+ #estop{background:#b32222;color:#fff;font-weight:600;font-size:11px;padding:6px 0;
+         width:75%;display:block;margin:8px auto 2px}
  #estop:hover{background:#c93030}
  #recinfo{color:#b9c1c8}
  .hint{color:#93a0ab;font-size:13px}
+ /* The chart is square: without a ceiling its height follows the panel width and runs off the
+    bottom of the page. The readings sit beside it rather than under it - the chart is already
+    as tall as this row needs to be. */
+ .panel.sky{flex:0 1 auto;max-width:none;display:flex;align-items:flex-start;gap:12px}
+ #sky{flex:0 0 auto;width:300px;max-width:100%;display:block;background:#20242a;border-radius:6px}
+ #sky-info{margin-top:0;flex:1 1 auto;min-width:150px}
  #siderealbtn.on{background:#3a6b46}
- .top{display:flex;align-items:center;gap:14px;margin-bottom:10px}
- #clock{font:16px/1 ui-monospace,monospace;color:#e8e8e8}
- #estop{margin-bottom:0}
  /* On a phone every panel stacks, and the arrows would end up below the main frame and the
     sky chart - a scroll away from the guide image you are steering by. display:contents
     dissolves the rows so all the panels become siblings of one column, which is what lets

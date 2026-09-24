@@ -126,15 +126,14 @@ class Preview:
                            .replace("LABEL", "centre it" if n == "main" else "send to main")
                            if can_move else ""))
             for n in self.cams)
-        # The sky chart is parked, not deleted: panels.html still has it and drawSky() bails out
-        # when its svg is absent, so putting {{sky_panel}} back in index.html is all it takes.
+        estop = f["estop"] if (self.controls and self.controls.get("estop")) else ""
         return fill(asset("index.html"),
                       cam_panels=cam_panels,
-                      mount_panel=f["mount"] if can_move else "",
+                      sky_panel=f["sky"] if (self.controls and self.controls.get("sky")) else "",
+                      mount_panel=fill(f["mount"], estop=estop) if can_move else "",
                       status_panel=f["status"] if can_move else "",
                       warnings_panel=f["warnings"] if can_move else "",
                       messages_panel=f["messages"] if can_move else "",
-                      estop=f["estop"] if (self.controls and self.controls.get("estop")) else "",
                       cams=json.dumps(list(self.cams)))
 
     def api_state(self):

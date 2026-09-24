@@ -21,9 +21,10 @@
 <!-- @centre -->
 <button title="move the object to the green cross (where the main camera looks)"
  onclick="mnt('centre',{cam:'NAME'})">LABEL</button>EXTRA
- <button onclick="mnt('calibrate',{cam:'NAME'})">calibrate NAME</button>
- <button title="no star or lamp in view? calibrate on the scenery instead, with the tracker chosen in the mount panel. Gives the image scale, but not the boresight"
- onclick="mnt('calibrate',{cam:'NAME',mode:'scene'})">on scene</button>
+ <button title="calibrate by following the detected target - a star, a planet or a distant lamp. The only mode that can measure the boresight"
+ onclick="mnt('calibrate',{cam:'NAME'})">calibrate on target</button>
+ <button title="no point source in view? Calibrate by following the scenery instead. CLICK THE IMAGE FIRST to choose which patch to follow (the blue circle) - without a click the whole frame is used. Measures the image scale, but not the boresight"
+ onclick="mnt('calibrate',{cam:'NAME',mode:'scene'})">calibrate on scenery</button>
 
 <!-- @in_frame -->
 <button title="move the object to the middle of this image (grey cross)"
@@ -41,12 +42,13 @@
   <select id="speedsel" onchange="mnt('speed',{index:this.value})"></select> °/s</div>
  <div class="ctl"><label>Arrows</label>
   <select id="framesel" onchange="mnt('frame',{frame:this.value})"></select>
-  <span id="frame-hint" class="hint"></span></div></div>
+  <span id="frame-hint" class="hint"></span></div>
+ {{estop}}</div>
 
 <div class="panel box"><h2>Target &amp; tracking</h2>
  <div class="ctl">
   <input id="target" title="star or planet name, 'RAh Dec', '18:36:56 +38:47:01', or 'altaz ALT AZ'"
-  placeholder="vega / jupiter / 18.6 38.8" style="width:150px">
+  placeholder="vega / jupiter" style="width:104px">
   <button onclick="mnt('goto',{target:tgt()})">goto</button>
   <button onclick="mnt('sync',{target:tgt()})">sync</button></div>
  <div class="ctl">
@@ -59,17 +61,15 @@
  <div class="ctl">
   <button id="motorbtn" onclick="mnt('motors',{on: MOTORS ? 0 : 1})">motors off</button></div></div>
 
-<div class="panel box"><h2>Calibration</h2>
- <div class="ctl">
-  <button onclick="if(confirm('Set current position as home?')) mnt('home',{})">set home</button></div>
- <div class="ctl">
-  <button onclick="mnt('calibrate',{})">calibrate cameras</button></div>
- <div class="ctl">
-  <button title="no point source in view? calibrate on the scenery instead. Gives the image scale, but not the boresight"
-  onclick="mnt('calibrate',{mode:'scene'})">calibrate on scene</button></div></div>
 
 <!-- @status -->
-<div class="panel box grow"><h2>Calibration status</h2>
+<div class="panel box calib"><h2>Calibration</h2>
+ <div class="ctl">
+  <button onclick="if(confirm('Set current position as home?')) mnt('home',{})">set home</button>
+  <button title="calibrate both cameras by following the detected target - the only mode that can measure the guide-&gt;main boresight"
+  onclick="mnt('calibrate',{})">both cameras on target</button>
+  <button title="calibrate both cameras by following the scenery. Click each image first to choose the patch to follow. Measures the image scale, but not the boresight"
+  onclick="mnt('calibrate',{mode:'scene'})">both cameras on scenery</button></div>
  <div class="info" id="cal-info"></div></div>
 
 <!-- @warnings -->
@@ -90,7 +90,6 @@
 <span id="estop-msg"></span>
 
 <!-- @sky -->
-<div class="panel sky"><h2>Sky</h2>
-<svg id="sky" viewBox="0 0 330 330" style="width:100%;background:#20242a;
- border-radius:6px"></svg>
+<div class="panel sky">
+<svg id="sky" viewBox="0 0 330 330"></svg>
 <div class="info" id="sky-info"></div></div>

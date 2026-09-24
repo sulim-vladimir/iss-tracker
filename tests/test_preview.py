@@ -60,8 +60,8 @@ def test_every_fragment_the_page_needs_exists():
 def test_javascript_only_touches_elements_the_page_contains():
     """getElementById on a missing node throws and silently freezes every other readout.
 
-    The sky chart is the deliberate exception: it is parked out of the page, and drawSky returns
-    early when its svg is absent, so its two lookups can never run.
+    drawSky is skipped rather than exempted: it guards its own lookups behind an early return
+    when the svg is absent, so it stays safe whether or not the sky panel is on the page.
     """
     html = _preview().page()
     js = asset("app.js")
@@ -88,3 +88,15 @@ def test_stylesheet_and_script_are_served():
         assert b"<html" in get("/").read()
     finally:
         server.shutdown()
+
+
+def test_javascript_escapes_are_not_doubled():
+    r"""A literal \n on the page instead of a line break.
+
+    These files were lifted out of a Python string where \\n was needed to emit \n. Copied
+    verbatim into a plain .js file that same \\n is an escaped backslash, so joins printed
+    "a\nb" instead of breaking the line. Nothing here needs a literal backslash in a string.
+    """
+    js = asset("app.js")
+    assert "\\\\" not in js, "double-escaped sequence left over from the Python templates"
+    assert js.count("\\n") >= 3, "the newline joins should still be there"
