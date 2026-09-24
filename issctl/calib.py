@@ -104,10 +104,10 @@ class FeatureTracker:
     A deliberately weak corner gave 3.76 px and lost lock 2 times in 12, which is the whole case
     for using several rather than one.
 
-    Corners are picked inside `region` (x, y, radius) when the user has clicked one, otherwise
-    across the whole frame. Clicking matters where the scene has depth: the camera swings on a
-    ~0.3 m radius, so objects at different distances shift by different amounts, and one patch at
-    one distance avoids mixing them.
+    `region` (x, y, radius) restricts it to one patch. Nothing in the UI sets it: it exists for
+    the day a scene with real depth needs it - the camera swings on a ~0.3 m radius, so objects
+    at different distances shift by different amounts - but it costs accuracy, so the whole
+    frame is the default.
 
     What it CANNOT do is tell two cameras they are looking at the same thing - each tracker's
     origin is its own reference frame. That is enough for J and not enough for the boresight.
@@ -257,10 +257,18 @@ TRACKERS = {
 
 
 def make_tracker(cam, mode="blob", origin=None):
-    """A tracker for this camera. In scene mode a hand-picked target marks the region to follow."""
+    """A tracker for this camera.
+
+    Scene mode follows the whole frame. It used to take the clicked target's gate as a region to
+    restrict itself to, which was wrong twice over: there is no persistent "scene mode" for a
+    click to belong to - the mode is an argument to one press of one button - and the gate is a
+    DETECTION gate that re-centres on whatever blob is found inside it, so on scenery it wanders
+    off the spot that was picked. `goodFeaturesToTrack` already returns the strongest corners in
+    the frame, which measured better than any hand-picked patch anyway (0.26 px against 0.45 for
+    a single chosen corner), so there is nothing to choose.
+    """
     if mode == "scene":
-        region = cam.gate if getattr(cam, "manual", False) else None
-        return FeatureTracker(cam, origin, region=region)
+        return FeatureTracker(cam, origin)
     return BlobTracker(cam)
 
 

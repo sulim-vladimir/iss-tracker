@@ -49,6 +49,9 @@ body{background:#2f3439;color:#e8e8e8;font:14px/1.4 system-ui,sans-serif;margin:
  #estop:hover{background:#c93030}
  #recinfo{color:#b9c1c8}
  .hint{color:#93a0ab;font-size:13px}
+ /* margin-left:auto eats the slack in the flex row, so the rate sits on the right edge of the
+    box whatever width the frame ends up. */
+ .fps{margin-left:auto;color:#93a0ab;font:13px/1 ui-monospace,monospace}
  /* The chart is square: without a ceiling its height follows the panel width and runs off the
     bottom of the page. The readings sit beside it rather than under it - the chart is already
     as tall as this row needs to be. */

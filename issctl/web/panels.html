@@ -11,7 +11,8 @@
  <label style="width:auto;margin-left:10px">Gain</label>
  <button onclick="api('/api/gain',{cam:'{{name}}',delta:-25})">-</button>
  <input id="gain-{{name}}" onchange="api('/api/gain',{cam:'{{name}}',value:this.value})">
- <button onclick="api('/api/gain',{cam:'{{name}}',delta:25})">+</button></div>
+ <button onclick="api('/api/gain',{cam:'{{name}}',delta:25})">+</button>
+ <span id="fps-{{name}}" class="fps"></span></div>
 <div class="ctl"><label>Target</label><span id="sel-{{name}}"></span></div>
 <div class="ctl btns">
  <button onclick="api('/api/select',{cam:'{{name}}',clear:1})">Auto</button>{{centre}}</div>
@@ -23,7 +24,7 @@
  onclick="mnt('centre',{cam:'NAME'})">LABEL</button>EXTRA
  <button title="calibrate by following the detected target - a star, a planet or a distant lamp. The only mode that can measure the boresight"
  onclick="mnt('calibrate',{cam:'NAME'})">calibrate on target</button>
- <button title="no point source in view? Calibrate by following the scenery instead. CLICK THE IMAGE FIRST to choose which patch to follow (the blue circle) - without a click the whole frame is used. Measures the image scale, but not the boresight"
+ <button title="no point source in view? Calibrate by following the scenery itself - the strongest corners anywhere in the frame. Nothing to select first. Measures the image scale, but not the boresight"
  onclick="mnt('calibrate',{cam:'NAME',mode:'scene'})">calibrate on scenery</button>
 
 <!-- @in_frame -->
@@ -68,7 +69,7 @@
   <button onclick="if(confirm('Set current position as home?')) mnt('home',{})">set home</button>
   <button title="calibrate both cameras by following the detected target - the only mode that can measure the guide-&gt;main boresight"
   onclick="mnt('calibrate',{})">both cameras on target</button>
-  <button title="calibrate both cameras by following the scenery. Click each image first to choose the patch to follow. Measures the image scale, but not the boresight"
+  <button title="calibrate both cameras by following the scenery itself. Nothing to select first. Measures the image scale, but not the boresight"
   onclick="mnt('calibrate',{mode:'scene'})">both cameras on scenery</button></div>
  <div class="info" id="cal-info"></div></div>
 

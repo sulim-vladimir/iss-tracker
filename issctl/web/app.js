@@ -74,8 +74,8 @@ function apply(s) {
     if (document.activeElement !== g) g.value = c.gain;
     const eu = document.getElementById('expunit-' + n);
     if (eu) eu.textContent = c.exposure_unit || 'ms';
-    document.getElementById('stat-' + n).textContent =
-      c.fps.toFixed(0) + ' fps  ' + (c.det ? 'detected ' + c.det[0] + ',' + c.det[1] : 'no detection');
+    document.getElementById('stat-' + n).textContent = c.det ? 'detected' : 'no detection';
+    document.getElementById('fps-' + n).textContent = c.fps.toFixed(0) + ' fps';
     const info = document.getElementById('info-' + n);
     if (info) info.textContent = ((s.status || {})[n] || []).join('\n');
     const sel = document.getElementById('sel-' + n);
@@ -159,7 +159,8 @@ function drawSky(s) {
     svg.appendChild(el('circle', {cx: x, cy: y, r: 3.5, fill: '#e2483c'}));
   }
   const n5 = v => v.toFixed(1).padStart(5);
-  const fmt = (p, name) => p ? `${name} alt ${n5(p[0])}°  az ${n5(p[1])}°` : '';
+  // az under alt, with the labels padded to the same width so the numbers line up
+  const fmt = (p, name) => p ? `${name} alt ${n5(p[0])}°\n${' '.repeat(name.length)} az  ${n5(p[1])}°` : '';
   document.getElementById('sky-info').textContent =
     [passLine(s.pass), fmt(s.pointing, 'mount'), fmt(s.target, 'ISS  ')].filter(Boolean).join('\n');
 }
