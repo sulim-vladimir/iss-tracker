@@ -89,6 +89,69 @@ class BlobTracker:
         return "no target detected"
 
 
+def prepare_frame(img, bayer=False, gain=None):
+    """8-bit grey for the flow tracker, binned 2x2 if the sensor is Bayer.
+
+    A Bayer frame's colour checkerboard is a strong gradient at every pixel, which is exactly what
+    a gradient-following tracker would lock onto. Binning removes it; the shift then comes back in
+    binned pixels, so the caller scales it. `gain` fixes the brightness normalisation across a
+    run - rescaling each frame by its own peak would turn a passing headlight into apparent
+    motion of everything else.
+    """
+    g = np.asarray(img)
+    if g.ndim == 3:
+        g = g.mean(axis=2)
+    g = g.astype(np.float32)
+    scale = 1
+    if bayer:
+        h, w = g.shape[0] // 2 * 2, g.shape[1] // 2 * 2
+        g = g[:h:2, :w:2] + g[1:h:2, :w:2] + g[:h:2, 1:w:2] + g[1:h:2, 1:w:2]
+        scale = 2
+    if gain is None:
+        gain = 255.0 / max(float(g.max()), 1e-6)
+    return np.clip(g * gain, 0, 255).astype(np.uint8), scale, gain
+
+
+SELECT_BLUR = 3.0       # smoothing applied ONLY when choosing corners, never when tracking them
+SELECT_BLOCK = 11       # gradient window for the corner score; 3 is far too small on a grainy frame
+
+
+def pick_corners(img, max_points=15, mask=None):
+    """Choose corners to follow, on a smoothed copy of the frame.
+
+    A high-gain frame is grainy, and grain has a sharper local gradient than a real edge spread
+    over tens of pixels - so the raw score picks noise over structure, which is what put the
+    markers in the middle of a blank bright wall. Smoothing first fixes that: measured on a
+    focused frame, corners landing on structure that survives heavy smoothing went from 9/15 to
+    12/15. The smoothing is for the CHOICE only; tracking runs on the sharp image, because that
+    is where the sub-pixel accuracy lives.
+    """
+    import cv2
+
+    soft = cv2.GaussianBlur(img, (0, 0), SELECT_BLUR)
+    return cv2.goodFeaturesToTrack(soft, maxCorners=max_points, qualityLevel=0.01,
+                                   minDistance=8, mask=mask, blockSize=SELECT_BLOCK)
+
+
+def scene_corners(frame, bayer=False, max_points=15, region=None):
+    """The corners scene calibration would follow in this frame, in full-resolution pixels.
+
+    The preview draws these, so what you see on the image is what actually gets tracked - not a
+    separate guess at it. Returns an empty array when the frame has too little structure, which
+    is the honest answer and the one worth seeing before you press the button.
+    """
+    import cv2
+
+    img, scale, _ = prepare_frame(frame, bayer)
+    mask = None
+    if region:
+        x, y, r = region
+        mask = np.zeros(img.shape, np.uint8)
+        cv2.circle(mask, (int(x / scale), int(y / scale)), max(int(r / scale), 8), 255, -1)
+    pts = pick_corners(img, max_points, mask)
+    return np.zeros((0, 2)) if pts is None else pts.reshape(-1, 2) * scale
+
+
 class FeatureTracker:
     """How far the scene has moved, from a handful of corners tracked with optical flow.
 
@@ -132,26 +195,9 @@ class FeatureTracker:
         self.reason = None
 
     def _prepare(self, img):
-        """8-bit grey for the flow tracker, binned 2x2 if the sensor is Bayer.
-
-        A Bayer frame's colour checkerboard is a strong gradient at every pixel, which is exactly
-        what a gradient-following tracker would lock onto. Binning removes it; the shift then
-        comes back in binned pixels, so the caller scales it.
-        """
-        g = np.asarray(img)
-        if g.ndim == 3:
-            g = g.mean(axis=2)
-        g = g.astype(np.float32)
-        scale = 1
-        if getattr(self.cam, "bayer", False):
-            h, w = g.shape[0] // 2 * 2, g.shape[1] // 2 * 2
-            g = g[:h:2, :w:2] + g[1:h:2, :w:2] + g[:h:2, 1:w:2] + g[1:h:2, 1:w:2]
-            scale = 2
-        # One normalisation, fixed by the reference frame: rescaling each frame by its own peak
-        # would turn a passing headlight into an apparent motion of everything else.
-        if self.ref is None:
-            self._gain = 255.0 / max(float(g.max()), 1e-6)
-        return np.clip(g * self._gain, 0, 255).astype(np.uint8), scale
+        gain = None if self.ref is None else self._gain
+        out, scale, self._gain = prepare_frame(img, getattr(self.cam, "bayer", False), gain)
+        return out, scale
 
     def _mask(self, shape):
         if not self.region:
@@ -182,8 +228,7 @@ class FeatureTracker:
             return False
         self.ref = None                       # so _prepare recomputes the normalisation
         ref, self._scale = self._prepare(frame)
-        pts = cv2.goodFeaturesToTrack(ref, maxCorners=self.max_points, qualityLevel=0.01,
-                                      minDistance=8, mask=self._mask(ref.shape))
+        pts = pick_corners(ref, self.max_points, self._mask(ref.shape))
         if pts is None or len(pts) < self.min_points:
             self.ref, self.points = None, None
             self.reason = (f"only {0 if pts is None else len(pts)} corners to follow"

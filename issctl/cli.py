@@ -1,6 +1,7 @@
 """issctl command line: passes, mount-test, console, track (real hardware or --sim)."""
 
 import argparse
+import collections
 import datetime
 import time
 from pathlib import Path
@@ -345,9 +346,29 @@ def cmd_console(args, cfg):
         return []   # axis angles and the clock live in the mount panel and the top bar
 
     speeds = [0.004, 0.02, 0.1, 0.5, 2.0]
-    ui = {"jog": np.zeros(2), "speed": 2, "tracking": False, "busy": False, "quit": False,
-          "msg": "", "frame": "guide", "abort": threading.Event(), "mode": "console",
-          "motors": True, "jog_rates": np.zeros(2)}
+
+    class Messages(dict):
+        """Keeps every message, not just the newest, so the browser can show a log.
+
+        ui["msg"] is assigned all over the console's handlers rather than funnelled through
+        say(), so the record is taken at the point of assignment - catching them at the call
+        sites would mean finding all of them, and missing the next one somebody adds.
+        """
+
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            self.log = collections.deque(maxlen=300)
+
+        def __setitem__(self, key, value):
+            if key == "msg" and value and value != self.get("msg"):
+                stamped = value[:2].isdigit() and value[2:3] == ":"
+                self.log.append(value if stamped
+                                else f"{datetime.datetime.now():%H:%M:%S}  {value}")
+            super().__setitem__(key, value)
+
+    ui = Messages({"jog": np.zeros(2), "speed": 2, "tracking": False, "busy": False,
+                   "quit": False, "msg": "", "frame": "guide", "abort": threading.Event(),
+                   "mode": "console", "motors": True, "jog_rates": np.zeros(2)})
 
     def jog_frames():
         return ["axes"] + [n for n in cams if n in state.get("cameras", {})]
@@ -820,7 +841,8 @@ def cmd_console(args, cfg):
             cal[n] = {"scale": round(scale, 1),
                       "arcsec_px": round(3600.0 / scale, 2) if scale > 1e-6 else None,
                       "rotation": round(float(np.degrees(np.arctan2(J[1, 0], J[0, 0]))), 1)}
-        return {"axis1": round(float(pos[0]), 4), "axis2": round(float(pos[1]), 4),
+        return {"log": list(ui.log),
+                "axis1": round(float(pos[0]), 4), "axis2": round(float(pos[1]), 4),
                 "alt": round(alt_s, 2), "az": round(az_s, 2), "compass": geo.compass(az_s),
                 "speeds": speeds, "speed_index": ui["speed"], "tracking": ui["tracking"],
                 "frame": ui["frame"] if ui["frame"] in jog_frames() else "axes",

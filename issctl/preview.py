@@ -81,7 +81,7 @@ def draw_axes(img, cal, length=46, margin=10):
                     cv2.FONT_HERSHEY_SIMPLEX, 0.42, colour, 1)
 
 
-def render(cam, cal, max_width=800):
+def render(cam, cal, max_width=800, corners=False):
     """Image only - status text lives under the frame on the page, not burned into the picture."""
     frame, det, _ = cam.latest()
     if frame is None:
@@ -105,6 +105,14 @@ def render(cam, cal, max_width=800):
         cv2.circle(img, (int(gx * k), int(gy * k)), int(gr * k), (220, 130, 0), 2)
     if det:
         cv2.circle(img, (int(det.x * k), int(det.y * k)), 14, (0, 0, 255), 2)
+    if corners:
+        # Exactly the corners scene calibration will follow - same function, same settings - so
+        # you can see whether there is anything to track before pressing the button.
+        from .calib import scene_corners
+
+        for x, y in scene_corners(frame, cam.bayer):
+            cx, cy, r = int(x * k), int(y * k), 6
+            cv2.rectangle(img, (cx - r, cy - r), (cx + r, cy + r), (0, 0, 255), 2)
     return img
 
 
@@ -113,6 +121,7 @@ class Preview:
         self.cams, self.state, self.port, self.period = cams, state, port, 1.0 / fps
         self.status = status      # callable(camera_name) -> list of overlay lines
         self.controls = controls  # dict of callables: state/exposure/gain/record
+        self.show_corners = set()  # cameras drawing the corners scene calibration would use
 
     def page(self):
         can_record = bool(self.controls and self.controls.get("record"))
@@ -133,6 +142,7 @@ class Preview:
                       mount_panel=fill(f["mount"], estop=estop) if can_move else "",
                       status_panel=f["status"] if can_move else "",
                       warnings_panel=f["warnings"] if can_move else "",
+                      log_panel=f["log"] if can_move else "",
                       messages_panel=f["messages"] if can_move else "",
                       cams=json.dumps(list(self.cams)))
 
@@ -149,6 +159,7 @@ class Preview:
                 pass
         if self.controls and self.controls.get("mount_state"):
             out["mount"] = self.controls["mount_state"]()
+        out["corners"] = sorted(self.show_corners)
         return out
 
     def start(self):
@@ -187,6 +198,14 @@ class Preview:
                 if path == "/api/record" and ctl.get("record"):
                     ctl["record"](q.get("on") not in (None, "0", "false"))
                     return self._send(json.dumps(preview.api_state()).encode())
+                if path == "/api/corners":
+                    cam_name = q.get("cam")
+                    if cam_name in preview.cams:
+                        if q.get("on") not in (None, "0", "false"):
+                            preview.show_corners.add(cam_name)
+                        else:
+                            preview.show_corners.discard(cam_name)
+                    return self._send(json.dumps(preview.api_state()).encode())
                 if path == "/api/sky" and ctl.get("sky"):
                     return self._send(json.dumps(ctl["sky"]()).encode())
                 if path == "/api/select" and ctl.get("select"):
@@ -207,7 +226,8 @@ class Preview:
                     cam = preview.cams[name]
                     try:
                         while True:
-                            img = render(cam, preview.state.get("cameras", {}).get(name))
+                            img = render(cam, preview.state.get("cameras", {}).get(name),
+                                         corners=name in preview.show_corners)
                             if img is not None:
                                 ok, jpg = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 70])
                                 self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\n\r\n"

@@ -57,6 +57,12 @@ function applyMount(m) {
     cal.push('position saved ' + t.toTimeString().slice(0, 8));
   }
   document.getElementById('cal-info').textContent = [head].concat(cal).join('\n');
+  const lg = document.getElementById('log');
+  if (lg) {
+    const at_end = lg.scrollTop + lg.clientHeight >= lg.scrollHeight - 4;
+    lg.textContent = (m.log || []).join('\n');
+    if (at_end) lg.scrollTop = lg.scrollHeight;   // follow, unless you have scrolled back
+  }
   const wbox = document.getElementById('cal-warn');
   wbox.textContent = '';
   (m.cal_warnings || []).forEach(w => {
@@ -74,8 +80,10 @@ function apply(s) {
     if (document.activeElement !== g) g.value = c.gain;
     const eu = document.getElementById('expunit-' + n);
     if (eu) eu.textContent = c.exposure_unit || 'ms';
-    document.getElementById('stat-' + n).textContent = c.det ? 'detected' : 'no detection';
-    document.getElementById('fps-' + n).textContent = c.fps.toFixed(0) + ' fps';
+    const cb = document.getElementById('corners-' + n);
+    if (cb) cb.className = (s.corners || []).includes(n) ? 'on' : '';
+    document.getElementById('stat-' + n).textContent =
+      c.fps.toFixed(0) + ' fps  ' + (c.det ? 'detected' : 'no detection');
     const info = document.getElementById('info-' + n);
     if (info) info.textContent = ((s.status || {})[n] || []).join('\n');
     const sel = document.getElementById('sel-' + n);
@@ -183,3 +191,26 @@ function passLine(p) {
 }
 (async () => { try { SKY = await (await fetch('/api/sky')).json(); } catch (e) {} })();
 setInterval(async () => apply(await (await fetch('/api/state')).json()), 1000);
+
+
+function copyLog(btn) {
+  const text = document.getElementById('log').textContent;
+  const done = ok => { btn.textContent = ok ? 'copied' : 'failed';
+                       setTimeout(() => { btn.textContent = 'copy'; }, 1200); };
+  // navigator.clipboard needs a secure context, and this page is plain http on the LAN, so
+  // fall back to the old selection trick rather than silently doing nothing.
+  if (navigator.clipboard && window.isSecureContext)
+    navigator.clipboard.writeText(text).then(() => done(true), () => done(false));
+  else {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) {}
+    document.body.removeChild(ta);
+    done(ok);
+  }
+}

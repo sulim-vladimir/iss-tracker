@@ -11,8 +11,7 @@
  <label style="width:auto;margin-left:10px">Gain</label>
  <button onclick="api('/api/gain',{cam:'{{name}}',delta:-25})">-</button>
  <input id="gain-{{name}}" onchange="api('/api/gain',{cam:'{{name}}',value:this.value})">
- <button onclick="api('/api/gain',{cam:'{{name}}',delta:25})">+</button>
- <span id="fps-{{name}}" class="fps"></span></div>
+ <button onclick="api('/api/gain',{cam:'{{name}}',delta:25})">+</button></div>
 <div class="ctl"><label>Target</label><span id="sel-{{name}}"></span></div>
 <div class="ctl btns">
  <button onclick="api('/api/select',{cam:'{{name}}',clear:1})">Auto</button>{{centre}}</div>
@@ -26,6 +25,8 @@
  onclick="mnt('calibrate',{cam:'NAME'})">calibrate on target</button>
  <button title="no point source in view? Calibrate by following the scenery itself - the strongest corners anywhere in the frame. Nothing to select first. Measures the image scale, but not the boresight"
  onclick="mnt('calibrate',{cam:'NAME',mode:'scene'})">calibrate on scenery</button>
+ <button id="corners-NAME" title="draw the corners that 'calibrate on scenery' would follow. If few or none appear, there is too little structure here - focus it, or point somewhere with more detail"
+ onclick="api('/api/corners',{cam:'NAME',on: this.className!=='on' ? 1 : 0})">show corners</button>
 
 <!-- @in_frame -->
 <button title="move the object to the middle of this image (grey cross)"
@@ -72,6 +73,11 @@
   <button title="calibrate both cameras by following the scenery itself. Nothing to select first. Measures the image scale, but not the boresight"
   onclick="mnt('calibrate',{mode:'scene'})">both cameras on scenery</button></div>
  <div class="info" id="cal-info"></div></div>
+
+<!-- @log -->
+<div class="panel box grow"><h2>Log
+ <button class="small" title="copy the whole log to the clipboard" onclick="copyLog(this)">copy</button></h2>
+ <div class="info" id="log"></div></div>
 
 <!-- @warnings -->
 <div class="panel box grow"><h2>Warnings</h2>

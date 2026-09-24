@@ -116,9 +116,16 @@ drifting out of frame.
 Measured on a real main-camera frame (lit windows, nearly focused), error over one calibration
 step in sensor pixels: best single corner 0.45, best 5 0.27, best 20 0.26, all 300 0.37. More is
 not better, because weak corners drag the answer down, so it keeps the strongest 15. A
-deliberately weak corner gave 3.76 px and lost lock 2 times in 12 - which is the case for using
-several rather than one, and for clicking a target first so the corners come from a region you
-chose.
+deliberately weak corner gave 3.76 px and lost lock 2 times in 12, which is the case for using
+several rather than one - and for letting `goodFeaturesToTrack` choose them, since the strongest
+corners frame-wide beat any patch picked by hand.
+
+There is no "scene mode" to be in, and nothing to select before pressing the button: the mode is
+an argument to one press. An earlier version took the clicked target's gate as a region to
+restrict the search to, which was wrong twice - a click belongs to no mode, and that gate is a
+DETECTION gate that re-centres on whatever blob is found inside it, so on scenery the circle
+wanders off whatever was picked. `FeatureTracker` still accepts a `region` for the day a scene
+with real depth needs one; nothing sets it.
 
 Three things to know:
 

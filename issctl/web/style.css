@@ -16,6 +16,8 @@ body{background:#2f3439;color:#e8e8e8;font:14px/1.4 system-ui,sans-serif;margin:
     when you calibrate, the right one changes every cycle. */
  .panel.box{flex:0 1 auto;min-width:0;max-width:none}
  .panel.box.grow{flex:1 1 320px;min-width:260px}
+ button.small{font-size:11px;padding:2px 8px;margin-left:8px;vertical-align:middle}
+ #log{max-height:230px;overflow-y:auto;white-space:pre}
  /* A long calibration warning must not push the rest of the page below the fold. */
  .panel.box .info{max-height:230px;overflow-y:auto}
  /* The controls sit beside the frames, and every pixel they do not use goes to the cameras:
@@ -44,14 +46,12 @@ body{background:#2f3439;color:#e8e8e8;font:14px/1.4 system-ui,sans-serif;margin:
         padding:4px;width:74px;font-size:14px}
  .rec{margin-top:8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
  #recbtn.on,#trackbtn.on{background:#a33;}
+ button.on{background:#3a6b46}
  #estop{background:#b32222;color:#fff;font-weight:600;font-size:11px;padding:6px 0;
          width:75%;display:block;margin:8px auto 2px}
  #estop:hover{background:#c93030}
  #recinfo{color:#b9c1c8}
  .hint{color:#93a0ab;font-size:13px}
- /* margin-left:auto eats the slack in the flex row, so the rate sits on the right edge of the
-    box whatever width the frame ends up. */
- .fps{margin-left:auto;color:#93a0ab;font:13px/1 ui-monospace,monospace}
  /* The chart is square: without a ceiling its height follows the panel width and runs off the
     bottom of the page. The readings sit beside it rather than under it - the chart is already
     as tall as this row needs to be. */
