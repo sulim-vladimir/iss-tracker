@@ -21,6 +21,9 @@ def ideal_calibration(cam_cfg, rotation_deg=0.0, dec_cal=0.0, parity=1):
     s = pixels_per_deg(cam_cfg)
     c, n = np.cos(np.radians(rotation_deg)), np.sin(np.radians(rotation_deg))
     J = s * np.array([[c, -n * parity], [n, c * parity]])
+    # A matrix is what you MEASURED at dec_cal, and at dec_cal one axis1 degree is worth only
+    # cos(dec_cal) degrees of sky. jacobian() undoes this again at the declination in use.
+    J[:, 0] *= max(abs(np.cos(np.radians(dec_cal))), 0.05)
     w, h = cam_cfg["width"] // cam_cfg["bin"], cam_cfg["height"] // cam_cfg["bin"]
     return {"J": J.tolist(), "dec_cal": dec_cal, "boresight": [(w - 1) / 2, (h - 1) / 2]}
 
@@ -30,11 +33,21 @@ def cal_px_per_deg(cal):  # noqa: D401
     return float(np.linalg.norm(np.array(cal["J"], dtype=float)[:, 1]))
 
 
+def axis1_factor(cal, axis2):
+    """What the stored axis1 column must be multiplied by to be valid at this axis2.
+
+    Only the CHANGE in declination since the matrix was measured, never the absolute value. Both
+    ends come from the same step counter, so a mount that has no idea where it is cancels itself
+    out and this is exactly 1 until you slew.
+    """
+    dec = float(geo.axis2_to_dec(axis2))
+    k = np.cos(np.radians(dec)) / max(np.cos(np.radians(cal.get("dec_cal", 0.0))), 0.05)
+    return float(np.sign(k) * max(abs(k), 0.05))
+
+
 def jacobian(cal, axis2):
     J = np.array(cal["J"], dtype=float)
-    dec = float(geo.axis2_to_dec(axis2))
-    k = np.cos(np.radians(dec)) / max(np.cos(np.radians(cal["dec_cal"])), 0.05)
-    J[:, 0] *= np.sign(k) * max(abs(k), 0.05)
+    J[:, 0] *= axis1_factor(cal, axis2)
     return J
 
 
@@ -50,8 +63,9 @@ def image_jog_rates(cal, axis2, jog, speed, min_cos_dec=0.15):
     only rotates the field instead of shifting it, so a screen direction has no sensible mapping
     and the caller should drive the axes directly.
     """
-    dec = float(geo.axis2_to_dec(axis2))
-    if abs(np.cos(np.radians(dec))) < min_cos_dec:
+    if not axis1_plausible(cal) or axis1_stretch(cal, axis2) > 3.0:
+        return None     # axis1 cannot be trusted here - fall back to driving the axes directly
+    if axis1_worth_now(cal, axis2) < min_cos_dec:
         return None
     want_px = np.array([jog[0], -jog[1]], dtype=float)   # screen up is -y in image coordinates
     d = np.linalg.solve(jacobian(cal, axis2), want_px)
@@ -394,6 +408,88 @@ def scale_check(J, cam_cfg, dec_cal):
     return expected, measured, expected / np.maximum(measured, 1e-9)
 
 
+def measured_cos_dec(cal):
+    """cos(dec) as the IMAGE measured it: how far axis1 shifted the image against axis2.
+
+    One axis1 degree shifts the image cos(dec) times as far as one axis2 degree - geometry, not
+    calibration, so no focal length, gear ratio or camera rotation can change it. That makes the
+    ratio of the two columns an estimate of cos(dec) that owes nothing to the mount's step
+    counters, which is the only estimate available on a mount that was pushed round by hand.
+    """
+    J = np.asarray(cal["J"], dtype=float)
+    return float(np.linalg.norm(J[:, 0]) / max(np.linalg.norm(J[:, 1]), 1e-9))
+
+
+def axis1_plausible(cal, tol=1.15):
+    """False when the axis1 column is impossible rather than merely surprising.
+
+    cos(dec) cannot exceed 1, so an axis1 column LONGER than the axis2 one cannot be a
+    translation at any declination. That happens when axis1 rotated the field about a point
+    outside the frame - near the pole in a narrow camera - and the tracker reported the swing as
+    a shift. A column shorter than axis2 is always possible: it is just a higher declination.
+    """
+    return measured_cos_dec(cal) <= tol
+
+
+def axis1_worth_now(cal, axis2):
+    """cos(dec) as it applies to the axis1 column at this pose, from the image where possible.
+
+    The image's own estimate at calibration time, carried forward by the only part the mount is
+    still good for. Near zero means axis1 rotates the field instead of shifting it, so a screen
+    direction has no sensible mapping onto the axes.
+    """
+    return measured_cos_dec(cal) * abs(axis1_factor(cal, axis2))
+
+
+def axis1_stretch(cal, axis2):
+    """How far jacobian() is stretching the axis1 column from where it was measured.
+
+    Turning pixels into axis degrees never needs the absolute declination - only the CHANGE in it
+    since the matrix was measured. Both ends of that ratio come from the same step counter, so a
+    mount that is not synced cancels itself out: this is exactly 1 when you have not slewed since
+    calibrating, however wrong the counter is. It grows as you work further from where you
+    calibrated, and cos() near the pole makes it grow very fast - which is what turns a small
+    error in a near-pole axis1 column into a centring loop that walks away.
+    """
+    f = abs(axis1_factor(cal, axis2))
+    return float(max(f, 1.0 / f))
+
+
+def _unskewed(cal):
+    """The camera matrix with the cos(dec_cal) taken back out of the axis1 column.
+
+    Not a pointing: just both cameras expressed against the same yardstick so they can be
+    compared. Which yardstick does not matter, as long as it is the same one.
+    """
+    J = np.asarray(cal["J"], dtype=float).copy()
+    J[:, 0] /= max(abs(np.cos(np.radians(cal.get("dec_cal", 0.0)))), 0.05)
+    return J
+
+
+def boresight_from_picks(cal_main, cal_guide, px_main, px_guide):
+    """Guide pixel that the main camera's boresight looks at, from one object picked in both.
+
+    Only a point source lets the SOFTWARE decide that two cameras are looking at the same thing.
+    A person looking at two pictures needs no point source: any corner you can recognise will do.
+
+    Where the mount is pointing does not enter into it, and this is worth spelling out because it
+    is the one calibration answer that is free of it. Each camera's matrix is J = P . A, with P the
+    fixed pixels-per-degree-of-sky of that camera and A = diag(cos dec, 1) the axis-to-sky factor
+    that both cameras share at any instant. The guide pixel per main pixel is therefore
+    J_guide . J_main^-1 = P_guide . A . A^-1 . P_main^-1 = P_guide . P_main^-1, and A has gone.
+    So a hand-pointed mount with no idea where it is answers this exactly as well as a synced one.
+
+    Returns (boresight, carried_px). Exact when the object sits on the main boresight, and
+    carried_px is then 0: nothing had to be carried across and neither matrix was consulted.
+    Otherwise the offset travels through both matrices and their errors come with it, which is
+    what carried_px measures.
+    """
+    aim = np.asarray(cal_main["boresight"], dtype=float)
+    dth = np.linalg.solve(_unskewed(cal_main), aim - np.asarray(px_main, dtype=float))
+    carried = _unskewed(cal_guide) @ dth
+    return np.asarray(px_guide, dtype=float) + carried, float(np.linalg.norm(carried))
+
+
 def measure_backlash(mount, cam, cal, axis, step_deg=None, track_rate=None, log=print,
                      abort=None, slew_rate=0.3):
     """How much command an axis swallows before it actually turns, in degrees.
@@ -689,6 +785,22 @@ def calibrate_cameras(mount, cams, steps=None, track_rate=None, log=print, abort
         log(f"{n}: {3600 / max(sv.mean(), 1e-9):.2f} arcsec/px (scale {sv.round(1)} px/deg), "
             f"rotation {np.degrees(np.arctan2(J[1, 0], J[0, 0])):.1f} deg")
 
+        ratio = measured_cos_dec(result[n])
+        ok = axis1_plausible(result[n])
+        if not ok and warnings is not None:
+            warnings.append(
+                f"{n}: axis1 moved the image {ratio:.2f}x as far as axis2, which no declination "
+                f"allows - cos(dec) cannot exceed 1. That column is noise: axis1 rotated the "
+                f"field about a point outside the frame and the tracker read the swing as a "
+                f"shift. Centring and the image-frame arrows are off for {n} until it is redone "
+                f"away from the pole.")
+        elif warnings is not None and abs(ratio - np.cos(np.radians(dec_cal))) > 0.15:
+            warnings.append(
+                f"{n}: the image says axis1 was worth cos(dec) = {ratio:.2f}, i.e. dec "
+                f"{np.degrees(np.arccos(min(ratio, 1.0))):.0f}deg, but the mount said dec "
+                f"{dec_cal:.0f}deg. If the mount is not synced that is expected and harmless - "
+                f"centring works as long as you do not slew far before using it. If it IS synced, "
+                f"axis1 was measured too near the pole to mean anything.")
         expected, measured, factor = scale_check(J, cam.cfg, dec_cal)
         log(f"{n}: optics say {3600 / expected:.2f} arcsec/px; measured "
             f"{np.round(3600 / np.maximum(measured, 1e-9), 2)} arcsec/px "
@@ -696,13 +808,17 @@ def calibrate_cameras(mount, cams, steps=None, track_rate=None, log=print, abort
             f"= focal length {implied_focal_length(measured[1], cam.cfg):.0f} mm if the axes moved "
             f"exactly as commanded and the target is far away (config says "
             f"{cam.cfg['focal_length_mm']:g})")
-        scale_factors.append(factor)
+        # A column that failed the geometry test above says nothing about gears or focal length,
+        # and "multiply gear_ratio by 7.23" is advice that would wreck a working mount.
+        scale_factors.append(factor if ok else [np.nan, factor[1]])
 
     if scale_factors and warnings is not None:
-        factor = np.mean(scale_factors, axis=0)
-        if np.any(np.abs(factor - 1) > 0.15):
+        factor = np.nanmean(scale_factors, axis=0)
+        if np.any(np.abs(np.nan_to_num(factor, nan=1.0) - 1) > 0.15):
+            axes = (f"x{factor[0]:.2f}/{factor[1]:.2f}" if np.isfinite(factor[0])
+                    else f"x{factor[1]:.2f} on axis2 (axis1 not measurable here)")
             warnings.append(
-                f"scale mismatch x{factor[0]:.2f}/{factor[1]:.2f}: EITHER focal_length_mm is wrong "
+                f"scale mismatch {axes}: EITHER focal_length_mm is wrong "
                 f"(see the implied focal length above) OR the axes under/over-move, in which case "
                 f"multiply gear_ratio by that factor. Check with axis-scale, and calibrate on a "
                 f"DISTANT target.")

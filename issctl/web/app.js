@@ -193,6 +193,21 @@ function passLine(p) {
 setInterval(async () => apply(await (await fetch('/api/state')).json()), 1000);
 
 
+// ---- clicking an image: normally picks a target, but "set boresight" claims the next click ----
+let ARMED = null;
+function armBoresight(name) {
+  ARMED = ARMED === name ? null : name;
+  for (const n of CAMS) {
+    const b = document.getElementById('bore-' + n);
+    if (b) { b.className = ARMED === n ? 'on' : ''; b.textContent = ARMED === n ? 'click the spot' : 'set boresight'; }
+  }
+}
+function imgClick(name, event, img) {
+  const fx = event.offsetX / img.clientWidth, fy = event.offsetY / img.clientHeight;
+  if (ARMED === name) { const n = name; armBoresight(name); return mnt('boresight', {cam: n, fx, fy}); }
+  return api('/api/select', {cam: name, fx, fy});
+}
+
 function copyLog(btn) {
   const text = document.getElementById('log').textContent;
   const done = ok => { btn.textContent = ok ? 'copied' : 'failed';

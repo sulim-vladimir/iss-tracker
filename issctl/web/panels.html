@@ -1,8 +1,7 @@
 <!-- @panel -->
 <div class="panel cam cam-{{name}}"><h2>{{title}} <span id="stat-{{name}}"></span></h2>
 <img src="/{{name}}.mjpg" title="click to track this object, double-click to centre it"
- onclick="api('/api/select',{cam:'{{name}}',fx:event.offsetX/this.clientWidth,
-                             fy:event.offsetY/this.clientHeight})"
+ onclick="imgClick('{{name}}',event,this)"
  ondblclick="mnt('centre',{cam:'{{name}}'})">
 <div class="ctl"><label>Exposure</label>
  <button onclick="api('/api/exposure',{cam:'{{name}}',factor:0.667})">-</button>
@@ -14,7 +13,9 @@
  <button onclick="api('/api/gain',{cam:'{{name}}',delta:25})">+</button></div>
 <div class="ctl"><label>Target</label><span id="sel-{{name}}"></span></div>
 <div class="ctl btns">
- <button onclick="api('/api/select',{cam:'{{name}}',clear:1})">Auto</button>{{centre}}</div>
+ <button onclick="api('/api/select',{cam:'{{name}}',clear:1})">Auto</button>
+ <button id="bore-{{name}}" title="move the green cross: press this, then click the spot in this image. On the guide that spot must be the object sitting in the MIDDLE of the main image - that is what the boresight means. Only trust it on something a kilometre away or more, or the parallax between the two cameras is wider than the main field"
+ onclick="armBoresight('{{name}}')">set boresight</button>{{centre}}</div>
 <div class="info" id="info-{{name}}"></div>
 {{extra}}</div>
 
@@ -72,6 +73,9 @@
   onclick="mnt('calibrate',{})">both cameras on target</button>
   <button title="calibrate both cameras by following the scenery itself. Nothing to select first. Measures the image scale, but not the boresight"
   onclick="mnt('calibrate',{mode:'scene'})">both cameras on scenery</button></div>
+ <div class="ctl">
+  <button title="No point source to measure the boresight with? Click the SAME object in the main image and in the guide image, then press this. Only trust it on something a kilometre away or more - nearer than that the parallax between the two cameras is wider than the main field"
+  onclick="mnt('boresight',{})">boresight from my picks</button></div>
  <div class="info" id="cal-info"></div></div>
 
 <!-- @log -->

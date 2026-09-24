@@ -144,8 +144,9 @@ def remember_settings(state, state_path, name, cam):
 
 def make_controls(cams, recorder=None, mount_action=None, mount_state=None, estop=None, stopped=None,
                   on_select=None, sky=None, pointing=None, target=None, pass_info=None,
-                  on_settings=None):
+                  on_settings=None, picked=None):
     """Callbacks the preview page uses for exposure, gain and recording."""
+    picked = {} if picked is None else picked   # last hand-picked pixel per camera
 
     def state():
         out = {"cams": {}, "record": recorder.state() if recorder else None,
@@ -189,8 +190,13 @@ def make_controls(cams, recorder=None, mount_action=None, mount_state=None, esto
         if clear or fx is None or fy is None:
             (on_select or (lambda *a: None))(name, None, None)
             cam.clear_selection()
+            picked.pop(name, None)
         else:
             x, y = float(fx) * cam.width, float(fy) * cam.height
+            # Kept apart from cam.gate: the gate is a DETECTION gate and re-centres itself on
+            # whatever blob turns up inside it, which is the last thing you want from a pixel you
+            # chose by eye and are about to turn into a boresight.
+            picked[name] = (x, y)
             if on_select:
                 on_select(name, x, y)
             else:
@@ -321,7 +327,8 @@ def cmd_console(args, cfg):
     import curses
     import threading
 
-    from .calib import TRACKERS, calibrate_cameras, centring_move, image_jog_rates, measure
+    from .calib import (TRACKERS, axis1_plausible, axis1_stretch, boresight_from_picks,
+                        calibrate_cameras, centring_move, image_jog_rates, measure)
     from .mount import SIDEREAL_DEG_S, SimMount
 
     state_path = SIM_STATE_FILE if args.sim else None
@@ -369,6 +376,7 @@ def cmd_console(args, cfg):
     ui = Messages({"jog": np.zeros(2), "speed": 2, "tracking": False, "busy": False,
                    "quit": False, "msg": "", "frame": "guide", "abort": threading.Event(),
                    "mode": "console", "motors": True, "jog_rates": np.zeros(2)})
+    picked = {}     # the pixel you last clicked in each image, kept for the hand-set boresight
 
     def jog_frames():
         return ["axes"] + [n for n in cams if n in state.get("cameras", {})]
@@ -558,6 +566,23 @@ def cmd_console(args, cfg):
         if cal is None:
             say(f"{name} is not calibrated - cannot turn pixels into axis angles")
             return
+        # Two different ways for the axis1 column to be unusable, and they need different advice.
+        # Neither is "the mount disagrees with the image": on a mount pushed round by hand the
+        # mount is the one that is wrong, and the matrix is still perfectly good where it was
+        # measured, because jacobian() only ever applies the CHANGE in declination since then.
+        if not axis1_plausible(cal):
+            say(f"{name}: axis1 moved the image further than axis2, which no declination allows - "
+                f"that column is noise, not a measurement. Recalibrate {name} away from the pole.")
+            return
+        stretch = axis1_stretch(cal, mount.position()[1])
+        if stretch > 3.0:
+            # This is what made centring walk away before: a small error in the axis1 column,
+            # multiplied by cos(dec_now)/cos(dec_cal), overshoots by the same factor every pass.
+            say(f"{name}: the mount has moved from dec {cal.get('dec_cal', 0):.0f}deg (where this "
+                f"was calibrated) to dec {geo.axis2_to_dec(mount.position()[1]):.0f}deg, so axis1 "
+                f"is being stretched {stretch:.0f}x and centring would run away. Recalibrate "
+                f"{name} here - or sync the mount if it does not really know where it is.")
+            return
         target_px = (None if where == "boresight"
                      else [(cam.width - 1) / 2, (cam.height - 1) / 2])
         aim = np.asarray(cal["boresight"] if target_px is None else target_px, dtype=float)
@@ -592,6 +617,78 @@ def cmd_console(args, cfg):
             time.sleep(0.4)
         say(f"{name} target on the {'frame centre' if target_px else 'boresight'} "
             f"({off_px:.0f} px off)")
+
+    def set_boresight(name, fx, fy):
+        """Put this camera's boresight on the pixel that was just clicked.
+
+        The direct way, and the one that needs nothing else to be true: no matrix, no mount
+        position, no detection. The guide boresight means "where the main camera is looking", so
+        the pixel to click is the object that is sitting in the middle of the main image right
+        now. On main it sets the aim point itself - the spot the ISS gets driven to.
+        """
+        cam, cal = cams.get(name), state.get("cameras", {}).get(name)
+        if cam is None:
+            say(f"no {name} camera")
+            return
+        if cal is None:
+            say(f"{name} has no calibration to put a boresight in - calibrate it first")
+            return
+        x, y = float(fx) * cam.width, float(fy) * cam.height
+        cal["boresight"] = [x, y]
+        persist()
+        centre = np.array([(cam.width - 1) / 2, (cam.height - 1) / 2])
+        from .calib import cal_px_per_deg
+        off = float(np.linalg.norm(np.array([x, y]) - centre)) / cal_px_per_deg(cal)
+        say(f"{name} boresight set to {x:.0f},{y:.0f} - {off:.2f} deg from the frame centre"
+            + (" (the ISS now gets driven to that spot, not the middle)" if name == "main" else
+               " - it must be the object that is in the MIDDLE of the main image"))
+
+    def do_boresight():
+        """Set the guide boresight from one object picked by hand in both images.
+
+        For when the object you can recognise is not in the middle of the main image and you
+        cannot put it there. Otherwise prefer set_boresight: it needs no matrices at all.
+
+        Only a point source lets the software decide that two cameras are looking at the same
+        thing. A person does not need one: any corner you can recognise in both pictures will do,
+        and the calibration run that measured J need not have seen a target at all.
+
+        What care cannot fix is parallax. The two cameras sit a baseline apart, so an object at
+        distance d puts the boresight out by baseline/d radians for a target at infinity - about
+        3 arcmin at 200 m with 0.2 m between them, against a main field of 7 arcmin. Use something
+        at a kilometre or more; the Moon or a planet is free of the problem entirely.
+        """
+        cal = state.get("cameras", {})
+        if "main" not in cams or "guide" not in cams:
+            say("the boresight says where the MAIN camera looks in the GUIDE image - need both")
+            return
+        if not cal.get("main") or not cal.get("guide"):
+            say("calibrate both cameras first - the offset between your two picks is carried "
+                "across with their matrices")
+            return
+        pm, pg = picked.get("main"), picked.get("guide")
+        if pm is None or pg is None:
+            say("click the SAME object in the main image and in the guide image, then press this")
+            return
+        guide = cams["guide"]
+        # No mount position here on purpose: the axis-to-sky factor is common to both cameras and
+        # cancels in the ratio, so this works on a mount that was pushed round by hand.
+        b, carried = boresight_from_picks(cal["main"], cal["guide"], pm, pg)
+        if not (0 <= b[0] < guide.width and 0 <= b[1] < guide.height):
+            say(f"that puts the boresight at {b.round(0)}, outside the guide frame - the two "
+                f"picks are probably not the same object")
+            return
+        cal["guide"]["boresight"] = [float(b[0]), float(b[1])]
+        state["calibrated_at"] = state.get("calibrated_at") or time.time()
+        persist()
+        centre = np.array([(guide.width - 1) / 2, (guide.height - 1) / 2])
+        from .calib import cal_px_per_deg
+        off_deg = float(np.linalg.norm(b - centre)) / cal_px_per_deg(cal["guide"])
+        say(f"boresight set by hand at {b.round(1)}, {off_deg:.2f} deg from the guide frame "
+            f"centre" + (f" (your main pick was off its boresight, so {carried:.0f} px of that "
+                         f"came from the matrices - re-do it with the object centred in main if "
+                         f"that looks wrong)" if carried > 2 else ""))
+        say("parallax: only trust this if the object is a kilometre away or more")
 
     def pointing():
         pos = mount.position()
@@ -673,6 +770,11 @@ def cmd_console(args, cfg):
                                                 params.get("where", "boresight")))
             else:
                 ui["msg"] = "no cameras"
+        elif action == "boresight":
+            if params.get("fx") is not None and params.get("fy") is not None:
+                set_boresight(params.get("cam"), params["fx"], params["fy"])
+            else:
+                in_background(do_boresight)
         elif action == "backlash":
             if cams:
                 ui["jog"][:] = 0
@@ -865,7 +967,8 @@ def cmd_console(args, cfg):
                                              estop=emergency_stop, stopped=aborted,
                                              on_settings=lambda n, c: remember_settings(state, state_path, n, c),
                                              sky=sky_now, pointing=lambda: pointing()[1:],
-                                             target=target_now, pass_info=pass_now))
+                                             target=target_now, pass_info=pass_now,
+                                             picked=picked))
 
     def run(scr):
         curses.curs_set(0)

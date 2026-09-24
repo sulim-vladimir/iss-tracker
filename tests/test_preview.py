@@ -100,3 +100,16 @@ def test_javascript_escapes_are_not_doubled():
     js = asset("app.js")
     assert "\\\\" not in js, "double-escaped sequence left over from the Python templates"
     assert js.count("\\n") >= 3, "the newline joins should still be there"
+
+
+def test_each_camera_has_an_arming_button_the_script_can_find():
+    """armBoresight() builds the id by concatenation, so the literal-name check above cannot
+    see it: the button and the click handler have to be checked directly."""
+    html = _preview().page()
+    js = asset("app.js")
+    for name in ("guide", "main"):
+        assert f'id="bore-{name}"' in html
+        assert f"imgClick('{name}',event,this)" in html
+    assert "function armBoresight" in js and "function imgClick" in js
+    # an armed click must not also select a target, or the gate would chase the boresight
+    assert "return mnt('boresight'" in js
