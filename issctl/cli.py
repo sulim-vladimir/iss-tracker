@@ -320,7 +320,7 @@ def cmd_console(args, cfg):
     import curses
     import threading
 
-    from .calib import calibrate_cameras, centring_move, image_jog_rates, measure
+    from .calib import TRACKERS, calibrate_cameras, centring_move, image_jog_rates, measure
     from .mount import SIDEREAL_DEG_S, SimMount
 
     state_path = SIM_STATE_FILE if args.sim else None
@@ -467,7 +467,7 @@ def cmd_console(args, cfg):
         ui["msg"] = f"synced on {name}: correction {d.round(3)} deg"
 
     def do_cal(only=None, mode="blob"):
-        say(f"calibrating{' (pattern mode)' if mode == 'pattern' else ''}...")
+        say(f"calibrating{'' if mode == 'blob' else f' on the scene ({mode})'}...")
         warnings = []
         res = calibrate_cameras(mount, cams, track_rate=[SIDEREAL_DEG_S, 0.0] if ui["tracking"] else None,
                                 log=say, abort=aborted, warnings=warnings, only=only,
@@ -478,7 +478,7 @@ def cmd_console(args, cfg):
         persist()
         say(f"calibration done - {len(warnings)} warning(s), see below" if warnings else
             f"calibration complete, saved to {(state_path or STATE_FILE).name}")
-        if mode != "pattern":
+        if mode == "blob":
             recover_main()
 
     def recover_main():
@@ -663,7 +663,9 @@ def cmd_console(args, cfg):
                 ui["jog"][:] = 0
                 which = params.get("cam")
                 only = [which] if which in cams else None
-                mode = "pattern" if params.get("mode") == "pattern" else "blob"
+                mode = params.get("mode", "blob")
+                if mode not in TRACKERS:
+                    mode = "blob"
                 in_background(lambda: do_cal(only, mode))
             else:
                 ui["msg"] = "no cameras"
@@ -893,7 +895,7 @@ def cmd_console(args, cfg):
             elif k == ord("c") and cams:
                 busy(do_cal)
             elif k == ord("C") and cams:
-                busy(lambda: do_cal(mode="pattern"))
+                busy(lambda: do_cal(mode="scene"))
             elif k == ord("p"):
                 mount_action("track", {})
             elif k == ord("v"):
@@ -926,6 +928,7 @@ def cmd_console(args, cfg):
             lines = [
                 "ISS mount console   q quit | arrows jog (toggle) | space stop jog | X EMERGENCY STOP | 1-5 speed | t sidereal",
                 "                    H home | s sync | g goto | c calibrate | C calibrate on scene | m mask point",
+                "                    (the browser has a selector for which scene tracker to use)",
                 "                    f arrow frame",
                 "                    p track next pass | v servo (follow what the camera sees)",
                 "                    x select cam | -/= exposure | [/] gain",

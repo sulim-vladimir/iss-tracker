@@ -1,0 +1,11 @@
+<!doctype html><html><head><title>ISS tracker</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="/style.css">
+</head><body>
+<div class="top">{{estop}}<span id="clock"></span></div>
+<div class="row cams">{{cam_panels}}<div class="col">{{mount_panel}}{{status_panel}}</div></div>
+<div class="row">{{warnings_panel}}{{messages_panel}}</div>
+<script>const CAMS = {{cams}};</script>
+<script src="/app.js"></script>
+</body></html>

@@ -85,41 +85,59 @@ class BlobTracker:
     def measure(self, n=10, timeout=5.0):
         return measure(self.cam, n, timeout)
 
+    def describe(self):
+        return "no target detected"
 
-class PatternTracker:
-    """How far the whole scene has shifted, for a camera with no point source in view.
 
-    Blob detection needs a star, a planet or a distant lamp. From a balcony there may be none -
-    just a wall of lit windows, or daylight scenery - and yet the frame is full of structure.
-    Phase correlation measures the shift of the entire image, which is the same number the
-    calibration was extracting from the blob, so it drops straight into the ramp fit.
+class FeatureTracker:
+    """How far the scene has moved, from a handful of corners tracked with optical flow.
 
-    What it CANNOT do is tell two cameras they are looking at the same thing: each tracker's
-    origin is its own reference frame, so positions are comparable only within one camera. That
-    is enough for J and not enough for the boresight, which still needs one identifiable point.
+    For a camera with no point source in view. Blob detection needs a star or a lamp; from a
+    balcony there may be none, just lit windows or scenery. Lucas-Kanade follows image gradients
+    directly, so it works on structure that is soft and low contrast - which phase correlation
+    also does, but this is roughly twice as accurate on a real frame and, unlike correlation, it
+    can tell a field that ROTATED from one that shifted.
+
+    Measured on a real main-camera frame (blurry lit windows, 0.4"/px), error in sensor pixels
+    over one calibration step: best single corner 0.45, best 5 0.27, best 20 0.26, all 300 0.37.
+    More is not better - weak corners drag the answer down - so it keeps only the strongest few.
+    A deliberately weak corner gave 3.76 px and lost lock 2 times in 12, which is the whole case
+    for using several rather than one.
+
+    Corners are picked inside `region` (x, y, radius) when the user has clicked one, otherwise
+    across the whole frame. Clicking matters where the scene has depth: the camera swings on a
+    ~0.3 m radius, so objects at different distances shift by different amounts, and one patch at
+    one distance avoids mixing them.
+
+    What it CANNOT do is tell two cameras they are looking at the same thing - each tracker's
+    origin is its own reference frame. That is enough for J and not enough for the boresight.
     """
 
-    mode = "pattern"
+    mode = "scene"
     absolute = False         # positions are relative to this camera's own reference frame
 
-    def __init__(self, cam, origin=None, min_response=0.10):
+    def __init__(self, cam, origin=None, region=None, max_points=15, fb_tolerance=2.0,
+                 min_points=3, min_tracked=0.4):
         self.cam = cam
         self.origin = np.array(origin if origin is not None else
                                [(cam.width - 1) / 2, (cam.height - 1) / 2], dtype=float)
-        self.min_response = min_response
+        self.region = region
+        self.max_points = max_points
+        self.fb_tolerance = fb_tolerance
+        self.min_points = min_points
+        self.min_tracked = min_tracked
         self.ref = None
-        self.window = None
+        self.points = None
         self.response = None
+        self.reason = None
 
     def _prepare(self, img):
-        """Grey, mean-subtracted and windowed - the three things phase correlation needs.
+        """8-bit grey for the flow tracker, binned 2x2 if the sensor is Bayer.
 
-        A Bayer frame is binned 2x2 first: its colour checkerboard is a strong signal at the
-        Nyquist frequency and would otherwise dominate the correlation. The shift that comes
-        back is then in binned pixels, so the caller scales it.
+        A Bayer frame's colour checkerboard is a strong gradient at every pixel, which is exactly
+        what a gradient-following tracker would lock onto. Binning removes it; the shift then
+        comes back in binned pixels, so the caller scales it.
         """
-        import cv2
-
         g = np.asarray(img)
         if g.ndim == 3:
             g = g.mean(axis=2)
@@ -129,25 +147,78 @@ class PatternTracker:
             h, w = g.shape[0] // 2 * 2, g.shape[1] // 2 * 2
             g = g[:h:2, :w:2] + g[1:h:2, :w:2] + g[:h:2, 1:w:2] + g[1:h:2, 1:w:2]
             scale = 2
-        g = np.ascontiguousarray(g - g.mean(), dtype=np.float32)
-        if self.window is None or self.window.shape != g.shape:
-            self.window = cv2.createHanningWindow((g.shape[1], g.shape[0]), cv2.CV_32F)
-        return g, scale
+        # One normalisation, fixed by the reference frame: rescaling each frame by its own peak
+        # would turn a passing headlight into an apparent motion of everything else.
+        if self.ref is None:
+            self._gain = 255.0 / max(float(g.max()), 1e-6)
+        return np.clip(g * self._gain, 0, 255).astype(np.uint8), scale
 
-    def reset(self, timeout=5.0):
-        """Take the reference frame every later measurement is compared against."""
-        frame = _fresh_frame(self.cam, timeout)
-        if frame is None:
-            return False
-        self.ref, self._scale = self._prepare(frame)
-        return True
-
-    def measure(self, n=10, timeout=5.0):
+    def _mask(self, shape):
+        if not self.region:
+            return None
         import cv2
 
+        x, y, r = self.region
+        s = 2 if getattr(self.cam, "bayer", False) else 1
+        m = np.zeros(shape, np.uint8)
+        cv2.circle(m, (int(x / s), int(y / s)), max(int(r / s), 8), 255, -1)
+        return m
+
+    def describe(self):
+        """Why the last attempt went the way it did - the SDK-style silence is no use here."""
+        if self.ref is None:
+            return self.reason or "no reference frame"
+        n = 0 if self.points is None else len(self.points)
+        kept = "" if self.response is None else f", {self.response * 100:.0f}% of them held"
+        return f"following {n} corners{kept}"
+
+    def reset(self, timeout=5.0):
+        """Take the reference frame and choose the corners to follow."""
+        import cv2
+
+        frame = _fresh_frame(self.cam, timeout)
+        if frame is None:
+            self.reason = "no frame arrived from the camera"
+            return False
+        self.ref = None                       # so _prepare recomputes the normalisation
+        ref, self._scale = self._prepare(frame)
+        pts = cv2.goodFeaturesToTrack(ref, maxCorners=self.max_points, qualityLevel=0.01,
+                                      minDistance=8, mask=self._mask(ref.shape))
+        if pts is None or len(pts) < self.min_points:
+            self.ref, self.points = None, None
+            self.reason = (f"only {0 if pts is None else len(pts)} corners to follow"
+                           + (" inside the region you clicked" if self.region else " in the frame")
+                           + " - too little structure, or it needs focusing")
+            return False
+        self.ref, self.points = ref, pts
+        self.reason = None
+        return True
+
+    def _flow(self, cur):
+        """Displacement of the corners, keeping only those that survive a round trip.
+
+        Optical flow does not fail loudly: it will report a confident answer for points it has
+        completely lost. Tracking back to the reference and discarding whatever fails to return
+        to where it started is what turns that into an honest measurement.
+        """
+        import cv2
+
+        lk = dict(winSize=(21, 21), maxLevel=4)
+        fwd, st1, _ = cv2.calcOpticalFlowPyrLK(self.ref, cur, self.points, None, **lk)
+        back, st2, _ = cv2.calcOpticalFlowPyrLK(cur, self.ref, fwd, None, **lk)
+        fb = np.linalg.norm((back - self.points).reshape(-1, 2), axis=1)
+        ok = (st1.ravel() == 1) & (st2.ravel() == 1) & (fb < self.fb_tolerance)
+        if ok.sum() < self.min_points or ok.mean() < self.min_tracked:
+            self.reason = (f"only {int(ok.sum())} of {len(self.points)} corners survived the "
+                           f"round trip - the scene moved too far, or changed")
+            return None, float(ok.mean())
+        d = (fwd[ok] - self.points[ok]).reshape(-1, 2)
+        return np.median(d, axis=0), float(ok.mean())
+
+    def measure(self, n=10, timeout=5.0):
         if self.ref is None and not self.reset(timeout):
             return None
-        shifts, responses, deadline = [], [], time.monotonic() + timeout
+        shifts, kept, deadline = [], [], time.monotonic() + timeout
         last = self.cam.latest()[2]
         while len(shifts) < n and time.monotonic() < deadline:
             frame, _, seq = self.cam.latest()
@@ -156,15 +227,14 @@ class PatternTracker:
                 cur, scale = self._prepare(frame)
                 if cur.shape != self.ref.shape:
                     return None
-                (dx, dy), resp = cv2.phaseCorrelate(self.ref, cur, self.window)
-                shifts.append((dx * scale, dy * scale))
-                responses.append(resp)
+                d, frac = self._flow(cur)
+                kept.append(frac)
+                if d is not None:
+                    shifts.append(d * scale)
             time.sleep(0.005)
+        self.response = float(np.median(kept)) if kept else 0.0
         if len(shifts) < max(3, n // 2):
             return None
-        self.response = float(np.median(responses))
-        if self.response < self.min_response:
-            return None       # featureless, or the scene has moved too far to still overlap
         return self.origin + np.median(shifts, axis=0)
 
 
@@ -180,8 +250,18 @@ def _fresh_frame(cam, timeout=5.0):
     return None
 
 
+TRACKERS = {
+    "blob":  "a point source: a star, a planet, a distant lamp",
+    "scene": "corners of the scenery, followed by optical flow (needs some structure)",
+}
+
+
 def make_tracker(cam, mode="blob", origin=None):
-    return PatternTracker(cam, origin) if mode == "pattern" else BlobTracker(cam)
+    """A tracker for this camera. In scene mode a hand-picked target marks the region to follow."""
+    if mode == "scene":
+        region = cam.gate if getattr(cam, "manual", False) else None
+        return FeatureTracker(cam, origin, region=region)
+    return BlobTracker(cam)
 
 
 def measure(cam, n=10, timeout=5.0):
@@ -414,6 +494,7 @@ def calibrate_cameras(mount, cams, steps=None, track_rate=None, log=print, abort
     usable, missing, at_start = {}, [], {}
     for name, cam in cams.items():
         at_start[name] = trackers[name].measure()
+        log(f"{name}: {trackers[name].describe()}")
         if at_start[name] is None:
             missing.append(name)
             continue
@@ -422,11 +503,11 @@ def calibrate_cameras(mount, cams, steps=None, track_rate=None, log=print, abort
     if not usable:
         raise RuntimeError(
             f"nothing to measure in {' or '.join(cams)} - "
-            + ("the scene has too little structure to correlate; focus it and check the exposure"
-               if mode == "pattern" else
+            + ("too little structure to follow - focus it, check the exposure, or click a "
+               "region with more in it" if mode != "blob" else
                "adjust exposure/gain, focus, or click the target in the image. With no point "
-               "source at all (a wall of lit windows, daylight scenery) calibrate in pattern "
-               "mode instead, which tracks the whole scene"))
+               "source at all (a wall of lit windows, daylight scenery) calibrate on the scene "
+               "instead, which follows the scenery rather than a target"))
     if missing:
         log(f"skipping {', '.join(missing)}: no target detected there")
         if warnings is not None:
@@ -435,7 +516,7 @@ def calibrate_cameras(mount, cams, steps=None, track_rate=None, log=print, abort
     ordered, widest = calibration_order({n: c.cfg for n, c in usable.items()}, existing)
     cams = {n: usable[n] for n in ordered if only is None or n in only}
     if not cams:
-        raise RuntimeError(f"{' and '.join(only)}: no target detected there")
+        raise RuntimeError("; ".join(f"{n}: {trackers[n].describe()}" for n in only))
     log(f"calibrating {', '.join(cams)}")
     def check_abort():
         if abort and abort():
@@ -461,10 +542,10 @@ def calibrate_cameras(mount, cams, steps=None, track_rate=None, log=print, abort
             else:
                 ref_cal = stored or None
         if ref_cal and reference in usable and trackers[reference].measure() is not None:
-            # Steering the target back by pixel needs an absolute position in a known frame, which
-            # pattern mode does not have - it only knows how far the scene moved. There is nothing
-            # to recover there anyway: the whole scene is the target.
-            if mode != "pattern" and not bring_into_view(
+            # Steering the target back by pixel needs a position in a frame both cameras
+            # share, which only a point source gives. There is nothing to recover otherwise:
+            # the scenery is the target and it cannot leave.
+            if trackers[name].absolute and not bring_into_view(
                     mount, cam, usable[reference], ref_cal, track_rate=track_rate,
                     log=log, abort=abort, slew_rate=slew_rate):
                 log(f"{name}: target not in view and could not be recovered - skipped")
@@ -505,8 +586,9 @@ def calibrate_cameras(mount, cams, steps=None, track_rate=None, log=print, abort
                     raise RuntimeError(
                         f"lost the target in {name} after {k} steps of {step_deg:.3f} deg on "
                         f"axis{axis + 1}"
-                        + (" - the scene had moved too far to still overlap the reference; "
-                           "use a smaller step" if mode == "pattern" else ""))
+                        + ("" if mode == "blob" else
+                           " - too little of the scene survived the move; use a smaller step, "
+                           "or pick a region with more structure"))
                 angles.append(k * step_deg)
                 points.append(seen)
             A = np.vstack([np.array(angles), np.ones(len(angles))]).T
@@ -541,8 +623,15 @@ def calibrate_cameras(mount, cams, steps=None, track_rate=None, log=print, abort
         if abs(skew - 90) > 5.0 and warnings is not None:
             warnings.append(f"{n}: axes measured {skew:.1f} deg apart instead of 90 - the steps "
                             f"were noisy (creep, slack, shimmer). Redo on a steady distant target.")
+        # Carry the stored boresight forward rather than resetting it to the frame centre. This
+        # run may not be able to measure one - scene and phase modes never can, and blob mode
+        # cannot when only one camera saw the target - and a boresight measured on a real point
+        # source weeks ago is worth far more than a guess made now. The cross-camera block below
+        # overwrites it on the runs that do measure it.
+        prior = ((existing or {}).get(n) or {}).get("boresight")
         result[n] = {"J": J.tolist(), "dec_cal": dec_cal,
-                     "boresight": [(cam.width - 1) / 2, (cam.height - 1) / 2]}
+                     "boresight": list(prior) if prior is not None else
+                     [(cam.width - 1) / 2, (cam.height - 1) / 2]}
         sv = np.linalg.svd(J, compute_uv=False)
         log(f"{n}: {3600 / max(sv.mean(), 1e-9):.2f} arcsec/px (scale {sv.round(1)} px/deg), "
             f"rotation {np.degrees(np.arctan2(J[1, 0], J[0, 0])):.1f} deg")
@@ -569,12 +658,12 @@ def calibrate_cameras(mount, cams, steps=None, track_rate=None, log=print, abort
     existing = existing or {}
     jm = result.get("main", existing.get("main"))
     jg = result.get("guide", existing.get("guide"))
-    if mode == "pattern" and jm and jg:
-        log("pattern mode: J measured, boresight left alone - correlating a camera against its "
-            "own scene says nothing about where the OTHER camera is looking")
+    if mode != "blob" and jm and jg:
+        log(f"{mode} mode: J measured, boresight kept as it was - following a camera's own "
+            f"scenery says nothing about where the OTHER camera is looking")
         if warnings is not None:
             warnings.append(
-                "boresight not measured: pattern mode cannot tell that two cameras are looking at "
+                "boresight not measured: only a point source can tell that two cameras are looking at "
                 "the same thing. The guide->main handoff still uses the stored boresight, so "
                 "redo that part on a point source (a distant lamp, a planet, the Moon) at 1 km "
                 "or more - closer than that the parallax between the two cameras exceeds the "

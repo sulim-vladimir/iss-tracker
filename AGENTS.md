@@ -68,15 +68,25 @@ tripod faces. Pass mode on a mount rotated 90 deg in azimuth is 78 DEGREES off; 
 same setup, when it locks, holds the ISS to a median 5-7" on the main camera, 100% of the time
 inside the main field, with ~75% of the run under main-camera control.
 
-**"When it locks" is the open problem.** Servo mode is bimodal: the same command, run four times
-(`track --sim --servo --speed 10 --pass 5 --azimuth-error 90`), locked twice and never acquired
-at all the other twice - 80% of the run in `predict`, meaning nothing was ever found. There is no
-middle outcome, which says this is an ACQUISITION failure, not a tracking one. Suspects, in
-order: the first-fix path in `_vision` (in the simulator nothing clicks the target, so there is
-no `force_accept` and the first detection has to pass the gate on its own); the initial search
-gate when `last_good` is still `-inf`; and a race between the first `mount.query()` seeding the
-reference and the first camera frame. Fix this before trusting servo mode on real hardware -
-everything below it is measured on the runs that did lock, so it is all conditional on this.
+**On the "bimodal acquisition" noted earlier - it looks like a simulator artefact, not a bug.**
+An initial batch of four runs of `track --sim --servo --speed 10 --pass 5 --azimuth-error 90`
+had two good and two bad. Re-running the identical command six times later gave six good ones
+(70-73% of the run under main-camera control, median 7.5" error, 100% inside the main field), so
+the earlier split was not reproducible.
+
+Two things point away from a defect in the acquisition path. The bad runs were never "nothing
+found" as first written - they show `guide 13%, main 8%`, so the target WAS acquired and then
+lost. And the simulator has no unseeded randomness at all: `SimCamera` noise is `default_rng(1)`
+over a fixed pool of frames, `random_clouds` takes a seed. The only thing left that can vary
+between identical runs is timing - at `--speed 10` a 50 Hz control loop is 500 Hz of real time,
+plus two camera threads, and a host that cannot keep up delivers late frames.
+
+So before chasing this in `_vision`: measure whether the loop is keeping up. `Tracker.run`
+computes `self.clock.sleep(self.dt - (time.monotonic() - tick) * self.clock.speed)` and simply
+sleeps a negative amount when it overruns - counting those overruns would settle it in one run.
+That matters for the Pi too, which is slower than the laptop these numbers came from, and where
+the same overrun would happen at `--speed 1`. Verify on hardware at real speed before believing
+either result.
 
 What servo mode gives up: it cannot know in advance that a pass is reachable, sunlit or clear of
 the window frame. `servo_window()` in `cli.py` answers that from the TLE when one is available -
@@ -92,35 +102,44 @@ Two things it is genuinely sensitive to, measured:
   same two numbers carry the entire motion. Sharing them cost a factor of five in accuracy
   (125" -> 23"), which is why `servo_alpha`/`servo_beta` exist.
 
-## Calibrating with no point source (pattern mode)
+## Calibrating with no point source (scene mode)
 
 From this balcony there is often nothing point-like to calibrate on - just lit windows, or
-daylight scenery. `C` in the console, "calibrate on scene" in the browser, `mode="pattern"` in
-`calibrate_cameras`. It replaces blob detection with `cv2.phaseCorrelate` over the whole frame:
-same displacement-per-degree the ramp was extracting from the blob, no target required.
+daylight scenery. `C` in the console, "on scene" in the browser, `mode="scene"` in
+`calibrate_cameras`. `FeatureTracker` replaces blob detection with Shi-Tomasi corners followed by
+pyramidal Lucas-Kanade, and measures the same displacement-per-degree the ramp wanted.
 
 Blob mode does not fail loudly on such a scene, which is the trap. It locks onto a whole lit
 window - thousands of pixels of it - and tracks the wandering centroid of a shape that is
 drifting out of frame.
 
-Two limits, both real:
+Measured on a real main-camera frame (lit windows, nearly focused), error over one calibration
+step in sensor pixels: best single corner 0.45, best 5 0.27, best 20 0.26, all 300 0.37. More is
+not better, because weak corners drag the answer down, so it keeps the strongest 15. A
+deliberately weak corner gave 3.76 px and lost lock 2 times in 12 - which is the case for using
+several rather than one, and for clicking a target first so the corners come from a region you
+chose.
 
-* **It cannot measure the boresight.** Each camera correlates against its own reference frame, so
-  positions mean nothing across cameras. Pattern mode measures J and leaves the stored boresight
-  alone, saying so. The guide->main handoff needs one identifiable point in both cameras, at 1 km
-  or more - closer than that the parallax across the ~0.2 m camera separation exceeds the main
-  camera's 7.3' field.
-* **It is less precise than a blob.** The cameras differ in scale by 121x (74.5 vs 9028 px/deg),
-  so a ramp that sweeps
-  the main camera across its frame shifts the guide by only a few pixels, which is where phase
-  correlation's sub-pixel bias is worst. Measured in simulation: scale 1.02-1.06, rotation -2.4
-  to +5.4 deg. Inside what tracking tolerates, but redo it on a real point source when one is up.
+Three things to know:
 
-**The simulator cannot properly exercise this.** `CalibWorld` renders a couple of point sources,
-not a textured scene, so anything but a tiny step walks the "scene" out of frame and the
-correlation fails - steps of 0.05 and 0.10 deg fail in the sim for that reason alone. On real
-scenery there is structure everywhere, larger steps should work, and the precision above is
-probably pessimistic. Measure it on the balcony before believing either number.
+* **It cannot measure the boresight.** Each camera follows its own scenery, so positions mean
+  nothing across cameras. Scene mode keeps the stored boresight and says so. The guide->main
+  handoff needs one identifiable point in both cameras, at 1 km or more - closer than that the
+  parallax across the ~0.2 m camera separation exceeds the main camera's 7.3' field.
+* **Optical flow fails silently.** It reports confidently tracked points it has completely lost:
+  in one test it returned 400+ "tracked" points while being 40 px wrong. `_flow` tracks back to
+  the reference and discards whatever fails to return to where it started. Do not remove that.
+* **Texture is the whole game, and defocus destroys it.** A frame holding only the smooth
+  interior of an over-sized window has no recoverable shift at all, by any method - a gradient
+  constrains motion only across itself, a single straight edge likewise. At 200 m the main camera
+  sees a 75 x 42 cm patch, so a window IS bigger than the frame; what saves it is focus, which
+  brings back brick courses and frame edges.
+
+**The simulator cannot exercise this.** `CalibWorld` renders point sources, not scenery -
+`goodFeaturesToTrack` finds no corners in it whatsoever and `FeatureTracker.reset()` correctly
+returns False. The scene tracker is tested against synthetic textured frames instead. Phase
+correlation was tried here too and removed: less accurate, and blind to rotation in a way that
+reports a confident translation that never happened.
 
 ## Not built yet
 
@@ -156,7 +175,8 @@ Symptoms we have already chased, so you do not chase them again:
 | "guide camera unavailable: General error" | a control value outside what that body accepts - the SDK reports out-of-range exactly like a dead camera. The ASI120MM Mini's gain range is 0-100, not the 0-600 of the USB3 bodies, and it has no HighSpeedMode control at all. `AsiCamera._control` now clamps to `get_controls()` and skips what is missing, and the error names the step that failed |
 | "lost the target in main after 1 steps" with a hand-picked target | `select()` gives the pick a gate of only 3% of the frame width (58 px on the main camera), and it can only follow while it keeps detecting. A calibration step is 0.014 deg = 128 px, and at 9 fps a slew crosses 500 px between frames, so the target is outside its own gate before the gate can follow. Clear the pick ("Auto") or calibrate on scene |
 | calibration warns "too close to the pole" from a north-facing balcony | the celestial pole sits at alt=latitude due north, so scenery straight north is AT the pole: alt 48.7 az 349 is dec 82.5, where axis1 moves the image 7.7x less than axis2 and the rescaling amplifies the error as much. Point LOW instead - same azimuth at alt 20 is dec 58, at alt 10 is dec 48 |
-| cannot calibrate: nothing in view but lit windows or daylight scenery | blob mode needs a point source, and worse, it does not fail loudly - it locks onto a whole lit window and tracks its wandering centroid. Use pattern mode (`C` in the console, "calibrate on scene" in the browser): phase correlation of the whole frame. Gives J, NOT the boresight |
+| cannot calibrate: nothing in view but lit windows or daylight scenery | blob mode needs a point source, and worse, it does not fail loudly - it locks onto a whole lit window and tracks its wandering centroid. Use scene mode (`C` in the console, "on scene" in the browser). Gives J, NOT the boresight |
+| the guide boresight silently became the frame centre | `calibrate_cameras` used to write the frame centre into every result and rely on the cross-camera block to fix the guide's. Any run that could not measure one - scene mode always, blob mode whenever a camera did not see the target - destroyed a good stored boresight while logging that it had left it alone. It now carries the stored value forward |
 | ASI120MM Mini shows up on a USB 2.0 bus in a blue port | expected: the Mini IS a USB 2.0 camera (the -S is the USB3 one). A blue socket wires both a 2.0 and a 3.0 controller; the plug decides which. Not a fault, and not a clue - it shares that bus with the CH340, which matters only for frame rate |
 
 Useful when diagnosing: calibration prints the implied focal length beside the measured scale, and

@@ -1,0 +1,96 @@
+<!-- @panel -->
+<div class="panel cam cam-{{name}}"><h2>{{title}} <span id="stat-{{name}}"></span></h2>
+<img src="/{{name}}.mjpg" title="click to track this object, double-click to centre it"
+ onclick="api('/api/select',{cam:'{{name}}',fx:event.offsetX/this.clientWidth,
+                             fy:event.offsetY/this.clientHeight})"
+ ondblclick="mnt('centre',{cam:'{{name}}'})">
+<div class="ctl"><label>Exposure</label>
+ <button onclick="api('/api/exposure',{cam:'{{name}}',factor:0.667})">-</button>
+ <input id="exp-{{name}}" onchange="api('/api/exposure',{cam:'{{name}}',ms:this.value})"><span id="expunit-{{name}}">ms</span>
+ <button onclick="api('/api/exposure',{cam:'{{name}}',factor:1.5})">+</button>
+ <label style="width:auto;margin-left:10px">Gain</label>
+ <button onclick="api('/api/gain',{cam:'{{name}}',delta:-25})">-</button>
+ <input id="gain-{{name}}" onchange="api('/api/gain',{cam:'{{name}}',value:this.value})">
+ <button onclick="api('/api/gain',{cam:'{{name}}',delta:25})">+</button></div>
+<div class="ctl"><label>Target</label><span id="sel-{{name}}"></span></div>
+<div class="ctl btns">
+ <button onclick="api('/api/select',{cam:'{{name}}',clear:1})">Auto</button>{{centre}}</div>
+<div class="info" id="info-{{name}}"></div>
+{{extra}}</div>
+
+<!-- @centre -->
+<button title="move the object to the green cross (where the main camera looks)"
+ onclick="mnt('centre',{cam:'NAME'})">LABEL</button>EXTRA
+ <button onclick="mnt('calibrate',{cam:'NAME'})">calibrate NAME</button>
+ <button title="no star or lamp in view? calibrate on the scenery instead, with the tracker chosen in the mount panel. Gives the image scale, but not the boresight"
+ onclick="mnt('calibrate',{cam:'NAME',mode:'scene'})">on scene</button>
+
+<!-- @in_frame -->
+<button title="move the object to the middle of this image (grey cross)"
+ onclick="mnt('centre',{cam:'NAME',where:'frame'})">centre in frame</button>
+
+<!-- @mount -->
+<div class="panel box slew"><h2>Slew</h2>
+ <div class="pad">
+  <button style="grid-area:u" onclick="mnt('jog',{axis:2,dir:1})">&#9650;</button>
+  <button style="grid-area:l" onclick="mnt('jog',{axis:1,dir:-1})">&#9664;</button>
+  <button style="grid-area:c" onclick="mnt('stop',{})">stop</button>
+  <button style="grid-area:r" onclick="mnt('jog',{axis:1,dir:1})">&#9654;</button>
+  <button style="grid-area:d" onclick="mnt('jog',{axis:2,dir:-1})">&#9660;</button></div>
+ <div class="ctl"><label>Speed</label>
+  <select id="speedsel" onchange="mnt('speed',{index:this.value})"></select> °/s</div>
+ <div class="ctl"><label>Arrows</label>
+  <select id="framesel" onchange="mnt('frame',{frame:this.value})"></select>
+  <span id="frame-hint" class="hint"></span></div></div>
+
+<div class="panel box"><h2>Target &amp; tracking</h2>
+ <div class="ctl">
+  <input id="target" title="star or planet name, 'RAh Dec', '18:36:56 +38:47:01', or 'altaz ALT AZ'"
+  placeholder="vega / jupiter / 18.6 38.8" style="width:150px">
+  <button onclick="mnt('goto',{target:tgt()})">goto</button>
+  <button onclick="mnt('sync',{target:tgt()})">sync</button></div>
+ <div class="ctl">
+  <button id="siderealbtn" title="follow the stars at sidereal rate"
+  onclick="mnt('track',{on: this.className === 'on' ? 0 : 1})">sidereal off</button></div>
+ <div class="ctl">
+  <button id="trackbtn" onclick="mnt(MODE==='track' ? 'untrack' : 'track',
+    {pass: document.getElementById('passidx').value})">Track next pass</button>
+  <input id="passidx" placeholder="next" style="width:56px" title="pass index from 'passes', or blank for the next usable one"></div>
+ <div class="ctl">
+  <button id="motorbtn" onclick="mnt('motors',{on: MOTORS ? 0 : 1})">motors off</button></div></div>
+
+<div class="panel box"><h2>Calibration</h2>
+ <div class="ctl">
+  <button onclick="if(confirm('Set current position as home?')) mnt('home',{})">set home</button></div>
+ <div class="ctl">
+  <button onclick="mnt('calibrate',{})">calibrate cameras</button></div>
+ <div class="ctl">
+  <button title="no point source in view? calibrate on the scenery instead. Gives the image scale, but not the boresight"
+  onclick="mnt('calibrate',{mode:'scene'})">calibrate on scene</button></div></div>
+
+<!-- @status -->
+<div class="panel box grow"><h2>Calibration status</h2>
+ <div class="info" id="cal-info"></div></div>
+
+<!-- @warnings -->
+<div class="panel box grow"><h2>Warnings</h2>
+ <div class="info warn" id="cal-warn"></div></div>
+
+<!-- @messages -->
+<div class="panel msgs"><h2>Messages <span id="mount-busy"></span></h2>
+<div class="info" id="mount-msg">&mdash;</div></div>
+
+<!-- @record -->
+<div class="rec"><button id="recbtn"
+ onclick="api('/api/record',{on: this.className!=='on' ? 1 : 0})">Start recording</button>
+ <span id="recinfo">not recording</span></div>
+
+<!-- @estop -->
+<button id="estop" onclick="api('/api/estop',{})">EMERGENCY STOP</button>
+<span id="estop-msg"></span>
+
+<!-- @sky -->
+<div class="panel sky"><h2>Sky</h2>
+<svg id="sky" viewBox="0 0 330 330" style="width:100%;background:#20242a;
+ border-radius:6px"></svg>
+<div class="info" id="sky-info"></div></div>

@@ -254,9 +254,9 @@ def _shifted(img, dx, dy):
     return cv2.warpAffine(img, np.float32([[1, 0, dx], [0, 1, dy]]), (img.shape[1], img.shape[0]))
 
 
-def test_pattern_tracker_measures_a_shift_with_nothing_point_like_in_frame():
+def test_scene_tracker_measures_a_shift_with_nothing_point_like_in_frame():
     """The whole reason this exists: a scene full of structure but no blob to detect."""
-    from issctl.calib import PatternTracker
+    from issctl.calib import FeatureTracker
     from issctl.detect import detect
 
     scene = _windows()
@@ -266,60 +266,57 @@ def test_pattern_tracker_measures_a_shift_with_nothing_point_like_in_frame():
     blob = detect(scene, sigma=6.0, min_area=20, edge_margin=3)
     assert blob is not None and blob.area > 1000, blob
     cam = _ScriptedCam(scene)
-    t = PatternTracker(cam)
-    assert t.reset()
+    t = FeatureTracker(cam)
+    assert t.reset(), "found nothing to follow"
     cam.show(_shifted(scene, 37, -21))
     moved = t.measure(n=5) - t.origin
     assert np.allclose(moved, [37, -21], atol=0.5), moved
 
 
-def test_pattern_tracker_refuses_a_frame_it_cannot_correlate():
-    """A featureless frame gives a flat correlation: better to say nothing than invent a shift."""
-    from issctl.calib import PatternTracker
+# There is deliberately no simulator test of scene calibration. CalibWorld renders point
+# sources, not scenery: goodFeaturesToTrack finds no corners in it at all, so FeatureTracker
+# correctly refuses and there is nothing to measure. The scene tracker is exercised against
+# synthetic textured frames above; its accuracy on real scenery was measured separately on a
+# main-camera capture (best 5 corners: 0.27 px median error over one calibration step).
 
-    rng = np.random.default_rng(1)
-    flat = lambda: (np.full((400, 500), 50.0) + rng.normal(0, 0.5, (400, 500))).astype(np.float32)
-    cam = _ScriptedCam(flat())
-    t = PatternTracker(cam, min_response=0.5)
-    t.reset()
-    cam.show(flat())        # same featureless wall, fresh noise: nothing to lock onto
+
+def test_every_tracker_is_reachable_and_declares_itself():
+    """The browser selector sends these strings straight through to make_tracker."""
+    from issctl.calib import TRACKERS, BlobTracker, FeatureTracker, make_tracker
+
+    cam = _ScriptedCam(_windows())
+    want = {"blob": BlobTracker, "scene": FeatureTracker}
+    assert set(TRACKERS) == set(want)
+    for mode, cls in want.items():
+        t = make_tracker(cam, mode)
+        assert isinstance(t, cls), (mode, type(t))
+        assert t.mode == mode
+    assert make_tracker(cam, "nonsense").mode == "blob"    # unknown falls back, never crashes
+    assert BlobTracker(cam).absolute and not FeatureTracker(cam).absolute
+
+
+def test_feature_tracker_follows_only_the_region_you_click():
+    """Clicking picks one patch of scenery, so depth differences across the frame cannot mix in."""
+    from issctl.calib import FeatureTracker
+
+    scene = _windows()
+    cam = _ScriptedCam(scene)
+    t = FeatureTracker(cam, region=(250, 150, 90))
+    assert t.reset()
+    pts = t.points.reshape(-1, 2)
+    d = np.linalg.norm(pts - [250, 150], axis=1)
+    assert d.max() <= 90 + 1, f"corners escaped the clicked circle: {d.max():.1f} px"
+
+
+def test_feature_tracker_reports_losing_the_scene_instead_of_inventing_a_shift():
+    """Optical flow answers confidently for points it has lost - the round trip catches that."""
+    from issctl.calib import FeatureTracker
+
+    rng = np.random.default_rng(3)
+    scene = _windows()
+    cam = _ScriptedCam(scene)
+    t = FeatureTracker(cam)
+    assert t.reset()
+    cam.show(rng.normal(60, 20, scene.shape).astype(np.float32))   # scene replaced by noise
     assert t.measure(n=5) is None
     assert t.response < 0.5
-
-
-def test_pattern_calibration_recovers_the_matrix_without_a_target():
-    """Pattern mode against a wide reference: mount slack still cancels in the ratio.
-
-    The tolerances here are loose on purpose, and the reason is structural rather than sloppy.
-    The two cameras differ in scale by 121x, so a ramp that moves the main camera across most of
-    its frame shifts the guide by only a handful of pixels - and a handful of pixels is exactly
-    where phase correlation's sub-pixel bias is worst. Measured over five runs: scale 1.03-1.06,
-    rotation -1.4 to +5.2 deg. That is inside what tracking tolerates (servo mode holds the ISS
-    in the main field with 15% scale and 10 deg of rotation error) but it is markedly worse than
-    a blob calibration, so redo this on a real point source when one is available.
-    """
-    from issctl.calib import PatternTracker, calibrate_against
-    from issctl.camera import SimCamera
-    from issctl.clock import Clock
-    from issctl.config import load_config
-    from issctl.mount import SimMount
-    from issctl.sim import CalibWorld
-
-    cfg = load_config()
-    clock = Clock()
-    mount = SimMount(cfg, {"index": [0.0, 90.0]}, clock, start=[20.0, 40.0], backlash=[0.03, 0.03])
-    mount.query()
-    world = CalibWorld(cfg, mount, decoys=())
-    guide = SimCamera("guide", cfg["cameras"]["guide"], clock, world).start()
-    main = SimCamera("main", cfg["cameras"]["main"], clock, world).start()
-    try:
-        J = calibrate_against(mount, main, guide, world.true_cal["guide"], step_deg=0.02,
-                              log=lambda *a: None, tracker=PatternTracker(main),
-                              ref_tracker=PatternTracker(guide))
-    finally:
-        guide.stop()
-        main.stop()
-    truth = np.array(world.true_cal["main"]["J"])
-    assert np.allclose(np.linalg.norm(J[:, 1]), np.linalg.norm(truth[:, 1]), rtol=0.12)
-    angle = np.degrees(np.arctan2(J[1, 0], J[0, 0]) - np.arctan2(truth[1, 0], truth[0, 0]))
-    assert abs((angle + 180) % 360 - 180) < 8

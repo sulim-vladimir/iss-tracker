@@ -5,306 +5,51 @@ SER recording without touching the terminal.
 """
 
 import json
+import re
 import threading
 import time
+from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 import cv2
 import numpy as np
 
-PAGE = """<!doctype html><html><head><title>ISS tracker</title>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<style>
- body{{background:#2f3439;color:#e8e8e8;font:14px/1.4 system-ui,sans-serif;margin:10px}}
- .row{{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-start}}
- .panel{{background:#3b4147;border-radius:6px;padding:8px;flex:1 1 380px;min-width:320px;
-          max-width:560px;box-sizing:border-box}}
- .panel img{{width:100%;display:block;border-radius:4px;background:#000}}
- h2{{font-size:15px;margin:0 0 5px}}
- .ctl{{display:flex;align-items:center;gap:6px;margin-top:5px;flex-wrap:wrap}}
- .ctl label{{width:62px;color:#b9c1c8}}
- .info{{font:13px/1.45 ui-monospace,monospace;color:#cfd6dd;margin:4px 0 0;
-        white-space:pre-wrap;overflow-wrap:anywhere}}
- .info:empty{{display:none}}
- .pad{{display:grid;grid-template-areas:". u ." "l c r" ". d .";gap:5px;width:170px;margin:6px 0}}
- .pad button{{padding:8px 0}}
- button{{background:#4d555d;color:#e8e8e8;border:0;border-radius:4px;padding:5px 11px;
-         font-size:14px;cursor:pointer}}
- button:hover{{background:#5c656e}}
- input{{background:#262a2e;color:#e8e8e8;border:1px solid #5c656e;border-radius:4px;
-        padding:4px;width:74px;font-size:14px}}
- .rec{{margin-top:8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}}
- #recbtn.on,#trackbtn.on{{background:#a33;}}
- #estop{{background:#b32222;color:#fff;font-weight:600;font-size:15px;padding:9px 18px;
-         margin-bottom:10px}}
- #estop:hover{{background:#c93030}}
- #recinfo{{color:#b9c1c8}}
- .top{{display:flex;align-items:center;gap:14px;margin-bottom:10px}}
- #clock{{font:16px/1 ui-monospace,monospace;color:#e8e8e8}}
- #estop{{margin-bottom:0}}
-</style></head><body>
-<div class="top">{estop}<span id="clock"></span></div>
-<div class="row">{panels}</div>
-<script>
-const CAMS = {cams};
-async function api(path, params) {{
-  const r = await fetch(path + '?' + new URLSearchParams(params));
-  return apply(await r.json());
-}}
-function tgt() {{ return document.getElementById('target').value; }}
-function mnt(action, params) {{ return api('/api/mount', Object.assign({{action}}, params)); }}
-let MODE = 'console', MOTORS = true;
-function applyMount(m) {{
-  MODE = m.mode || 'console';
-  MOTORS = m.motors !== false;
-  const mb = document.getElementById('motorbtn');
-  if (mb) {{ mb.textContent = MOTORS ? 'motors off' : 'motors ON'; mb.className = MOTORS ? '' : 'on'; }}
-  const tb = document.getElementById('trackbtn');
-  if (tb) {{
-    tb.textContent = MODE === 'track' ? 'Stop tracking' : 'Track next pass';
-    tb.className = MODE === 'track' ? 'on' : '';
-  }}
-  for (const id of ['speedsel', 'framesel', 'target', 'passidx'])
-    {{ const e = document.getElementById(id); if (e) e.disabled = (MODE === 'track' && id !== 'passidx'); }}
-  const sel = document.getElementById('speedsel');
-  if (sel && !sel.options.length)
-    m.speeds.forEach((v, i) => sel.add(new Option(v, i)));
-  if (sel) sel.value = m.speed_index;
-  const fs = document.getElementById('framesel');
-  if (fs && !fs.options.length) m.frames.forEach(f => fs.add(new Option(f, f)));
-  if (fs) fs.value = m.frame;
-  document.getElementById('frame-hint').textContent =
-    m.frame === 'axes' ? 'raw mount axes'
-    : m.jog_raw ? 'near the pole: raw axes for now'
-    : 'move target in image';
-  document.getElementById('mount-busy').textContent = m.busy ? 'working...' : '';
-  document.getElementById('mount-info').textContent =
-    `mode ${{MODE}}\\n`
-    + `axis1 ${{m.axis1.toFixed(3)}}°  axis2 ${{m.axis2.toFixed(3)}}°\\n`
-    + `alt ${{m.alt.toFixed(2)}}°  az ${{m.az.toFixed(2)}}° ${{m.compass}}\\n`
-    + `jog ${{m.jog}}  sidereal ${{m.tracking ? 'on' : 'off'}}\\n${{m.msg || ''}}`;
-  const cal = Object.entries(m.cal).map(([n, c]) =>
-    `${{n}}: ${{c.arcsec_px}}"/px (${{c.scale}} px/°), rotation ${{c.rotation}}°`);
-  let head = 'not calibrated yet';
-  if (cal.length) {{
-    head = 'calibrated';
-    if (m.calibrated_at) {{
-      const mins = (Date.now() / 1000 - m.calibrated_at) / 60;
-      head += mins < 1 ? ' just now'
-            : mins < 90 ? ` ${{Math.round(mins)}} min ago`
-            : ` ${{(mins / 60).toFixed(1)}} h ago`;
-    }}
-  }}
-  if (m.backlash_deg)
-    cal.push('backlash: axis1 ' + (m.backlash_deg[0] * 60).toFixed(1) + "' axis2 "
-             + (m.backlash_deg[1] * 60).toFixed(1) + "'");
-  if (m.position_at) {{
-    const t = new Date(m.position_at * 1000);
-    cal.push('position saved ' + t.toTimeString().slice(0, 8));
-  }}
-  const warn = (m.cal_warnings || []).map(w => '! ' + w);
-  document.getElementById('cal-info').textContent = [head].concat(cal, warn).join('\\n');
-}}
-function apply(s) {{
-  for (const n of CAMS) {{
-    const c = s.cams[n]; if (!c) continue;
-    const e = document.getElementById('exp-' + n), g = document.getElementById('gain-' + n);
-    if (document.activeElement !== e) e.value = c.exposure_ms.toFixed(2);
-    if (document.activeElement !== g) g.value = c.gain;
-    const eu = document.getElementById('expunit-' + n);
-    if (eu) eu.textContent = c.exposure_unit || 'ms';
-    document.getElementById('stat-' + n).textContent =
-      c.fps.toFixed(0) + ' fps  ' + (c.det ? 'detected ' + c.det[0] + ',' + c.det[1] : 'no detection');
-    const info = document.getElementById('info-' + n);
-    if (info) info.textContent = ((s.status || {{}})[n] || []).join('\\n');
-    const sel = document.getElementById('sel-' + n);
-    if (sel) sel.textContent = c.manual
-      ? (c.det ? 'locked on your pick' : 'your pick - nothing there, click again or go auto')
-      : 'brightest in frame';
-  }}
-  const clk = document.getElementById('clock');
-  if (clk && s.time) clk.textContent = s.time;
-  if (s.mount) applyMount(s.mount);
-  drawSky(s);
-  const em = document.getElementById('estop-msg');
-  if (em) em.textContent = (s.stopped || (s.mount && s.mount.aborted)) ? 'motors halted' : '';
-  const r = s.record, btn = document.getElementById('recbtn');
-  if (btn && r) {{
-    btn.textContent = r.recording ? 'Stop recording' : 'Start recording';
-    btn.className = r.recording ? 'on' : '';
-    document.getElementById('recinfo').textContent = r.recording
-      ? (r.waiting
-          ? 'armed - waiting until the target is trackable'
-          : (r.path || '') + '  ' + r.frames + ' frames, ' + r.dropped + ' dropped')
-      : 'not recording';
-  }}
-}}
-// ---- sky chart: zenith at the centre, horizon at the rim, north up, east right ----
-const CX = 165, CY = 165, R = 140;
-let SKY = null;
-const SVGNS = 'http://www.w3.org/2000/svg';
-function pos(az, alt) {{
-  const r = (90 - Math.max(alt, 0)) / 90 * R, a = az * Math.PI / 180;
-  return [CX + r * Math.sin(a), CY - r * Math.cos(a)];
-}}
-function el(tag, attrs) {{
-  const n = document.createElementNS(SVGNS, tag);
-  for (const k in attrs) n.setAttribute(k, attrs[k]);
-  return n;
-}}
-function sector(az0, az1, alt0, alt1) {{
-  const [r0, r1] = [(90 - Math.min(alt1, 90)) / 90 * R, (90 - Math.max(alt0, 0)) / 90 * R];
-  let span = (az1 - az0 + 360) % 360; if (span === 0) span = 360;
-  const big = span > 180 ? 1 : 0;
-  const [ax, ay] = pos(az0, alt1), [bx, by] = pos(az1, alt1);
-  const [cx2, cy2] = pos(az1, alt0), [dx, dy] = pos(az0, alt0);
-  return `M ${{ax}} ${{ay}} A ${{r0}} ${{r0}} 0 ${{big}} 1 ${{bx}} ${{by}}`
-       + ` L ${{cx2}} ${{cy2}} A ${{r1}} ${{r1}} 0 ${{big}} 0 ${{dx}} ${{dy}} Z`;
-}}
-function drawSky(s) {{
-  const svg = document.getElementById('sky');
-  if (!svg || !SKY) return;
-  svg.textContent = '';
-  for (const alt of [0, 30, 60]) {{
-    svg.appendChild(el('circle', {{cx: CX, cy: CY, r: (90 - alt) / 90 * R,
-      fill: 'none', stroke: '#4a525b'}}));
-  }}
-  if (SKY.min_alt > 0)
-    svg.appendChild(el('circle', {{cx: CX, cy: CY, r: (90 - SKY.min_alt) / 90 * R,
-      fill: 'none', stroke: '#7a4a2a', 'stroke-dasharray': '3 3'}}));
-  for (const r of (SKY.mask.openings || []))
-    svg.appendChild(el('path', {{d: sector(r[0], r[1], r[2], r[3]), fill: '#2e7d4b', opacity: 0.22}}));
-  for (const r of (SKY.mask.blockers || []))
-    svg.appendChild(el('path', {{d: sector(r[0], r[1], r[2], r[3]), fill: '#a33', opacity: 0.3}}));
-  for (const [lbl, az] of [['N', 0], ['E', 90], ['S', 180], ['W', 270]]) {{
-    const [x, y] = pos(az, -6);
-    svg.appendChild(el('text', {{x: x, y: y + 4, fill: '#9aa4ae', 'font-size': 12,
-      'text-anchor': 'middle'}})).textContent = lbl;
-  }}
-  // the pass, segment by segment: cyan while sunlit, grey in shadow, red behind an obstruction
-  const trk = SKY.track || [];
-  for (let i = 1; i < trk.length; i++) {{
-    const [az0, alt0] = trk[i - 1], [az1, alt1, lit, open] = trk[i];
-    const [x0, y0] = pos(az0, alt0), [x1, y1] = pos(az1, alt1);
-    svg.appendChild(el('line', {{x1: x0, y1: y0, x2: x1, y2: y1, 'stroke-width': 2,
-      stroke: !open ? '#c0504d' : (lit > 0.5 ? '#3fb9d6' : '#6b7580')}}));
-  }}
-  if (s.pointing) {{  // where the mount looks
-    const [x, y] = pos(s.pointing[1], s.pointing[0]);
-    svg.appendChild(el('circle', {{cx: x, cy: y, r: 6, fill: 'none', stroke: '#ffd24a',
-      'stroke-width': 2}}));
-    svg.appendChild(el('circle', {{cx: x, cy: y, r: 1.5, fill: '#ffd24a'}}));
-  }}
-  if (s.target) {{  // the ISS itself: solid red dot, drawn on top
-    const [x, y] = pos(s.target[1], s.target[0]);
-    svg.appendChild(el('circle', {{cx: x, cy: y, r: 3.5, fill: '#e2483c'}}));
-  }}
-  const fmt = (p, name) => p ? `${{name}} alt ${{p[0].toFixed(1)}}°  az ${{p[1].toFixed(1)}}°` : '';
-  document.getElementById('sky-info').textContent =
-    [passLine(s.pass), fmt(s.pointing, 'mount'), fmt(s.target, 'ISS  ')].filter(Boolean).join('\\n');
-}}
-function clock(seconds) {{
-  const s = Math.max(0, Math.round(seconds));
-  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
-  return (h ? h + 'h ' : '') + (h || m ? m + 'm ' : '') + sec + 's';
-}}
-function passLine(p) {{
-  if (!p) return '';
-  const rise = p.rise || p.start;           // horizon crossing, not the trackable segment
-  if (p.now < rise)
-    return `next pass in ${{clock(rise - p.now)}}\\n`
-         + `rises ${{p.rise_at || p.starts_at}}, max alt ${{p.max_alt.toFixed(0)}}°`;
-  if (p.now < p.start)
-    return `ISS up, trackable in ${{clock(p.start - p.now)}} (at ${{p.starts_at}})`;
-  if (p.now <= p.end)
-    return `tracking  t+${{(p.now - p.start).toFixed(0)}}s  ${{clock(p.end - p.now)}} left`;
-  return 'pass over';
-}}
-(async () => {{ try {{ SKY = await (await fetch('/api/sky')).json(); }} catch (e) {{}} }})();
-setInterval(async () => apply(await (await fetch('/api/state')).json()), 1000);
-</script></body></html>"""
+WEB = Path(__file__).resolve().parent / "web"
 
-PANEL = """<div class="panel"><h2>{name} <span id="stat-{name}"></span></h2>
-<img src="/{name}.mjpg" title="click to track this object, double-click to centre it"
- onclick="api('/api/select',{{cam:'{name}',fx:event.offsetX/this.clientWidth,
-                             fy:event.offsetY/this.clientHeight}})"
- ondblclick="mnt('centre',{{cam:'{name}'}})">
-<div class="info" id="info-{name}"></div>
-<div class="ctl"><label>target</label><span id="sel-{name}"></span>
- <button onclick="api('/api/select',{{cam:'{name}',clear:1}})">Auto</button>{centre}</div>
-<div class="ctl"><label>exposure</label>
- <button onclick="api('/api/exposure',{{cam:'{name}',factor:0.667}})">-</button>
- <input id="exp-{name}" onchange="api('/api/exposure',{{cam:'{name}',ms:this.value}})"><span id="expunit-{name}">ms</span>
- <button onclick="api('/api/exposure',{{cam:'{name}',factor:1.5}})">+</button></div>
-<div class="ctl"><label>gain</label>
- <button onclick="api('/api/gain',{{cam:'{name}',delta:-25}})">-</button>
- <input id="gain-{name}" onchange="api('/api/gain',{{cam:'{name}',value:this.value}})">
- <button onclick="api('/api/gain',{{cam:'{name}',delta:25}})">+</button></div>
-{extra}</div>"""
 
-# recording captures the main camera, so its button belongs in that panel
-RECORD = """<div class="rec"><button id="recbtn"
- onclick="api('/api/record',{on: this.className!=='on' ? 1 : 0})">Start recording</button>
- <span id="recinfo">not recording</span></div>"""
+def asset(name):
+    """Read a file from issctl/web. Never cached: the point of these files is that you edit them
+    and reload, and a stale template is a confusing way to spend ten minutes."""
+    return (WEB / name).read_text()
 
-ESTOP = """<button id="estop" onclick="api('/api/estop',{})">EMERGENCY STOP</button>
-<span id="estop-msg"></span>"""
 
-SKY = """<div class="panel"><h2>sky</h2>
-<svg id="sky" viewBox="0 0 330 330" style="width:100%;max-width:340px;background:#20242a;
- border-radius:6px"></svg>
-<div class="info" id="sky-info"></div></div>"""
+def fragments():
+    """panels.html holds the page's building blocks, each after a `<!-- @name -->` marker."""
+    out, name, buf = {}, None, []
+    for line in asset("panels.html").splitlines():
+        m = re.match(r"<!-- @([a-z_]+) -->\s*$", line)
+        if m:
+            if name:
+                out[name] = "\n".join(buf).strip()
+            name, buf = m.group(1), []
+        elif name:
+            buf.append(line)
+    if name:
+        out[name] = "\n".join(buf).strip()
+    return out
 
-# The green cross is the boresight - where the MAIN camera looks. On the guide that is not the
-# frame centre, and putting the object there is precisely what hands it over to the main camera.
-CENTRE = """ <button title="move the object to the green cross (where the main camera looks)"
- onclick="mnt('centre',{cam:'NAME'})">LABEL</button>EXTRA
- <button onclick="mnt('calibrate',{cam:'NAME'})">calibrate NAME</button>
- <button title="no star or lamp in view? measure how far the whole SCENE shifts instead. Gives the image scale and rotation, but not the boresight"
- onclick="mnt('calibrate',{cam:'NAME',mode:'pattern'})">on scene</button>
- <button title="measure lost motion using this camera"
- onclick="mnt('backlash',{cam:'NAME'})">backlash</button>"""
 
-# only meaningful where the boresight is not the frame centre, i.e. on the guide
-IN_FRAME = """
- <button title="move the object to the middle of this image (grey cross)"
- onclick="mnt('centre',{cam:'NAME',where:'frame'})">centre in frame</button>"""
-
-MOUNT = """<div class="panel"><h2>mount <span id="mount-busy"></span></h2>
-<div class="info" id="mount-info"></div>
-<div class="pad">
- <button style="grid-area:u" onclick="mnt('jog',{axis:2,dir:1})">&#9650;</button>
- <button style="grid-area:l" onclick="mnt('jog',{axis:1,dir:-1})">&#9664;</button>
- <button style="grid-area:c" onclick="mnt('stop',{})">stop</button>
- <button style="grid-area:r" onclick="mnt('jog',{axis:1,dir:1})">&#9654;</button>
- <button style="grid-area:d" onclick="mnt('jog',{axis:2,dir:-1})">&#9660;</button></div>
-<div class="ctl"><label>arrows</label>
- <select id="framesel" onchange="mnt('frame',{frame:this.value})"></select>
- <span id="frame-hint"></span></div>
-<div class="ctl"><label>speed</label>
- <select id="speedsel" onchange="mnt('speed',{index:this.value})"></select> °/s
- <button onclick="mnt('track',{on:1})">sidereal on</button>
- <button onclick="mnt('track',{on:0})">off</button></div>
-<div class="ctl"><label>target</label>
- <input id="target" title="star or planet name, 'RAh Dec', '18:36:56 +38:47:01', or 'altaz ALT AZ'"
- placeholder="vega / jupiter / 18.6 38.8" style="width:150px">
- <button onclick="mnt('goto',{target:tgt()})">goto</button>
- <button onclick="mnt('sync',{target:tgt()})">sync</button></div>
-<div class="ctl"><label>pass</label>
- <button id="trackbtn" onclick="mnt(MODE==='track' ? 'untrack' : 'track',
-   {pass: document.getElementById('passidx').value})">Track next pass</button>
- <input id="passidx" placeholder="next" style="width:56px" title="pass index from 'passes', or blank for the next usable one"></div>
-<div class="ctl"><label></label>
- <button id="motorbtn" onclick="mnt('motors',{on: MOTORS ? 0 : 1})">motors off</button>
- <button onclick="if(confirm('Set current position as home?')) mnt('home',{})">set home</button>
- <button onclick="mnt('calibrate',{})">calibrate cameras</button>
- <button title="calibrate by correlating the whole scene - for when there is no point source to detect (lit windows, daylight scenery). Measures J only, not the boresight"
- onclick="mnt('calibrate',{mode:'pattern'})">calibrate on scene</button>
- <button title="measure lost motion, then compensate for it on goto and centring"
- onclick="mnt('backlash',{})">measure backlash</button></div>
-<div class="info" id="cal-info"></div></div>"""
+def fill(template, **values):
+    """Fill {{name}} placeholders. Deliberately not str.format: these files are full of CSS and
+    JavaScript braces, and doubling every one of them is what made the old inline templates so
+    easy to break."""
+    def sub(m):
+        key = m.group(1)
+        if key not in values:
+            raise KeyError(f"no value for {{{{{key}}}}} in template")
+        return str(values[key])
+    return re.sub(r"\{\{([a-z_]+)\}\}", sub, template)
 
 
 def draw_axes(img, cal, length=46, margin=10):
@@ -372,19 +117,25 @@ class Preview:
     def page(self):
         can_record = bool(self.controls and self.controls.get("record"))
         can_move = bool(self.controls and self.controls.get("mount_action"))
-        panels = "".join(PANEL.format(name=n, extra=RECORD if (n == "main" and can_record) else "",
-                                      centre=(CENTRE.replace("EXTRA", "" if n == "main" else IN_FRAME)
-                                              .replace("NAME", n)
-                                              .replace("LABEL", "centre it" if n == "main"
-                                                       else "send to main")
-                                              if can_move else ""))
-                         for n in self.cams)
-        if self.controls and self.controls.get("mount_action"):
-            panels += MOUNT
-        if self.controls and self.controls.get("sky"):
-            panels += SKY
-        estop = ESTOP if (self.controls and self.controls.get("estop")) else ""
-        return PAGE.format(panels=panels, cams=json.dumps(list(self.cams)), estop=estop)
+        f = fragments()
+        cam_panels = "".join(
+            fill(f["panel"], name=n, title=n.capitalize(),
+                   extra=f["record"] if (n == "main" and can_record) else "",
+                   centre=(f["centre"].replace("EXTRA", "" if n == "main" else f["in_frame"])
+                           .replace("NAME", n)
+                           .replace("LABEL", "centre it" if n == "main" else "send to main")
+                           if can_move else ""))
+            for n in self.cams)
+        # The sky chart is parked, not deleted: panels.html still has it and drawSky() bails out
+        # when its svg is absent, so putting {{sky_panel}} back in index.html is all it takes.
+        return fill(asset("index.html"),
+                      cam_panels=cam_panels,
+                      mount_panel=f["mount"] if can_move else "",
+                      status_panel=f["status"] if can_move else "",
+                      warnings_panel=f["warnings"] if can_move else "",
+                      messages_panel=f["messages"] if can_move else "",
+                      estop=f["estop"] if (self.controls and self.controls.get("estop")) else "",
+                      cams=json.dumps(list(self.cams)))
 
     def api_state(self):
         if self.controls and self.controls.get("state"):
@@ -423,6 +174,9 @@ class Preview:
 
                 if path in ("/", "/index.html"):
                     return self._send(preview.page().encode(), "text/html")
+                if url.path in ("/style.css", "/app.js"):
+                    kind = "text/css" if url.path.endswith(".css") else "application/javascript"
+                    return self._send(asset(url.path.lstrip("/")).encode(), kind)
                 if path == "/api/state":
                     return self._send(json.dumps(preview.api_state()).encode())
                 if path == "/api/exposure" and ctl.get("exposure"):
