@@ -70,12 +70,12 @@ class Camera:
             self._thread.join(timeout=3)
         self._close()
 
-    def _restart(self):
+    def _restart(self, reopen=False):
         """Get a stalled stream going again. Only drivers that can stall need it."""
 
     def _run(self):
         n, t_fps = 0, time.monotonic()
-        misses = 0
+        misses = restarts = 0
         while not self._stop.is_set():
             img, t = self._grab()
             if img is None:
@@ -86,17 +86,22 @@ class Camera:
                     self.fps, n, t_fps = n / el, 0, time.monotonic()
                 misses += 1
                 if misses >= 3:
-                    # The ASI120MM Mini stalled for good on the real rig (USB 2.0, a bus shared
-                    # with the Arduino): every request timed out and the loop just asked again.
-                    print(f"{self.name}: no frame {misses} times running - restarting the stream")
+                    # The ASI120MM Mini stalled for good on the real rig: it dropped off USB and
+                    # came back as a new device, while every request on the old handle just timed
+                    # out. Restarting the stream on that handle "works" and changes nothing, so
+                    # when a restart has not helped, open the camera again from scratch.
+                    reopen = restarts >= 1
+                    print(f"{self.name}: no frame {misses} times running - "
+                          + ("reopening the camera" if reopen else "restarting the stream"))
+                    restarts += 1
                     try:
-                        self._restart()
+                        self._restart(reopen=reopen)
                     except Exception as e:
                         print(f"{self.name}: restart failed: {e}")
                         time.sleep(1.0)
                     misses = 0
                 continue
-            misses = 0
+            misses = restarts = 0
             gate = self.gate  # snapshot: a click may replace it while we are detecting
             det = detect(img, self.cfg["detect_sigma"], self.cfg["detect_min_area"], self.bayer, gate,
                          max_area=self.cfg.get("detect_max_area", 0),
@@ -295,16 +300,17 @@ class AsiCamera(Camera):
         if applied is not None:
             self.gain = applied
 
-    def _restart(self):
+    def _restart(self, reopen=False):
         """Restart the stream - or, when the camera dropped off USB and came back as a new
         device (seen for real: the Mini disconnected mid-session), open it all over again."""
-        try:
-            self.cam.stop_video_capture()
-            time.sleep(0.2)
-            self.cam.start_video_capture()
-            return
-        except Exception as e:
-            print(f"{self.name}: stream restart failed ({e}) - reopening the camera")
+        if not reopen:
+            try:
+                self.cam.stop_video_capture()
+                time.sleep(0.2)
+                self.cam.start_video_capture()
+                return
+            except Exception as e:
+                print(f"{self.name}: stream restart failed ({e}) - reopening the camera")
         try:
             self.cam.close()
         except Exception:

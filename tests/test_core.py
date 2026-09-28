@@ -279,11 +279,16 @@ def test_a_stalled_camera_restarts_its_stream_and_says_so():
                 return (np.zeros((4, 4), np.uint8), 0.0) if self.calls <= 3 or self.calls > 60 else (None, None)
             return None, None
 
-        def _restart(self):
+        def _restart(self, reopen=False):
             self.restarts += 1
+            self.reopened = self.reopened or reopen
 
-    cam = Stalling().start()
+    cam = Stalling()
+    cam.reopened = False
+    cam.start()
     time.sleep(2.5)
     cam.stop()
-    assert cam.restarts >= 1
+    assert cam.restarts >= 2
+    # a restart that did not bring frames back is followed by a full reopen
+    assert cam.reopened
     assert cam.fps < 1.0
