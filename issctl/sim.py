@@ -65,7 +65,7 @@ class SimWorld:
             return None
         if self.obscured(t, alt, az):
             return None
-        p_hat, e1, e2 = self.model.sky_axes(m[0], m[1])
+        p_hat, e1, e2 = self.model.camera_frame(m[0], m[1])
         return _sky_pixel(self.true_cal[cam], p_hat, e1, e2, sky_unit(ha, dec))
 
     def pixel(self, cam, t):
@@ -125,7 +125,7 @@ class CalibWorld:
         m = pointing_at(self.mount, t)
         if m is None:
             return None, None, None
-        return self.sky_model.sky_axes(*(m + self.pointing_error))
+        return self.sky_model.camera_frame(*(m + self.pointing_error))
 
     def catalog(self):
         """The simulated lights as catalogue stars: (sky direction, name, magnitude)."""

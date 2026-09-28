@@ -515,10 +515,8 @@ def cmd_console(args, cfg):
             raise RuntimeError("no guide camera to solve")
         sol = solve_camera(cams["guide"], solver, log=say)
         axes = np.asarray(mount.position_at(sol.t), dtype=float)
-        cal = state.get("cameras", {}).get("guide") or {}
-        b = np.asarray(cal.get("boresight", sol.centre()), dtype=float)
         last_solve.update(sol=sol, axes=axes)
-        return sol, axes, b
+        return sol, axes, sol.centre()    # the alignment follows the guide centre (align.py)
 
     def do_solve():
         sol, axes, b = solve_here()
@@ -527,7 +525,7 @@ def cmd_console(args, cfg):
         thinks = align.pointing_hadec(state, axes)
         off = float(align.angle_arcsec(align.sky_unit(*thinks), align.sky_unit(ha, dec)) / 3600)
         named = [label for _, label, mag in sol.catalog() if not label.startswith("mag")][:4]
-        say(f"boresight at alt {float(alt):.1f} az {float(az):.1f} ({geo.compass(az)}); the "
+        say(f"guide centre at alt {float(alt):.1f} az {float(az):.1f} ({geo.compass(az)}); the "
             f"mount thinks it is {off:.2f} deg from there"
             + (f"; in view: {', '.join(named)}" if named else ""))
 
@@ -593,12 +591,12 @@ def cmd_console(args, cfg):
 
     def do_solve_centre(name):
         """Put a named target on the boresight using the solved frame instead of the counters:
-        exact however badly the mount knows where it is."""
+        exact however badly the mount knows where it is - and exactly as good as the boresight."""
         cal = state.get("cameras", {}).get("guide")
         if not cal:
             say("calibrate the guide first - the move is worked out in its image")
             return
-        sol, axes, b = solve_here()
+        sol, _, _ = solve_here()
         ha, dec, _, _ = pr.target_hadec(name, site, sol.t)
         px = sol.pixel_hadec(ha, dec)
         d = centring_move(cal, mount.position()[1], px)

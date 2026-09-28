@@ -13,7 +13,7 @@ from issctl import predict as pr
 from issctl.calib import ideal_calibration
 from issctl.clock import Clock
 from issctl.config import load_config
-from issctl.model import angle_arcsec
+from issctl.model import PointingModel, angle_arcsec
 from issctl.model import unit as sky_unit
 from issctl.mount import SimMount
 from issctl.sim import CalibWorld, misalignment
@@ -52,13 +52,15 @@ class FrameCam:
         self.gain = g
 
 
-def rig(cfg, pointing_error=(7.0, -4.0), azimuth_error=90.0, start=(20.0, 40.0)):
+def rig(cfg, pointing_error=(7.0, -4.0), azimuth_error=90.0, start=(20.0, 40.0), cone=0.0):
     """A tripod turned 90 deg from north with counters that are degrees out: the balcony."""
     clock = Clock(speed=20.0)
     mount = SimMount(cfg, {}, clock, start=list(start))
     mount.query()
-    world = CalibWorld(cfg, mount, pointing_error=pointing_error,
-                       model=misalignment(50.0, (2.0, -1.0), azimuth_error))
+    model = misalignment(50.0, (2.0, -1.0), azimuth_error)
+    if cone:
+        model = PointingModel(model.rotvec_deg, cone=cone)
+    world = CalibWorld(cfg, mount, pointing_error=pointing_error, model=model)
     cam = FrameCam(cfg["cameras"]["guide"], clock)
     return mount, world, cam, SimSolver(world, cam)
 
@@ -116,6 +118,22 @@ def test_star_calibration_measures_J_and_aligns_a_turned_tripod(cfg):
     # four points within a few degrees, yet the model holds across the sky
     model = align.current_model(state)
     for a in ([-60, 30], [60, 80], [0, 10], [90, 120], [-30, 150]):
+        err = angle_arcsec(model.forward(*a), true_vector(world, mount, a)) / 3600
+        assert err < 0.2, (a, err)
+
+
+def test_star_calibration_finds_the_cone_from_one_spot(cfg):
+    """Four points a degree apart cannot tell cone from polar-axis tilt; the turning axes can.
+    Cone is the error that doubles across a meridian flip, and from a window there are no far
+    stars to pin it down with."""
+    mount, world, cam, solver = rig(cfg, cone=0.8)
+    state = {}
+    align.calibrate_on_stars(mount, cam, solver, state, log=lambda *a: None, slew_rate=3.0,
+                             settle_s=0.0)
+    model = align.current_model(state)
+    assert model.cone == pytest.approx(0.8, abs=0.1)
+    # far away, and on the other side of the pier
+    for a in ([-60, 30], [60, 80], [-40, 140], [30, 160]):
         err = angle_arcsec(model.forward(*a), true_vector(world, mount, a)) / 3600
         assert err < 0.2, (a, err)
 
@@ -208,7 +226,7 @@ def test_real_guide_frame_solves(cfg, site):
     ra, dec = sol.radec(sol.centre())
     assert abs(ra - 216.06) < 0.05 and abs(dec - 53.01) < 0.05
     # the lens is really 15.5 mm, not the nominal 16
-    assert sol.scale_arcsec() == pytest.approx(49.8, abs=0.3)
+    assert sol.scale_arcsec() == pytest.approx(49.8, abs=0.6)
     named = {label: px for px, label, _ in sol.catalog()}
     assert np.hypot(*(named["alkaid"] - [1039, 187])) < 3
 

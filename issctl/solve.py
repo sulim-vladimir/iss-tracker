@@ -210,6 +210,61 @@ def _mono(img):
     return g.mean(axis=2) if g.ndim == 3 else g
 
 
+def find_stars(img, max_stars=80, kernel=15, sigma=5.0, max_area=150, edge=4, tile=64, busy=2.0, lively_max=0.04):
+    """Star positions, brightest first, as (x, y, flux) - and NOT the lit building next to them.
+
+    solve-field's own extractor ranks sources by brightness, and from a balcony the brightest
+    things in the frame are window corners and the edge of a wall: they crowd out the stars and a
+    field with eight good stars in it never solves. So only what a star looks like is kept:
+    small (a top-hat with a kernel wider than a star leaves only small things standing), compact
+    and roughly round, and alone - a window corner sits in a lot of other structure.
+    """
+    import cv2
+
+    g = _mono(img)
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel, kernel))
+    th = cv2.morphologyEx(g, cv2.MORPH_TOPHAT, k)
+    h, w = g.shape
+    # Noise judged tile by tile. Over the whole frame, the texture of a building raises the
+    # estimate until the faint stars in the clear part drop below it; and a tile far busier
+    # than the quietest ones is scenery, where nothing that passes for a star is one.
+    ty, tx = max(1, h // tile), max(1, w // tile)
+    tiles = th[:ty * tile, :tx * tile].reshape(ty, tile, tx, tile).swapaxes(1, 2).reshape(ty, tx, -1)
+    tmed = np.median(tiles, axis=2)
+    tnoise = 1.4826 * np.median(np.abs(tiles - tmed[..., None]), axis=2) + 1e-3
+    sky_noise = float(np.percentile(tnoise, 25))
+    base = float(np.median(tmed))
+    # Clear sky above 3 sigma is noise and the odd star; a lit facade is edges everywhere.
+    lively = np.mean(tiles > base + 3.0 * sky_noise, axis=2)
+    sky = (tnoise < busy * sky_noise) & (lively < lively_max)
+    mask = (th > base + sigma * sky_noise).astype(np.uint8)
+    n, lab, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    out = []
+    for i in range(1, n):
+        x0, y0, bw, bh, area = stats[i]
+        if area < 2 or area > max_area:
+            continue
+        cy, cx = min(ty - 1, (y0 + bh // 2) // tile), min(tx - 1, (x0 + bw // 2) // tile)
+        if not sky[cy, cx]:
+            continue
+        if max(bw, bh) > 2.5 * min(bw, bh) or area < 0.35 * bw * bh:
+            continue          # a line or a smear: an edge, a wire, a trail
+        if x0 < edge or y0 < edge or x0 + bw > w - edge or y0 + bh > h - edge:
+            continue
+        r = int(max(bw, bh)) + 6
+        xa, xb, ya, yb = max(0, x0 - r), min(w, x0 + bw + r), max(0, y0 - r), min(h, y0 + bh + r)
+        ring = mask[ya:yb, xa:xb].astype(bool) & (lab[ya:yb, xa:xb] != i)
+        if ring.mean() > 0.03:
+            continue          # other structure all around it: part of the scenery
+        sel = lab[y0:y0 + bh, x0:x0 + bw] == i
+        wts = th[y0:y0 + bh, x0:x0 + bw] * sel
+        flux = float(wts.sum())
+        yy, xx = np.mgrid[y0:y0 + bh, x0:x0 + bw]
+        out.append((float((xx * wts).sum() / flux), float((yy * wts).sum() / flux), flux))
+    out.sort(key=lambda s: -s[2])
+    return out[:max_stars]
+
+
 class AstrometrySolver:
     """solve-field, run on one frame at a time, blind or with a hint of where to look."""
 
@@ -243,7 +298,10 @@ class AstrometrySolver:
                "--downsample", str(self.downsample), "--cpulimit", str(int(self.timeout_s)),
                "--new-fits", "none", "--index-xyls", "none", "--match", "none",
                "--solved", "none", "--corr", "none", "--tag-all",
-               "--dir", str(work), "--temp-dir", str(work), "--fits-image", str(work / "frame.fits")]
+               "--dir", str(work), "--temp-dir", str(work),
+               "--width", str(self.shape[1]), "--height", str(self.shape[0]),
+               "--x-column", "X", "--y-column", "Y", "--sort-column", "FLUX",
+               str(work / "frame.xy")]
         if hint is not None:
             cmd += ["--ra", f"{hint[0]:.4f}", "--dec", f"{hint[1]:.4f}", "--radius", "30"]
         return subprocess.run(cmd, capture_output=True, text=True, timeout=self.timeout_s + 30)
@@ -255,28 +313,55 @@ class AstrometrySolver:
 
         self.check()
         g = _mono(img)
+        self.shape = g.shape
+        t0 = time.monotonic()
+        stars = find_stars(g)
+        if len(stars) < 6:
+            self._keep_failed(g)
+            raise SolveError(f"only {len(stars)} stars found - lengthen the exposure (0.5-2 s), "
+                             f"focus, or point at a clearer patch of sky")
         with tempfile.TemporaryDirectory(prefix="issctl-solve-") as tmp:
             work = Path(tmp)
-            fits.PrimaryHDU(g).writeto(work / "frame.fits")
-            t0 = time.monotonic()
+            xy = np.array(stars)
+            fits.BinTableHDU.from_columns([
+                fits.Column("X", "E", array=xy[:, 0] + 1),      # FITS pixels count from 1
+                fits.Column("Y", "E", array=xy[:, 1] + 1),
+                fits.Column("FLUX", "E", array=xy[:, 2])]).writeto(work / "frame.xy")
             for h in ([hint, None] if hint is not None else [None]):
                 res = self._run(work, h)
                 if (work / "frame.wcs").exists():
                     break
             else:
-                tail = " | ".join(line.strip() for line in (res.stdout + res.stderr).splitlines()
-                                  if "source" in line.lower() or "error" in line.lower())[-300:]
+                errors = [line.strip() for line in (res.stdout + res.stderr).splitlines()
+                          if "error" in line.lower()][-2:]
+                saved = self._keep_failed(g)
                 raise SolveError(
-                    f"no solution after {time.monotonic() - t0:.0f}s ({tail or 'no detail'}). "
-                    f"Too few stars: lengthen the exposure (0.5-2 s), focus, or wait for "
-                    f"darker sky. Clouds, a lit wall or a window frame across the field also "
-                    f"break it.")
+                    f"no solution after {time.monotonic() - t0:.0f}s from {len(stars)} stars"
+                    + (f" ({' | '.join(errors)})" if errors else "")
+                    + ". Too few stars, or too little sky in the frame: lengthen the exposure "
+                    f"(0.5-2 s), focus, or point at a clearer patch"
+                    + (f". Frame kept as {saved}" if saved else ""))
             header = fits.getheader(work / "frame.wcs")
-            stars = self._stars(work / "frame.rdls")
-        sol = WcsSolution(header, self.site, t, g.shape[1], g.shape[0], stars)
+            catalog = self._stars(work / "frame.rdls")
+        sol = WcsSolution(header, self.site, t, g.shape[1], g.shape[0], catalog)
+        sol.n_stars = len(stars)
         sol.elapsed_s = time.monotonic() - t0
         self.last = sol
         return sol
+
+    @staticmethod
+    def _keep_failed(g):
+        """A frame that would not solve is worth keeping: it is the only way to find out why."""
+        try:
+            import cv2
+
+            logs = ROOT / "logs"
+            logs.mkdir(exist_ok=True)
+            path = logs / f"solve-failed-{time.strftime('%Y%m%d-%H%M%S')}.png"
+            cv2.imwrite(str(path), np.clip(g, 0, 255).astype(np.uint8))
+            return path.name
+        except Exception:
+            return None
 
     @staticmethod
     def _stars(rdls):
@@ -366,5 +451,7 @@ def solve_camera(cam, solver, log=print):
     if last is not None and last.radec(last.centre()) is not None:
         hint = last.radec(last.centre())
     sol = solver.solve(img, t, hint=hint)
-    log(f"{cam.name} solved in {sol.elapsed_s:.1f}s: {sol.describe()}")
+    log(f"{cam.name} solved in {sol.elapsed_s:.1f}s"
+        + (f" from {sol.n_stars} stars" if getattr(sol, "n_stars", None) else "")
+        + f": {sol.describe()}")
     return sol

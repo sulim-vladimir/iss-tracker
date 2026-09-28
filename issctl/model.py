@@ -86,6 +86,14 @@ class PointingModel:
     def axes_to_hadec(self, a1, a2):
         return to_hadec(self.forward(a1, a2))
 
+    def axis_direction(self, kind, a1):
+        """Sky direction the tube turns about when an axis moves forward: the RA axis for
+        axis1, and for axis2 minus the Dec axis, which itself swings round with axis1."""
+        if kind == "ra":
+            return self.R @ Z
+        h = np.radians(float(a1) - 90.0)
+        return -(self.R @ np.array([-np.sin(h), np.cos(h), 0.0]))
+
     def sky_axes(self, a1, a2):
         """Sky-frame unit vectors of the pointing and of its motion per +axis1 / +axis2."""
         p, n = self.mount_vectors(a1, a2)
@@ -93,6 +101,19 @@ class PointingModel:
         e2 = np.cross(p, n)
         norm = lambda e: e / np.maximum(np.linalg.norm(e, axis=-1, keepdims=True), 1e-12)
         return p @ self.R.T, norm(e1) @ self.R.T, norm(e2) @ self.R.T
+
+    def camera_frame(self, a1, a2):
+        """Sky-frame pointing plus two image directions bolted to the tube.
+
+        sky_axes gives the directions the axes MOVE the pointing, which with cone are not fixed
+        to the tube: a camera built on them would twist under an axis2 move in a way no real
+        camera can. Here right is the Dec axis squared up to the pointing, and up completes the
+        frame, so the pair turns rigidly with the tube. Without cone they equal sky_axes."""
+        p, n = self.mount_vectors(a1, a2)
+        norm = lambda e: e / np.maximum(np.linalg.norm(e, axis=-1, keepdims=True), 1e-12)
+        e1 = norm(n - np.sum(n * p, axis=-1, keepdims=True) * p)
+        e2 = np.cross(p, e1)
+        return p @ self.R.T, e1 @ self.R.T, e2 @ self.R.T
 
     def hadec_to_axes(self, ha, dec, side, iters=5):
         pm = unit(ha, dec) @ self.R  # R^T v
@@ -141,13 +162,19 @@ def _kabsch(p, v):
     return U @ np.diag([1.0, 1.0, d]) @ Vt
 
 
-def fit_model(axes, vectors, prior=None, free=None):
+def fit_model(axes, vectors, prior=None, free=None, axis_dirs=()):
     """axes (N,2) mechanical degrees, vectors (N,3) observed sky unit vectors (HA/Dec frame).
 
     Free parameters grow with the number of points: 1 -> RA index + Dec index,
     2 -> full orientation + Dec index, >=3 -> + cone. `free` (indices into PARAMS) overrides
     that, for point sets whose count says more than their geometry can support.
+
+    axis_dirs: measured turning axes, [(kind "ra"/"dec", axis1, unit vector, weight)], from the
+    rotation of a whole solved field under a move. They fix the orientation and the cone even
+    when the points are too close together to - the weight puts their residual on the same
+    footing as a point's.
     """
+    axis_dirs = [(k, float(a), np.asarray(v, dtype=float), float(w)) for k, a, v, w in axis_dirs]
     axes = np.atleast_2d(np.asarray(axes, dtype=float))
     vectors = np.atleast_2d(np.asarray(vectors, dtype=float))
     n = len(axes)
@@ -168,7 +195,8 @@ def fit_model(axes, vectors, prior=None, free=None):
         m = build(x, base)
         r = (m.forward(axes[:, 0], axes[:, 1]) - vectors).ravel()
         reg = 1e-4 * np.radians(np.array([m.d2, m.cone]))  # weak pull toward 0 for near-degenerate sets
-        return np.concatenate([r, reg])
+        dirs = [w * (m.axis_direction(k, a) - v) for k, a, v, w in axis_dirs]
+        return np.concatenate([r, reg, *dirs])
 
     starts = [params(prior)]
     for rz in (0.0, 90.0, 180.0, -90.0):
@@ -181,7 +209,8 @@ def fit_model(axes, vectors, prior=None, free=None):
 
     best = None
     for s in starts:
-        sol = least_squares(resid, s[free], args=(s,), method="lm" if len(s[free]) * 1 <= 3 * n else "trf",
+        sol = least_squares(resid, s[free], args=(s,),
+                            method="lm" if len(s[free]) <= 3 * n + 3 * len(axis_dirs) else "trf",
                             x_scale=1.0, diff_step=1e-6)
         if best is None or sol.cost < best[0].cost:
             best = (sol, s)
