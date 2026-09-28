@@ -8,6 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
+from . import align
 from . import geometry as geo
 from . import predict as pr
 from .clock import Clock
@@ -58,10 +59,11 @@ def describe_shadow(rep, t_ref=None):
                      for t, what in rep["shadow"])
 
 
-def list_passes(cfg, sat, site, t0, hours, mask=None):
+def list_passes(cfg, sat, site, t0, hours, mask=None, model=None):
     rows = []
     for p in pr.find_passes(sat, site, t0, hours):
-        _, rep = pr.plan_pass(sat, site, cfg["mount"], p["rise"], p["set"], mask=mask)
+        _, rep = pr.plan_pass(sat, site, cfg["mount"], p["rise"], p["set"], mask=mask,
+                              model=model)
         _, sun_alt = pr.sun_state(sat, site, p["culm"])
         if sun_alt >= -4:
             vis = "day"
@@ -82,8 +84,10 @@ def cmd_passes(args, cfg):
     sat = pr.make_satellite(pr.get_tle(cfg, offline=args.offline))
     mask = SkyMask.from_config(cfg)
     now = time.time()
-    print(f"TLE age {pr.tle_age_days(sat, now):.1f} days | sky: {mask.describe()}")
-    for i, (p, rep, vis) in enumerate(list_passes(cfg, sat, site, now, args.hours, mask)):
+    model = align.current_model(load_state())
+    print(f"TLE age {pr.tle_age_days(sat, now):.1f} days | sky: {mask.describe()} | "
+          f"mount: {model.describe() if model else 'no star alignment - assumed polar aligned'}")
+    for i, (p, rep, vis) in enumerate(list_passes(cfg, sat, site, now, args.hours, mask, model)):
         print(f"{i:2d} {fmt_t(p['rise'])}  max {p['max_alt']:4.1f}  {vis:7s} {describe(rep)}")
         print(f"   {sky_path(sat, site, p)}"
               + (f" | {describe_shadow(rep)}" if rep["shadow"] else ""))
@@ -98,7 +102,8 @@ def sky_payload(cfg, mask, traj=None, site=None):
     if traj is not None and site is not None:
         step = max(1, len(traj.t) // 400)
         a1, a2 = traj.a1[::step], traj.a2[::step]
-        ha, dec = geo.axes_to_hadec(a1, a2)
+        model = getattr(traj, "model", None)
+        ha, dec = geo.axes_to_hadec(a1, a2) if model is None else model.axes_to_hadec(a1, a2)
         alt, az = geo.hadec_to_altaz(ha, dec, site.lat)
         lit, open_sky = traj.lit[::step], traj.open_sky[::step]
         t = traj.t[::step]
@@ -330,6 +335,7 @@ def cmd_console(args, cfg):
     from .calib import (TRACKERS, axis1_plausible, axis1_stretch, boresight_from_picks,
                         calibrate_cameras, centring_move, image_jog_rates, measure)
     from .mount import SIDEREAL_DEG_S, SimMount
+    from .solve import solve_camera
 
     state_path = SIM_STATE_FILE if args.sim else None
     state = load_state(state_path)
@@ -342,12 +348,18 @@ def cmd_console(args, cfg):
         mount = SimMount(cfg, state, clock, start=[20.0, 40.0],
                          backlash=[0.0, getattr(args, "sim_backlash", 0.0)])
         mount.query()
-        # a fixed "distant light" a little off the boresight, to exercise jogging and calibration
-        world = CalibWorld(cfg, mount)
+        # a fixed "distant light" a little off the boresight, to exercise jogging and calibration,
+        # on a tripod turned 30 deg off north that only the star calibration can see
+        from .sim import misalignment
+        world = CalibWorld(cfg, mount, model=misalignment(site.lat, (1.0, -0.6), 30.0))
         cams = {n: SimCamera(n, cfg["cameras"][n], clock, world).start() for n in ("guide", "main")}
     else:
+        world = None
         mount, cams = open_mount(cfg, state, clock), open_cameras(cfg, clock)
         restore_position(state, mount)
+    from .solve import make_solver
+    solver = make_solver(cams["guide"], site, world) if "guide" in cams else None
+    last_solve = {"sol": None, "axes": None}
     apply_saved_settings(cams, state)
     def status_lines(name):
         return []   # axis angles and the clock live in the mount panel and the top bar
@@ -470,7 +482,8 @@ def cmd_console(args, cfg):
         for _ in range(2):  # second pass corrects for sky motion during the slew
             ha, dec, alt, _ = pr.target_hadec(name, site, clock.now())
             cur = mount.position()
-            best, options = geo.choose_pose(ha, dec, cfg["mount"], current=cur)
+            best, options = geo.choose_pose(ha, dec, cfg["mount"], current=cur,
+                                            to_axes=align.hadec_to_axes_fn(state))
             if best is None:
                 say(f"{name} is not reachable: " + ", ".join(
                     f"{o['side']} needs axis1 {o['axes'][0]:+.0f} axis2 {o['axes'][1]:+.0f}"
@@ -491,9 +504,111 @@ def cmd_console(args, cfg):
 
     def do_sync(name):
         ha, dec, alt, _ = pr.target_hadec(name, site, clock.now())
-        d = mount.sync(ha, dec)
+        d = align.sync_to(state, mount, ha, dec)
         persist()
         ui["msg"] = f"synced on {name}: correction {d.round(3)} deg"
+
+    # ---- plate solving ----
+    def solve_here():
+        """Solve the guide frame now. Returns (solution, counters at exposure, boresight pixel)."""
+        if solver is None:
+            raise RuntimeError("no guide camera to solve")
+        sol = solve_camera(cams["guide"], solver, log=say)
+        axes = np.asarray(mount.position_at(sol.t), dtype=float)
+        cal = state.get("cameras", {}).get("guide") or {}
+        b = np.asarray(cal.get("boresight", sol.centre()), dtype=float)
+        last_solve.update(sol=sol, axes=axes)
+        return sol, axes, b
+
+    def do_solve():
+        sol, axes, b = solve_here()
+        ha, dec = sol.hadec(b)
+        alt, az = geo.hadec_to_altaz(ha, dec, site.lat)
+        thinks = align.pointing_hadec(state, axes)
+        off = float(align.angle_arcsec(align.sky_unit(*thinks), align.sky_unit(ha, dec)) / 3600)
+        named = [label for _, label, mag in sol.catalog() if not label.startswith("mag")][:4]
+        say(f"boresight at alt {float(alt):.1f} az {float(az):.1f} ({geo.compass(az)}); the "
+            f"mount thinks it is {off:.2f} deg from there"
+            + (f"; in view: {', '.join(named)}" if named else ""))
+
+    def do_solve_sync():
+        sol, axes, b = solve_here()
+        d = align.sync_to(state, mount, *sol.hadec(b))
+        persist()
+        say(f"synced on the stars: counters corrected by {d.round(3)} deg"
+            + ("" if align.current_model(state) else
+               " (no alignment yet - 'calibrate on stars' next, so goto and passes know how "
+               "the tripod stands)"))
+
+    def do_align_add():
+        sol, axes, b = solve_here()
+        try:
+            off = align.add_point(state, axes, *sol.hadec(b), sol.t)
+        except ValueError as e:
+            say(str(e))
+            return
+        model, shift = align.refit(state, mount, state.get("cameras"))
+        persist()
+        say((f"star added ({off:.2f} deg from the model's prediction). " if off is not None
+             else "star added. ") + align.describe(state)
+            + (f" - Dec index {shift:+.2f} deg moved into the counters" if shift else ""))
+
+    def do_starcal():
+        from .mount import SIDEREAL_DEG_S as sidereal
+        say("calibrating the guide camera on the stars...")
+        warnings = []
+        cal = align.calibrate_on_stars(mount, cams["guide"], solver, state,
+                                       track_rate=[sidereal, 0.0] if ui["tracking"] else None,
+                                       log=say, abort=aborted, warnings=warnings)
+        state.setdefault("cameras", {})["guide"] = cal
+        state["calibrated_at"] = time.time()
+        state["calibration_warnings"] = warnings
+        persist()
+        say("star calibration done" + (f" - {len(warnings)} warning(s)" if warnings else "")
+            + ". Next: goto a bright star, 'centre by solve', then 'boresight on star'.")
+
+    def do_star_boresight():
+        cal = state.get("cameras", {})
+        if not cal.get("main") or not cal.get("guide"):
+            say("need both camera matrices first: 'calibrate on stars' for the guide, then "
+                "'calibrate on target' in main with a bright star centred")
+            return
+        px_main = measure(cams["main"])
+        if px_main is None:
+            say("no star detected in the main camera - centre a bright one there first")
+            return
+        sol, _, _ = solve_here()
+        try:
+            bore, label, miss, carried = align.boresight_on_star(sol, cal["main"], cal["guide"],
+                                                                 px_main)
+        except ValueError as e:
+            say(str(e))
+            return
+        old = np.asarray(cal["guide"]["boresight"], dtype=float)
+        cal["guide"]["boresight"] = [float(bore[0]), float(bore[1])]
+        persist()
+        say(f"boresight on {label}: moved {np.hypot(*(bore - old)):.0f} px to "
+            f"{bore.round(1)} (star was {miss:.2f} deg from where the old boresight put it"
+            + (f", {carried:.0f} px carried through the matrices" if carried > 1 else "") + ")")
+
+    def do_solve_centre(name):
+        """Put a named target on the boresight using the solved frame instead of the counters:
+        exact however badly the mount knows where it is."""
+        cal = state.get("cameras", {}).get("guide")
+        if not cal:
+            say("calibrate the guide first - the move is worked out in its image")
+            return
+        sol, axes, b = solve_here()
+        ha, dec, _, _ = pr.target_hadec(name, site, sol.t)
+        px = sol.pixel_hadec(ha, dec)
+        d = centring_move(cal, mount.position()[1], px)
+        if d is None:
+            say(f"{name} is too far from the guide field to centre from here - goto it first")
+            return
+        mount.move_to(mount.position() + d,
+                      track_rate=[SIDEREAL_DEG_S, 0.0] if ui["tracking"] else None,
+                      abort=aborted, approach=state.get("backlash_deg"))
+        say(f"{name} moved onto the boresight ({np.hypot(*d) * 60:.1f}' move)")
 
     def do_cal(only=None, mode="blob"):
         say(f"calibrating{'' if mode == 'blob' else f' on the scene ({mode})'}...")
@@ -692,12 +807,24 @@ def cmd_console(args, cfg):
 
     def pointing():
         pos = mount.position()
-        ha_p, dec_p = geo.axes_to_hadec(*pos)
+        ha_p, dec_p = align.pointing_hadec(state, pos)
         alt_p, az_p = geo.hadec_to_altaz(ha_p, dec_p, site.lat)
         return pos, float(alt_p), float(az_p)
 
     def in_background(fn):
         threading.Thread(target=busy, args=(fn,), daemon=True).start()
+
+    def relabel_counters():
+        """Home redefines what the counters mean, so star points taken before no longer apply."""
+        if align.points(state):
+            align.clear(state)
+            say("star alignment cleared: home redefines the counters it was measured in")
+
+    STAR_KEYS = {ord("S"): "solve", ord("Y"): "solve_sync", ord("K"): "starcal",
+                 ord("A"): "align_add", ord("B"): "star_boresight"}
+    STAR_ACTIONS = {"solve": do_solve, "solve_sync": do_solve_sync, "align_add": do_align_add,
+                    "starcal": do_starcal, "star_boresight": do_star_boresight,
+                    "align_clear": None, "solve_centre": None}
 
     def mount_action(action, params):
         """Same operations as the curses keys, for the browser panel."""
@@ -731,7 +858,8 @@ def cmd_console(args, cfg):
             return
         if aborted() and action not in ("stop", "frame", "speed"):
             ui["abort"].clear()  # any deliberate command clears the latched stop
-        if action in ("jog", "goto", "track", "calibrate", "centre") and not ui["motors"]:
+        if action in ("jog", "goto", "track", "calibrate", "centre", "starcal",
+                      "solve_centre") and not ui["motors"]:
             mount.enable(True)
             ui["motors"] = True
         if action == "jog":
@@ -754,8 +882,24 @@ def cmd_console(args, cfg):
             ui["jog"][:] = 0
             ui["tracking"] = False
             mount.set_home()
+            relabel_counters()
             persist()
             ui["msg"] = "home set (counterweight down, tube at pole)"
+        elif action in STAR_ACTIONS:
+            if solver is None:
+                ui["msg"] = "no guide camera to solve"
+            elif action == "align_clear":
+                align.clear(state)
+                persist()
+                ui["msg"] = "star alignment cleared"
+            elif action == "solve_centre":
+                target = (params.get("target") or "").strip()
+                if not target:
+                    ui["msg"] = "enter a target first"
+                else:
+                    in_background(lambda: do_solve_centre(target))
+            else:
+                in_background(STAR_ACTIONS[action])
         elif action in ("sync", "goto"):
             target = (params.get("target") or "").strip()
             if not target:
@@ -886,7 +1030,8 @@ def cmd_console(args, cfg):
                 ui["msg"] = "planning pass..."
                 sat = pr.make_satellite(pr.get_tle(cfg))
                 mask = SkyMask.from_config(cfg)
-                rows = list_passes(cfg, sat, site, clock.now() - 60, 24, mask)
+                model = align.current_model(state)
+                rows = list_passes(cfg, sat, site, clock.now() - 60, 24, mask, model)
                 if not rows:
                     ui["msg"] = "no passes in the next 24 h"
                     return
@@ -895,7 +1040,8 @@ def cmd_console(args, cfg):
                 else:
                     cand = [r for r in rows if r[2] == "visible" and r[1]["useful_s"] > 0] or rows
                     p, rep, _ = cand[0]
-                traj, rep = pr.plan_pass(sat, site, cfg["mount"], p["rise"], p["set"], mask=mask)
+                traj, rep = pr.plan_pass(sat, site, cfg["mount"], p["rise"], p["set"], mask=mask,
+                                         model=model)
                 rise, _ = pr.pass_horizon(sat, site, p)
                 session["traj"] = traj
                 session["info"] = {
@@ -954,6 +1100,7 @@ def cmd_console(args, cfg):
                 "backlash_deg": state.get("backlash_deg"),
                 "position_at": state.get("position_at"),
                 "cal_warnings": state.get("calibration_warnings", []),
+                "alignment": align.describe(state),
                 "busy": ui["busy"], "msg": ui["msg"], "jog": ui["jog"].tolist(), "cal": cal}
 
     from .ser import RecordControl
@@ -1006,6 +1153,7 @@ def cmd_console(args, cfg):
                 ui["jog"][:] = 0
                 ui["tracking"] = False
                 mount.set_home()
+                relabel_counters()
                 persist()
                 ui["msg"] = "home set (counterweight down, tube at pole)"
             elif k == ord("s"):
@@ -1021,6 +1169,8 @@ def cmd_console(args, cfg):
                 busy(do_cal)
             elif k == ord("C") and cams:
                 busy(lambda: do_cal(mode="scene"))
+            elif k in STAR_KEYS:
+                mount_action(STAR_KEYS[k], {})
             elif k == ord("p"):
                 mount_action("track", {})
             elif k == ord("v"):
@@ -1047,7 +1197,7 @@ def cmd_console(args, cfg):
                     ui["msg"] = f"{cam.name} gain {cam.gain}"
 
             pos = mount.position()
-            ha, dec = geo.axes_to_hadec(*pos)
+            ha, dec = align.pointing_hadec(state, pos)
             alt, az = geo.hadec_to_altaz(ha, dec, site.lat)
             scr.erase()
             lines = [
@@ -1055,11 +1205,14 @@ def cmd_console(args, cfg):
                 "                    H home | s sync | g goto | c calibrate | C calibrate on scene | m mask point",
                 "                    (the browser has a selector for which scene tracker to use)",
                 "                    f arrow frame",
+                "                    stars: S solve | Y sync on stars | K calibrate on stars | "
+                "A add star | B boresight on star",
                 "                    p track next pass | v servo (follow what the camera sees)",
                 "                    x select cam | -/= exposure | [/] gain",
                 "",
                 f"axis1 {pos[0]:+9.4f}   axis2 {pos[1]:+9.4f}   side {'east_looking' if pos[1] <= 90 else 'west_looking'}",
                 f"HA {float(ha):+8.3f}   Dec {float(dec):+8.3f}   Alt {float(alt):6.2f}   Az {float(az):6.2f}",
+                f"alignment: {align.describe(state)}",
                 f"jog speed {speeds[ui['speed']]} deg/s   tracking {'ON' if ui['tracking'] else 'off'}   "
                 f"rates {mount.rate_cmd.round(4)}",
                 f"arrows move: {ui['frame']}"
@@ -1101,6 +1254,44 @@ def cmd_console(args, cfg):
         for c in cams.values():
             c.stop()
         mount.close()
+
+
+# ---------------------------------------------------------------- plate solving
+
+def cmd_solve_setup(args, cfg):
+    import shutil
+
+    from .solve import INDEX_DIR, fetch_indexes, field_deg
+
+    cam = cfg["cameras"]["guide"]
+    w, h = field_deg(cam)
+    got = fetch_indexes(cam)
+    print(f"guide field {w:.1f} x {h:.1f} deg: index files {got} in {INDEX_DIR}")
+    if not shutil.which("solve-field"):
+        print("solve-field is missing: sudo apt install astrometry.net")
+
+
+def cmd_solve(args, cfg):
+    import cv2
+
+    from .solve import AstrometrySolver
+
+    if args.image.lower().endswith((".fits", ".fit")):
+        from astropy.io import fits
+        img = fits.getdata(args.image)
+    else:
+        img = cv2.imread(args.image, cv2.IMREAD_UNCHANGED)
+    if img is None:
+        print(f"cannot read {args.image}")
+        return
+    site = pr.Site(cfg)
+    sol = AstrometrySolver(cfg["cameras"]["guide"], site).solve(img, time.time())
+    print(f"solved in {sol.elapsed_s:.1f}s: {sol.describe()}")
+    g = cfg["cameras"]["guide"]
+    f = 206.265 * g["pixel_um"] * g["bin"] / sol.scale_arcsec()
+    print(f"focal length from the stars: {f:.2f} mm")
+    for px, label, mag in sol.catalog()[:10]:
+        print(f"  {label:>12s} at {px[0]:7.1f},{px[1]:7.1f}")
 
 
 # ---------------------------------------------------------------- track
@@ -1338,6 +1529,11 @@ def main(argv=None):
     p.add_argument("--measured", type=float, help="angle you actually measured, deg")
     p.add_argument("--write", action="store_true", help="write the corrected gear_ratio to config.toml")
 
+    p = sub.add_parser("solve-setup", help="fetch the star index files plate solving needs")
+
+    p = sub.add_parser("solve", help="plate-solve an image file (FITS, PNG) from the guide camera")
+    p.add_argument("image")
+
     p = sub.add_parser("console", help="jog, home, sync, goto, calibrate cameras")
     p.add_argument("--sim", action="store_true")
     p.add_argument("--port", type=int, help="preview port (default from config)")
@@ -1378,7 +1574,8 @@ def main(argv=None):
     args = ap.parse_args(argv)
     cfg = load_config(args.config)
     {"passes": cmd_passes, "mount-test": cmd_mount_test, "console": cmd_console,
-     "track": cmd_track, "axis-scale": cmd_axis_scale}[args.cmd](args, cfg)
+     "track": cmd_track, "axis-scale": cmd_axis_scale, "solve-setup": cmd_solve_setup,
+     "solve": cmd_solve}[args.cmd](args, cfg)
 
 
 if __name__ == "__main__":

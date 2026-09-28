@@ -53,7 +53,9 @@
   <input id="target" title="star or planet name, 'RAh Dec', '18:36:56 +38:47:01', or 'altaz ALT AZ'"
   placeholder="vega / jupiter" style="width:104px">
   <button onclick="mnt('goto',{target:tgt()})">goto</button>
-  <button onclick="mnt('sync',{target:tgt()})">sync</button></div>
+  <button onclick="mnt('sync',{target:tgt()})">sync</button>
+  <button title="solve the guide frame and move this target exactly onto the green cross - works however little the mount knows where it is"
+  onclick="mnt('solve_centre',{target:tgt()})">centre by solve</button></div>
  <div class="ctl">
   <button id="siderealbtn" title="follow the stars at sidereal rate"
   onclick="mnt('track',{on: this.className === 'on' ? 0 : 1})">sidereal off</button></div>
@@ -76,6 +78,21 @@
  <div class="ctl">
   <button title="No point source to measure the boresight with? Click the SAME object in the main image and in the guide image, then press this. Only trust it on something a kilometre away or more - nearer than that the parallax between the two cameras is wider than the main field"
   onclick="mnt('boresight',{})">boresight from my picks</button></div>
+ <h3>By the stars</h3>
+ <div class="ctl">
+  <button title="plate-solve the guide frame: where the boresight really points, and what is in view. Changes nothing"
+  onclick="mnt('solve',{})">solve</button>
+  <button title="set the mount's counters from the solved sky. After pushing the mount by hand, this is all it needs - the alignment is kept"
+  onclick="mnt('solve_sync',{})">sync on stars</button>
+  <button title="measure the guide camera by solving frames either side of a small move on each axis (star_cal_step_deg, 1 deg by default). Also aligns the mount: goto and pass planning then know how the tripod stands"
+  onclick="mnt('starcal',{})">calibrate on stars</button></div>
+ <div class="ctl">
+  <button title="add this pointing as an alignment star. Points in different parts of the sky make the model better"
+  onclick="mnt('align_add',{})">add star</button>
+  <button title="with a bright star in the main camera: the solve says which star it is and where it sits in the guide, so the green cross goes exactly there. No parallax - the stars are at infinity"
+  onclick="mnt('star_boresight',{})">boresight on star</button>
+  <button title="forget the star alignment - only after the tripod itself has moved"
+  onclick="if(confirm('Forget the star alignment?')) mnt('align_clear',{})">clear alignment</button></div>
  <div class="info" id="cal-info"></div></div>
 
 <!-- @log -->

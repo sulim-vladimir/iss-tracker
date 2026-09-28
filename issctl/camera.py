@@ -25,6 +25,7 @@ class Camera:
         self.sinks = []
         self.fps = 0.0
         self._frame = None
+        self._frame_t = None
         self._det = None
         self._seq = 0
         self._lock = threading.Lock()
@@ -84,7 +85,7 @@ class Camera:
                 if self.follow and gate is not None and self.gate is gate:
                     self.gate = (det.x, det.y, gate[2])  # stay on the object we were given
             with self._lock:
-                self._frame, self._det = img, det
+                self._frame, self._frame_t, self._det = img, t, det
                 self._seq += 1
             for sink in self.sinks:
                 sink(img, t)
@@ -96,6 +97,12 @@ class Camera:
     def latest(self):
         with self._lock:
             return self._frame, self._det, self._seq
+
+    def latest_frame(self):
+        """(frame, the clock time it was exposed, sequence number) - for plate solving, where the
+        sky has to be paired with the mount position at that same moment."""
+        with self._lock:
+            return self._frame, self._frame_t, self._seq
 
 
 SDK_CANDIDATES = [

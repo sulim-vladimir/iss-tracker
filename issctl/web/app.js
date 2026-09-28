@@ -52,6 +52,7 @@ function applyMount(m) {
   if (m.backlash_deg)
     cal.push('backlash: axis1 ' + (m.backlash_deg[0] * 60).toFixed(1) + "' axis2 "
              + (m.backlash_deg[1] * 60).toFixed(1) + "'");
+  if (m.alignment) cal.push('stars: ' + m.alignment);
   if (m.position_at) {
     const t = new Date(m.position_at * 1000);
     cal.push('position saved ' + t.toTimeString().slice(0, 8));

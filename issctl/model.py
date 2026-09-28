@@ -141,18 +141,19 @@ def _kabsch(p, v):
     return U @ np.diag([1.0, 1.0, d]) @ Vt
 
 
-def fit_model(axes, vectors, prior=None):
+def fit_model(axes, vectors, prior=None, free=None):
     """axes (N,2) mechanical degrees, vectors (N,3) observed sky unit vectors (HA/Dec frame).
 
     Free parameters grow with the number of points: 1 -> RA index + Dec index,
-    2 -> full orientation + Dec index, >=3 -> + cone.
+    2 -> full orientation + Dec index, >=3 -> + cone. `free` (indices into PARAMS) overrides
+    that, for point sets whose count says more than their geometry can support.
     """
     axes = np.atleast_2d(np.asarray(axes, dtype=float))
     vectors = np.atleast_2d(np.asarray(vectors, dtype=float))
     n = len(axes)
     if n == 0:
         return PointingModel()
-    free = {1: [2, 3], 2: [0, 1, 2, 3]}.get(n, [0, 1, 2, 3, 4])
+    free = list(free) if free is not None else {1: [2, 3], 2: [0, 1, 2, 3]}.get(n, [0, 1, 2, 3, 4])
     prior = prior or PointingModel()
 
     def params(model):

@@ -5,6 +5,7 @@ body{background:#2f3439;color:#e8e8e8;font:14px/1.4 system-ui,sans-serif;margin:
  /* The camera panels use the plain .panel sizing above. */
  .panel img{width:100%;display:block;border-radius:4px;background:#000}
  h2{font-size:15px;margin:0 0 5px}
+ h3{font-size:13px;margin:8px 0 4px;opacity:.8}
  .ctl{display:flex;align-items:center;gap:6px;margin-top:5px;flex-wrap:wrap}
  .ctl.btns{margin-top:7px}
  .ctl label{width:62px;color:#b9c1c8}

@@ -20,8 +20,8 @@ class Mount:
         self.clock = clock
         self.max_rate = axis_rate_limits(m)
         self.max_accel = m["max_accel_deg_s2"]
-        self.index = np.array(state.get("index", HOME.tolist()), dtype=float)
         self.history = collections.deque(maxlen=400)
+        self._index = np.array(state.get("index", HOME.tolist()), dtype=float)
         self.last = (clock.now(), HOME.copy())
         self.rate_cmd = np.zeros(2)
         self._hlock = threading.Lock()
@@ -50,6 +50,27 @@ class Mount:
         pass
 
     # -- common --
+    @property
+    def index(self):
+        return self._index
+
+    @index.setter
+    def index(self, value):
+        """Relabel the counters - and the history with them.
+
+        position_at() pairs a camera frame with where the mount was when it was exposed, by
+        interpolating the history. Positions recorded under the old labels would put a sync's
+        whole correction between two samples, and a frame exposed in that gap - the first one a
+        star calibration solves after 'sync on stars' - lands anywhere along it."""
+        value = np.array(value, dtype=float)
+        with self._hlock:
+            delta = value - self._index
+            self._index = value
+            self.history = collections.deque(((t, a + delta[0], b + delta[1])
+                                               for t, a, b in self.history), maxlen=400)
+            if self.last is not None:
+                self.last = (self.last[0], self.last[1] + delta)
+
     def _record(self, t, mech):
         pos = mech + self.index
         with self._hlock:
@@ -80,6 +101,8 @@ class Mount:
     def set_home(self):
         """Declare the current pose as home: counterweight down, tube parallel to the polar axis."""
         self._zero_counters()
+        with self._hlock:
+            self.history.clear()    # the counters themselves were reset: nothing to relabel
         self.index = HOME.copy()
         self.query()
 
@@ -232,6 +255,9 @@ class SimMount(Mount):
     def __init__(self, cfg, state, clock, start=HOME, latency=0.015, backlash=0.0):
         super().__init__(cfg, state, clock)
         self.mech = np.array(start, dtype=float) - self.index
+        # Where the telescope really is must not depend on what the counters are later told to
+        # read: a sync relabels the counters, it does not move the tube.
+        self.index0 = self.index.copy()
         self.backlash = np.broadcast_to(np.asarray(backlash, dtype=float), (2,)).copy()
         # The step counter lives on the MOTOR side and never sees the slack: mech is what the
         # firmware reports, axis is where the telescope really points, play is the gap between.
@@ -269,7 +295,7 @@ class SimMount(Mount):
         return np.array([np.interp(t, h[:, 0], h[:, 1]), np.interp(t, h[:, 0], h[:, 2])])
 
     def _note_physical(self, t):
-        self.phys_history.append((t, *(self.axis + self.index)))
+        self.phys_history.append((t, *(self.axis + self.index0)))
 
     def _set_rates_mech(self, r):
         with self.lock:

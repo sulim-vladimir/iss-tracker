@@ -31,6 +31,27 @@ STARS = {
     "polaris": (37.9546, 89.2641), "dubhe": (165.9320, 61.7510),
     "alkaid": (206.8852, 49.3133), "mirfak": (51.0807, 49.8612),
     "alpheratz": (2.0969, 29.0904),
+    # Big Dipper, Cassiopeia and the rest of the northern sky - what a balcony at 50 N sees most
+    "mizar": (200.9814, 54.9254), "alcor": (201.3062, 54.9880), "alioth": (193.5073, 55.9598),
+    "megrez": (183.8565, 57.0326), "phecda": (178.4577, 53.6948), "merak": (165.4603, 56.3824),
+    "kochab": (222.6764, 74.1555), "thuban": (211.0973, 64.3758), "eltanin": (269.1516, 51.4889),
+    "schedar": (10.1268, 56.5373), "caph": (2.2945, 59.1498), "navi": (14.1772, 60.7167),
+    "ruchbah": (21.4540, 60.2353), "alderamin": (319.6449, 62.5856), "mirach": (17.4330, 35.6206),
+    "almach": (30.9748, 42.3297), "hamal": (31.7934, 23.4624), "algol": (47.0422, 40.9556),
+    "alcyone": (56.8712, 24.1051), "menkar": (45.5699, 4.0897), "diphda": (10.8974, -17.9866),
+    "bellatrix": (81.2828, 6.3497), "alnilam": (84.0534, -1.2019), "alnitak": (85.1897, -1.9426),
+    "mintaka": (83.0017, -0.2991), "saiph": (86.9391, -9.6696), "elnath": (81.5730, 28.6074),
+    "menkalinan": (89.8822, 44.9474), "alhena": (99.4280, 16.3993), "adhara": (104.6565, -28.9721),
+    "wezen": (107.0979, -26.3932), "alphard": (141.8968, -8.6586), "algieba": (154.9931, 19.8415),
+    "denebola": (177.2649, 14.5721), "vindemiatrix": (195.5442, 10.9591),
+    "cor caroli": (194.0069, 38.3184), "muphrid": (208.6712, 18.3977), "izar": (221.2468, 27.0742),
+    "alphecca": (233.6720, 26.7147), "unukalhai": (236.0670, 6.4256),
+    "zubenelgenubi": (222.7196, -16.0418), "kornephoros": (247.5550, 21.4896),
+    "rasalgethi": (258.6619, 14.3903), "rasalhague": (263.7336, 12.5600),
+    "shaula": (263.4022, -37.1038), "kaus australis": (276.0430, -34.3846),
+    "nunki": (283.8164, -26.2967), "albireo": (292.6803, 27.9597), "tarazed": (296.5649, 10.6133),
+    "sadr": (305.5571, 40.2567), "sadalsuud": (322.8897, -5.5712), "enif": (326.0465, 9.8750),
+    "scheat": (345.9436, 28.0828), "markab": (346.1902, 15.2053), "algenib": (3.3090, 15.1836),
 }
 BODIES = ("moon", "mercury", "venus", "mars", "jupiter", "saturn")
 
@@ -121,7 +142,7 @@ def _init_astropy():
         pass
 
 
-def _astropy_altaz(coord_fn, site, t_unix):
+def _altaz_frame(site, t_unix):
     import astropy.units as u
     from astropy.coordinates import AltAz, EarthLocation
     from astropy.time import Time
@@ -132,8 +153,37 @@ def _astropy_altaz(coord_fn, site, t_unix):
     frame = AltAz(obstime=t, location=loc, pressure=site.pressure_mbar * u.hPa,
                   temperature=site.temperature_c * u.deg_C, relative_humidity=0.5,
                   obswl=0.55 * u.micron)
+    return frame, t, loc
+
+
+def _astropy_altaz(coord_fn, site, t_unix):
+    frame, t, loc = _altaz_frame(site, t_unix)
     aa = coord_fn(t, loc).transform_to(frame)
     return aa.alt.deg, aa.az.deg
+
+
+def radec_to_hadec(ra, dec, site, t_unix):
+    """Catalogue (ICRS/J2000) position -> the refracted apparent (ha, dec) the mount points at.
+
+    A plate solve answers in catalogue coordinates, but the mount lives in the local hour-angle
+    frame. Precession alone is ~0.35 deg since 2000, so this is not a formality."""
+    import astropy.units as u
+    from astropy.coordinates import SkyCoord
+
+    coord = SkyCoord(ra=np.asarray(ra) * u.deg, dec=np.asarray(dec) * u.deg, frame="icrs")
+    alt, az = _astropy_altaz(lambda t, loc: coord, site, t_unix)
+    return geo.altaz_to_hadec(alt, az, site.lat)
+
+
+def hadec_to_radec(ha, dec, site, t_unix):
+    """Inverse of radec_to_hadec: where a local direction sits in the catalogue at t_unix."""
+    import astropy.units as u
+    from astropy.coordinates import SkyCoord
+
+    alt, az = geo.hadec_to_altaz(ha, dec, site.lat)
+    frame, _, _ = _altaz_frame(site, t_unix)
+    icrs = SkyCoord(alt=np.asarray(alt) * u.deg, az=np.asarray(az) * u.deg, frame=frame).icrs
+    return icrs.ra.deg, icrs.dec.deg
 
 
 def target_hadec(name, site, t_unix):
@@ -164,7 +214,11 @@ def target_hadec(name, site, t_unix):
             try:                               # sexagesimal: 18:36:56 +38:47:01, or 18h36m56s ...
                 coord = SkyCoord(text, unit=(u.hourangle, u.deg), frame="icrs")
             except Exception:
-                raise ValueError(f"unknown target '{name}' - try a name, 'RAh Dec', "
+                import difflib
+                close = difflib.get_close_matches(key, list(STARS) + list(BODIES), n=3, cutoff=0.6)
+                raise ValueError(f"unknown target '{name}' - "
+                                 + (f"did you mean {' / '.join(close)}? " if close else "")
+                                 + f"try one of the {len(STARS)} named stars, a planet, 'RAh Dec', "
                                  f"'18:36:56 +38:47:01' or 'altaz ALT AZ'")
         fn = lambda t, loc: coord
     alt, az = _astropy_altaz(fn, site, t_unix)
@@ -312,8 +366,10 @@ def plan_pass(sat, site, mount_cfg, rise, set_, dt=0.25, margin=30.0, model=None
     vmax = axis_rate_limits(mount_cfg)
     lim = mount_cfg["axis1_hour_limit"]
     best = None
+    to_axes = geo.hadec_to_axes if model is None else model.hadec_to_axes
     for side in geo.SIDES:
-        a1, a2 = geo.hadec_to_axes(ha, dec, side)
+        a1, a2 = to_axes(ha, dec, side)
+        a1, a2 = np.asarray(a1, dtype=float), np.asarray(a2, dtype=float)
         a1 = np.degrees(np.unwrap(np.radians(a1)))
         a1 -= 360.0 * np.round(np.median(a1[alt >= site.min_altitude]) / 360.0) if np.any(alt >= site.min_altitude) else 0
         v1, v2 = np.gradient(a1, t), np.gradient(a2, t)

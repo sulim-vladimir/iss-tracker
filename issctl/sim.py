@@ -95,8 +95,10 @@ class CalibWorld:
     calibration. Lets the calibration routine be exercised without a sky."""
 
     def __init__(self, cfg, mount, offset=(0.02, -0.015), rotations=None, pointing_error=(0.3, -0.2),
-                 decoys=((1.5, 0.8, 235.0), (-2.0, -1.2, 205.0))):
+                 decoys=((1.5, 0.8, 235.0), (-2.0, -1.2, 205.0)), model=None):
         self.mount = mount
+        # how the tripod really sits: only plate solving can see this, blobs are unaffected
+        self.sky_model = model or PointingModel()
         self.pointing_error = np.asarray(pointing_error, dtype=float)
         # offset is measured from where the telescope really points, i.e. as the user would see it
         self.axes_target = mount.position() + self.pointing_error + np.asarray(offset, dtype=float)
@@ -116,6 +118,20 @@ class CalibWorld:
         if m is None:
             return None
         return self._project(cam, m + self.pointing_error, self.axes_target)
+
+    def sky_truth(self, cam, t):
+        """Where the camera really looks, and which way each axis moves it: what a plate solve
+        of this frame would find. Both cameras share the pointing, as their boresights do."""
+        m = pointing_at(self.mount, t)
+        if m is None:
+            return None, None, None
+        return self.sky_model.sky_axes(*(m + self.pointing_error))
+
+    def catalog(self):
+        """The simulated lights as catalogue stars: (sky direction, name, magnitude)."""
+        lights = [(self.axes_target, "target", 1.0)] + [(a, f"decoy {k}", 0.5)
+                                                       for k, (a, _) in enumerate(self.decoys)]
+        return [(self.sky_model.forward(*a), name, mag) for a, name, mag in lights]
 
     def blobs(self, cam, t):
         m = pointing_at(self.mount, t)

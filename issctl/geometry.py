@@ -78,15 +78,16 @@ def pose_within_limits(a1, a2, mount_cfg):
     return bool(abs(float(a1)) <= mount_cfg["axis1_hour_limit"] and lo <= float(a2) <= hi)
 
 
-def choose_pose(ha, dec, mount_cfg, current=None):
+def choose_pose(ha, dec, mount_cfg, current=None, to_axes=None):
     """Pick the pier side for a target: legal poses first, then the shortest move.
 
     Minimising |axis1| alone will happily fling the tube far past the pole, and the flip back can
     be a 115 deg Dec swing. Preferring the nearest legal pose avoids pointless meridian flips.
+    to_axes replaces the ideal mount with a fitted pointing model's inverse.
     """
     options = []
     for side in SIDES:
-        a1, a2 = hadec_to_axes(ha, dec, side)
+        a1, a2 = (to_axes or hadec_to_axes)(ha, dec, side)
         a1, a2 = float(a1), float(a2)
         travel = 0.0 if current is None else max(abs(wrap180(a1 - current[0])), abs(a2 - current[1]))
         options.append({"side": side, "axes": [a1, a2], "travel": travel,
