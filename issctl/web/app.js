@@ -11,9 +11,17 @@ function applyMount(m) {
   const mb = document.getElementById('motorbtn');
   if (mb) { mb.textContent = MOTORS ? 'motors off' : 'motors ON'; mb.className = MOTORS ? '' : 'on'; }
   const tb = document.getElementById('trackbtn');
+  const servo = MODE === 'track' && m.session === 'servo';
   if (tb) {
-    tb.textContent = MODE === 'track' ? 'Stop tracking' : 'Track next pass';
-    tb.className = MODE === 'track' ? 'on' : '';
+    tb.textContent = MODE === 'track' && !servo ? 'Stop tracking' : 'Track next pass';
+    tb.className = MODE === 'track' && !servo ? 'on' : '';
+    tb.disabled = servo;
+  }
+  const vb = document.getElementById('servobtn');
+  if (vb) {
+    vb.textContent = servo ? 'Stop following' : 'Follow what I click';
+    vb.className = servo ? 'on' : '';
+    vb.disabled = MODE === 'track' && !servo;
   }
   for (const id of ['speedsel', 'framesel', 'target', 'passidx'])
     { const e = document.getElementById(id); if (e) e.disabled = (MODE === 'track' && id !== 'passidx'); }

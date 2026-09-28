@@ -332,6 +332,13 @@ def make_tracker(cam, mode="blob", origin=None):
 
 
 def measure(cam, n=10, timeout=5.0):
+    # Ten frames in five seconds is nothing at video rates and impossible at a star exposure:
+    # at 1 frame/s every measurement "lost the target", and the calibration then slewed to steer
+    # back a star that had never left. Ask for what the camera can deliver, and wait for it.
+    fps = float(getattr(cam, "fps", 0.0) or 0.0)
+    if 0 < fps < 2 * n / timeout:
+        n = max(3, min(n, int(fps * 4)))
+        timeout = max(timeout, 2.0 * n / fps + 1.0)
     if not getattr(cam, "manual", False):
         cam.gate = None   # but never throw away a target the user picked by hand
     _, _, last = cam.latest()
@@ -490,6 +497,24 @@ def boresight_from_picks(cal_main, cal_guide, px_main, px_guide):
     return np.asarray(px_guide, dtype=float) + carried, float(np.linalg.norm(carried))
 
 
+class SkyAnchor:
+    """A pose fixed on the SKY: where the calibration started, carried along by the tracking.
+
+    The ramps used to go back to `start + step` as axis readings taken at the start. With
+    sidereal tracking on, every such move undid all the tracking done so far, so between moves
+    the star drifted at the full sidereal rate - 16 px/s in the main camera, across the whole
+    frame within a calibration."""
+
+    def __init__(self, mount, track_rate=None):
+        self.mount = mount
+        self.start = mount.position()
+        self.t0 = mount.clock.now()
+        self.rate = np.zeros(2) if track_rate is None else np.asarray(track_rate, dtype=float)
+
+    def __call__(self, offset=0.0):
+        return self.start + offset + self.rate * (self.mount.clock.now() - self.t0)
+
+
 def measure_backlash(mount, cam, cal, axis, step_deg=None, track_rate=None, log=print,
                      abort=None, slew_rate=0.3):
     """How much command an axis swallows before it actually turns, in degrees.
@@ -501,17 +526,17 @@ def measure_backlash(mount, cam, cal, axis, step_deg=None, track_rate=None, log=
     step_deg = step_deg or float(np.clip(0.3 * cam.height / scale, 0.02, 1.0))
     d = np.zeros(2)
     d[axis] = step_deg
-    start = mount.position()
-    mount.move_to(start + d, track_rate=track_rate, abort=abort, max_rate=slew_rate)  # slack taken up +
+    start = SkyAnchor(mount, track_rate)
+    mount.move_to(start(d), track_rate=track_rate, abort=abort, max_rate=slew_rate)  # slack taken up +
     time.sleep(0.5)
     before = measure(cam)
-    mount.move_to(start, track_rate=track_rate, abort=abort, max_rate=slew_rate)      # now reverse
+    mount.move_to(start(), track_rate=track_rate, abort=abort, max_rate=slew_rate)    # now reverse
     time.sleep(0.5)
     after = measure(cam)
     if before is None or after is None:
         raise RuntimeError(f"lost the target in {cam.name} while measuring backlash")
     moved_px = float(np.linalg.norm(after - before))
-    expected_px = scale * step_deg * max(np.cos(np.radians(geo.axis2_to_dec(start[1]))), 0.05) \
+    expected_px = scale * step_deg * max(np.cos(np.radians(geo.axis2_to_dec(start.start[1]))), 0.05) \
         if axis == 0 else scale * step_deg
     lost = max(0.0, (expected_px - moved_px) / max(scale, 1e-9))
     saturated = moved_px < 0.1 * expected_px       # the axis barely moved: slack ate the whole step
@@ -561,13 +586,13 @@ def calibrate_against(mount, cam, ref_cam, ref_cal, step_deg=None, ramp_steps=3,
     step_deg = step_deg or default_step(cam, ramp_steps)
     tracker = tracker or BlobTracker(cam)
     ref_tracker = ref_tracker or BlobTracker(ref_cam)
-    start = mount.position()
+    start = SkyAnchor(mount, track_rate)
     s_cam, s_ref = [], []
     for axis in (0, 1):
         d = np.zeros(2)
         d[axis] = step_deg
-        mount.move_to(start - d, track_rate=track_rate, abort=abort, max_rate=slew_rate)
-        mount.move_to(start, track_rate=track_rate, abort=abort, max_rate=slew_rate)
+        mount.move_to(start(-d), track_rate=track_rate, abort=abort, max_rate=slew_rate)
+        mount.move_to(start(), track_rate=track_rate, abort=abort, max_rate=slew_rate)
         time.sleep(0.4)
         tracker.reset()
         ref_tracker.reset()
@@ -576,7 +601,7 @@ def calibrate_against(mount, cam, ref_cam, ref_cal, step_deg=None, ramp_steps=3,
             if abort and abort():
                 raise RuntimeError("calibration aborted")
             if k:
-                mount.move_to(start + d * k, track_rate=track_rate, abort=abort, max_rate=slew_rate)
+                mount.move_to(start(d * k), track_rate=track_rate, abort=abort, max_rate=slew_rate)
             time.sleep(0.4)
             a = tracker.measure(n=measure_frames)
             b = ref_tracker.measure(n=measure_frames)
@@ -591,8 +616,8 @@ def calibrate_against(mount, cam, ref_cam, ref_cal, step_deg=None, ramp_steps=3,
         s_ref.append(np.linalg.lstsq(A, np.array(there), rcond=None)[0][0])
         log(f"{cam.name}: axis{axis + 1} moved {np.linalg.norm(s_cam[-1]) * angles[-1]:.0f} px "
             f"while {ref_cam.name} moved {np.linalg.norm(s_ref[-1]) * angles[-1]:.1f} px")
-        mount.move_to(start - d, track_rate=track_rate, abort=abort, max_rate=slew_rate)
-        mount.move_to(start, track_rate=track_rate, abort=abort, max_rate=slew_rate)
+        mount.move_to(start(-d), track_rate=track_rate, abort=abort, max_rate=slew_rate)
+        mount.move_to(start(), track_rate=track_rate, abort=abort, max_rate=slew_rate)
     S_cam, S_ref = np.column_stack(s_cam), np.column_stack(s_ref)
     if abs(np.linalg.det(S_ref)) < 1e-9:
         raise RuntimeError(f"{ref_cam.name} hardly moved during the ramp - the mount's slack is "
@@ -635,7 +660,7 @@ def calibrate_cameras(mount, cams, steps=None, track_rate=None, log=print, abort
     """
     steps = dict(steps or {})
     trackers = {n: make_tracker(c, mode) for n, c in cams.items()}
-    start = mount.position()
+    start = SkyAnchor(mount, track_rate)
     # Measure every camera BEFORE moving anything: this is the only moment all of them are looking
     # at the same pose, so it is the only reliable basis for the guide->main boresight. Calibrating
     # a wide guide needs degrees of motion, which throws the target far outside the main frame, and
@@ -717,8 +742,8 @@ def calibrate_cameras(mount, cams, steps=None, track_rate=None, log=print, abort
             # Take up the slack in the + direction, then walk the same way in equal steps and fit a
             # line. Every measurement after the first is backlash-free, several points average the
             # noise, and the fit residual shows whether the axis moved smoothly at all.
-            mount.move_to(start - d, track_rate=track_rate, abort=abort, max_rate=slew_rate)
-            mount.move_to(start, track_rate=track_rate, abort=abort, max_rate=slew_rate)
+            mount.move_to(start(-d), track_rate=track_rate, abort=abort, max_rate=slew_rate)
+            mount.move_to(start(), track_rate=track_rate, abort=abort, max_rate=slew_rate)
             time.sleep(0.4)
             # The reference frame is taken here, at the foot of the ramp with the slack already
             # taken up, so every point in the fit is measured against the same starting scene.
@@ -727,7 +752,7 @@ def calibrate_cameras(mount, cams, steps=None, track_rate=None, log=print, abort
             for k in range(ramp_steps + 1):
                 check_abort()
                 if k:
-                    mount.move_to(start + d * k, track_rate=track_rate, abort=abort,
+                    mount.move_to(start(d * k), track_rate=track_rate, abort=abort,
                                   max_rate=slew_rate)
                 time.sleep(0.4)
                 seen = trackers[name].measure(n=measure_frames)
@@ -752,8 +777,8 @@ def calibrate_cameras(mount, cams, steps=None, track_rate=None, log=print, abort
                 warnings.append(f"{name} axis{axis + 1}: the steps were not consistent "
                                 f"(residual {resid:.0f} px of {travel:.0f}) - backlash, skipping "
                                 f"or a moving target")
-            mount.move_to(start - d, track_rate=track_rate, abort=abort, max_rate=slew_rate)
-            mount.move_to(start, track_rate=track_rate, abort=abort, max_rate=slew_rate)
+            mount.move_to(start(-d), track_rate=track_rate, abort=abort, max_rate=slew_rate)
+            mount.move_to(start(), track_rate=track_rate, abort=abort, max_rate=slew_rate)
     dec_cal = float(geo.axis2_to_dec(mount.position()[1]))
     if abs(np.cos(np.radians(dec_cal))) < 0.5 and warnings is not None:
         # Near the pole axis1 rotates the field instead of shifting it, so its column is
@@ -764,6 +789,8 @@ def calibrate_cameras(mount, cams, steps=None, track_rate=None, log=print, abort
     result = {}
     scale_factors = []
     for n, cam in cams.items():
+        if any(c is None for c in cols[n]):
+            continue        # skipped above: the target never came back into its field
         J = np.column_stack(cols[n])
         skew = axes_angle(J)
         if abs(skew - 90) > 1.0:

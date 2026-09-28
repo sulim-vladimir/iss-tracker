@@ -243,3 +243,34 @@ def test_a_sync_relabels_the_position_history(cfg):
     mount.query()
     mount.sync(-30.0, 10.0)
     assert np.allclose(mount.position_at(t_frame), mount.position(), atol=1e-6)
+
+
+def test_tracking_rates_hold_a_star_on_a_tilted_tripod(cfg):
+    """Sidereal on axis1 alone lets the stars creep on an unaligned mount - 2 px/s in the main
+    camera on the real one, 3.6 deg off the pole. The model's rates must hold the star."""
+    truth = misalignment(50.0, (3.0, -2.0), 20.0)
+    state = {"alignment": {"points": [], "model": dict(truth.to_dict(), n_points=4)}}
+    sidereal = 360.0 / 86164.0905
+    axes = np.array([30.0, 50.0])
+    ha, dec = truth.axes_to_hadec(*axes)
+    rates = align.tracking_rates(state, axes, sidereal)
+    for t in (60.0, 600.0):
+        star = sky_unit(ha + sidereal * t, dec)
+        ours = angle_arcsec(truth.forward(*(axes + rates * t)), star)
+        plain = angle_arcsec(truth.forward(*(axes + np.array([sidereal, 0.0]) * t)), star)
+        # over a minute (the console refreshes the rates every 5 s) it must be seconds of arc
+        assert ours < 0.05 * plain and (t > 60 or ours < 2.0), (t, ours, plain)
+
+
+def test_sky_anchor_moves_with_the_tracking(cfg):
+    """Calibration ramps went back to fixed axis readings, undoing the tracking between moves."""
+    from issctl.calib import SkyAnchor
+
+    clock = Clock(speed=20.0)
+    mount = SimMount(cfg, {}, clock, start=[20.0, 40.0])
+    mount.query()
+    rate = np.array([0.01, 0.002])
+    anchor = SkyAnchor(mount, rate)
+    time.sleep(0.2)
+    elapsed = clock.now() - anchor.t0
+    assert np.allclose(anchor([1.0, 0.0]), anchor.start + [1.0, 0.0] + rate * elapsed, atol=1e-3)

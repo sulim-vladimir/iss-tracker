@@ -427,12 +427,26 @@ def cmd_console(args, cfg):
             elif not ui["busy"]:
                 r = ui["jog_rates"]
                 if ui["tracking"]:
-                    r = r + [SIDEREAL_DEG_S, 0.0]
+                    r = r + sidereal()
                 mount.set_rates(*r)
             time.sleep(0.05)
 
     def persist():
         remember_position(state, state_path, mount)
+
+    rates_cache = {"t": -1e9, "r": np.array([SIDEREAL_DEG_S, 0.0])}
+
+    def sidereal():
+        """Tracking rates that hold the stars still: both axes, through the star alignment when
+        there is one. Refreshed every few seconds - they change slowly across the sky."""
+        now = time.monotonic()
+        if now - rates_cache["t"] > 5.0:
+            try:
+                rates_cache["r"] = align.tracking_rates(state, mount.position(), SIDEREAL_DEG_S)
+            except Exception:
+                rates_cache["r"] = np.array([SIDEREAL_DEG_S, 0.0])
+            rates_cache["t"] = now
+        return rates_cache["r"]
 
     def prompt(scr, text):
         scr.nodelay(False)
@@ -494,7 +508,7 @@ def cmd_console(args, cfg):
                     f"(tube swings past the pole - check clearance)")
                 time.sleep(2.0)
             first = False
-            mount.move_to(best["axes"], track_rate=[SIDEREAL_DEG_S, 0.0], abort=aborted,
+            mount.move_to(best["axes"], track_rate=sidereal(), abort=aborted,
                           approach=state.get("backlash_deg"))
             if aborted():
                 say("goto aborted")
@@ -552,11 +566,10 @@ def cmd_console(args, cfg):
             + (f" - Dec index {shift:+.2f} deg moved into the counters" if shift else ""))
 
     def do_starcal():
-        from .mount import SIDEREAL_DEG_S as sidereal
         say("calibrating the guide camera on the stars...")
         warnings = []
         cal = align.calibrate_on_stars(mount, cams["guide"], solver, state,
-                                       track_rate=[sidereal, 0.0] if ui["tracking"] else None,
+                                       track_rate=sidereal() if ui["tracking"] else None,
                                        log=say, abort=aborted, warnings=warnings)
         state.setdefault("cameras", {})["guide"] = cal
         state["calibrated_at"] = time.time()
@@ -571,10 +584,7 @@ def cmd_console(args, cfg):
             say("need both camera matrices first: 'calibrate on stars' for the guide, then "
                 "'calibrate on target' in main with a bright star centred")
             return
-        main = cams["main"]
-        # measure() wants several frames; at a star exposure of a second, 5 s is not enough
-        exp_s = main.exposure_ms / 1000.0 if main.exposure_unit == "ms" else 0.2
-        px_main = measure(main, n=4, timeout=6 * exp_s + 3)
+        px_main = measure(cams["main"])
         if px_main is None:
             say("no star detected in the main camera - centre a bright one there first")
             return
@@ -607,14 +617,14 @@ def cmd_console(args, cfg):
             say(f"{name} is too far from the guide field to centre from here - goto it first")
             return
         mount.move_to(mount.position() + d,
-                      track_rate=[SIDEREAL_DEG_S, 0.0] if ui["tracking"] else None,
+                      track_rate=sidereal() if ui["tracking"] else None,
                       abort=aborted, approach=state.get("backlash_deg"))
         say(f"{name} moved onto the boresight ({np.hypot(*d) * 60:.1f}' move)")
 
     def do_cal(only=None, mode="blob"):
         say(f"calibrating{'' if mode == 'blob' else f' on the scene ({mode})'}...")
         warnings = []
-        res = calibrate_cameras(mount, cams, track_rate=[SIDEREAL_DEG_S, 0.0] if ui["tracking"] else None,
+        res = calibrate_cameras(mount, cams, track_rate=sidereal() if ui["tracking"] else None,
                                 log=say, abort=aborted, warnings=warnings, only=only,
                                 existing=state.get("cameras"), mode=mode)
         state.setdefault("cameras", {}).update(res)
@@ -651,7 +661,7 @@ def cmd_console(args, cfg):
         if cam is None or cal is None:
             say(f"{name}: need a calibrated camera with a target in view")
             return
-        track = [SIDEREAL_DEG_S, 0.0] if ui["tracking"] else None
+        track = sidereal() if ui["tracking"] else None
         out, saturated = [], False
         for axis in (0, 1):
             lost, sat = measure_backlash(mount, cam, cal, axis, track_rate=track, log=say,
@@ -702,7 +712,7 @@ def cmd_console(args, cfg):
         target_px = (None if where == "boresight"
                      else [(cam.width - 1) / 2, (cam.height - 1) / 2])
         aim = np.asarray(cal["boresight"] if target_px is None else target_px, dtype=float)
-        track = [SIDEREAL_DEG_S, 0.0] if ui["tracking"] else None
+        track = sidereal() if ui["tracking"] else None
         previous = None
         for _ in range(4):
             px = measure(cam, n=5, timeout=3.0)
@@ -1105,6 +1115,8 @@ def cmd_console(args, cfg):
                 "position_at": state.get("position_at"),
                 "cal_warnings": state.get("calibration_warnings", []),
                 "alignment": align.describe(state),
+                "session": ((session["info"] or {}).get("mode", "pass")
+                            if ui["mode"] == "track" else None),
                 "busy": ui["busy"], "msg": ui["msg"], "jog": ui["jog"].tolist(), "cal": cal}
 
     from .ser import RecordControl

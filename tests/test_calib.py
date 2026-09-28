@@ -430,3 +430,31 @@ def test_boresight_from_picks_ignores_where_the_mount_thinks_it_is():
         again = boresight_from_picks(dict(shifted, J=J.tolist()), guide, pm, pg)
         assert np.allclose(again[0], first[0])
         assert again[1] == pytest.approx(first[1])
+
+
+def test_measure_waits_for_a_slow_camera():
+    """At a star exposure of 1 s the camera gives one frame a second. measure() asked for ten
+    frames in five seconds, so every measurement failed and calibration slewed to 'steer back'
+    a target that had never left the field."""
+    import threading
+    import time
+
+    from issctl.calib import measure
+
+    class Slow:
+        fps, manual, gate = 4.0, True, None
+
+        def __init__(self):
+            self.seq = 0
+            threading.Thread(target=self._run, daemon=True).start()
+
+        def _run(self):
+            for _ in range(40):
+                time.sleep(0.25)
+                self.seq += 1
+
+        def latest(self):
+            det = type("D", (), {"x": 10.0, "y": 20.0})()
+            return None, det, self.seq
+
+    assert np.allclose(measure(Slow(), n=10, timeout=1.0), [10.0, 20.0])

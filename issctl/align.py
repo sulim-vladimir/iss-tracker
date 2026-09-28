@@ -28,8 +28,8 @@ import time
 import numpy as np
 
 from . import geometry as geo
-from .calib import (axes_angle, boresight_from_picks, cal_px_per_deg, orthogonalise,
-                    pixels_per_deg)
+from .calib import (SkyAnchor, axes_angle, boresight_from_picks, cal_px_per_deg,
+                    orthogonalise, pixels_per_deg)
 from .model import PointingModel, angle_arcsec, fit_model
 from .model import unit as sky_unit
 from .solve import SolveError, field_deg, solve_camera
@@ -62,6 +62,27 @@ def hadec_to_axes_fn(state):
     """(ha, dec, side) -> axes, through the model when there is one. For goto and the planner."""
     model = current_model(state)
     return geo.hadec_to_axes if model is None else model.hadec_to_axes
+
+
+def tracking_rates(state, axes, sidereal=360.0 / 86164.0905, dt=60.0):
+    """Axis rates that hold a star still at this pose.
+
+    Plain sidereal tracking turns axis1 alone, which only holds the stars on a polar-aligned
+    mount; with the tripod a few degrees off, they creep across the main camera's few arcminutes
+    in a minute or two. The model knows the tilt: follow the star's hour angle through it."""
+    model = current_model(state)
+    if model is None:
+        return np.array([sidereal, 0.0])
+    axes = np.asarray(axes, dtype=float)
+    ha, dec = model.axes_to_hadec(*axes)
+    best = None
+    for side in geo.SIDES:
+        here = np.array([float(v) for v in model.hadec_to_axes(ha, dec, side)])
+        if best is None or np.max(np.abs(geo.wrap180(here - axes))) < best[0]:
+            best = (np.max(np.abs(geo.wrap180(here - axes))), side, here)
+    _, side, here = best
+    later = np.array([float(v) for v in model.hadec_to_axes(ha + sidereal * dt, dec, side)])
+    return geo.wrap180(later - here) / dt
 
 
 def clear(state):
@@ -233,7 +254,7 @@ def calibrate_on_stars(mount, cam, solver, state, step_deg=None, track_rate=None
     # Small by default: from a balcony the window frame leaves little room, and each frame is
     # solved on its own, so the stars need not stay in view - only the precision scales with it.
     step = float(step_deg or cam.cfg.get("star_cal_step_deg") or 0.06 * field_deg(cam.cfg)[0])
-    start = mount.position()
+    start = SkyAnchor(mount, track_rate)
 
     sol, axes = _solve_at(mount, cam, solver, log)
     off = disagreement_deg(state, axes, *sol.hadec(b))
@@ -251,12 +272,12 @@ def calibrate_on_stars(mount, cam, solver, state, step_deg=None, track_rate=None
         # Take up the slack in the + direction on BOTH axes, so every solve of the start pose
         # finds the gears the same way round. Preloading only the axis about to move left the
         # other one wherever the last move put it - 10' of Dec slack on the real mount.
-        mount.move_to(start - step, track_rate=track_rate, abort=abort, max_rate=slew_rate)
-        mount.move_to(start, track_rate=track_rate, abort=abort, max_rate=slew_rate)
+        mount.move_to(start(-step), track_rate=track_rate, abort=abort, max_rate=slew_rate)
+        mount.move_to(start(), track_rate=track_rate, abort=abort, max_rate=slew_rate)
         time.sleep(settle_s)
         s0, a0 = _solve_at(mount, cam, solver, log)
         check_abort()
-        mount.move_to(start + d, track_rate=track_rate, abort=abort, max_rate=slew_rate)
+        mount.move_to(start(d), track_rate=track_rate, abort=abort, max_rate=slew_rate)
         time.sleep(settle_s)
         s1, a1 = _solve_at(mount, cam, solver, log)
         # the direction that sat on the boresight before the move: where is it now?
@@ -274,8 +295,8 @@ def calibrate_on_stars(mount, cam, solver, state, step_deg=None, track_rate=None
                             f"multiply it by {commanded / turned:.4f})")
         log(f"{cam.name}: axis{axis + 1} +{step:.2f} deg moved the sky "
             f"{np.linalg.norm(moves[-1][0]):.0f} px")
-        mount.move_to(start - step, track_rate=track_rate, abort=abort, max_rate=slew_rate)
-        mount.move_to(start, track_rate=track_rate, abort=abort, max_rate=slew_rate)
+        mount.move_to(start(-step), track_rate=track_rate, abort=abort, max_rate=slew_rate)
+        mount.move_to(start(), track_rate=track_rate, abort=abort, max_rate=slew_rate)
 
     dp = np.column_stack([m[0] for m in moves])
     da = np.column_stack([m[1] for m in moves])
