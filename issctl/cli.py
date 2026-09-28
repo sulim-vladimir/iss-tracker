@@ -571,7 +571,10 @@ def cmd_console(args, cfg):
             say("need both camera matrices first: 'calibrate on stars' for the guide, then "
                 "'calibrate on target' in main with a bright star centred")
             return
-        px_main = measure(cams["main"])
+        main = cams["main"]
+        # measure() wants several frames; at a star exposure of a second, 5 s is not enough
+        exp_s = main.exposure_ms / 1000.0 if main.exposure_unit == "ms" else 0.2
+        px_main = measure(main, n=4, timeout=6 * exp_s + 3)
         if px_main is None:
             say("no star detected in the main camera - centre a bright one there first")
             return
@@ -828,7 +831,10 @@ def cmd_console(args, cfg):
         """Same operations as the curses keys, for the browser panel."""
         if action == "estop":
             return emergency_stop()
-        if action == "track":
+        if action == "track" and "on" not in params:
+            # "track" with "on" is the sidereal toggle, handled below. Taking every "track" as a
+            # pass made the sidereal button start an ISS session - with a usable pass coming,
+            # a slew to where it begins.
             return start_tracking(params.get("pass"))
         if action == "servo":
             return start_servo()

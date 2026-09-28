@@ -32,7 +32,7 @@ from .calib import (axes_angle, boresight_from_picks, cal_px_per_deg, orthogonal
                     pixels_per_deg)
 from .model import PointingModel, angle_arcsec, fit_model
 from .model import unit as sky_unit
-from .solve import field_deg, solve_camera
+from .solve import SolveError, field_deg, solve_camera
 
 RESYNC_DEG = 3.0          # a point this far from the model means the counters no longer apply
 CONE_SPREAD_DEG = 30.0    # below this sky spread, cone and polar axis cannot be told apart
@@ -204,7 +204,12 @@ def turning_axis(s0, s1, n=7, margin=0.1):
     return axis, angle, np.radians(angle) * spread
 
 def _solve_at(mount, cam, solver, log):
-    sol = solve_camera(cam, solver, log=log)
+    try:
+        sol = solve_camera(cam, solver, log=log, after_move=True)
+    except SolveError as e:
+        # haze drifting through, a gust: one bad frame should not throw away the whole run
+        log(f"{cam.name}: {e} - trying one more frame")
+        sol = solve_camera(cam, solver, log=log)
     return sol, np.asarray(mount.position_at(sol.t), dtype=float)
 
 
@@ -243,8 +248,10 @@ def calibrate_on_stars(mount, cam, solver, state, step_deg=None, track_rate=None
         d = np.zeros(2)
         d[axis] = step
         check_abort()
-        # take up the slack in the + direction, as the blob ramp does
-        mount.move_to(start - d, track_rate=track_rate, abort=abort, max_rate=slew_rate)
+        # Take up the slack in the + direction on BOTH axes, so every solve of the start pose
+        # finds the gears the same way round. Preloading only the axis about to move left the
+        # other one wherever the last move put it - 10' of Dec slack on the real mount.
+        mount.move_to(start - step, track_rate=track_rate, abort=abort, max_rate=slew_rate)
         mount.move_to(start, track_rate=track_rate, abort=abort, max_rate=slew_rate)
         time.sleep(settle_s)
         s0, a0 = _solve_at(mount, cam, solver, log)
@@ -267,7 +274,7 @@ def calibrate_on_stars(mount, cam, solver, state, step_deg=None, track_rate=None
                             f"multiply it by {commanded / turned:.4f})")
         log(f"{cam.name}: axis{axis + 1} +{step:.2f} deg moved the sky "
             f"{np.linalg.norm(moves[-1][0]):.0f} px")
-        mount.move_to(start - d, track_rate=track_rate, abort=abort, max_rate=slew_rate)
+        mount.move_to(start - step, track_rate=track_rate, abort=abort, max_rate=slew_rate)
         mount.move_to(start, track_rate=track_rate, abort=abort, max_rate=slew_rate)
 
     dp = np.column_stack([m[0] for m in moves])
@@ -294,7 +301,10 @@ def calibrate_on_stars(mount, cam, solver, state, step_deg=None, track_rate=None
     log(f"alignment: {describe(state)}")
 
     dec_cal = float(geo.axis2_to_dec(mount.position()[1]))
-    scale = cal_px_per_deg({"J": J})
+    # From the solves' own scale: J also carries how far the axes really turned, and on a
+    # mount whose RA gives short measure that reads as a shorter lens.
+    arcsec = float(np.median([s.scale_arcsec() for s, _ in shots]))
+    scale = 3600.0 / arcsec
     focal = cam.cfg["focal_length_mm"] * scale / pixels_per_deg(cam.cfg)
     log(f"{cam.name}: {3600 / scale:.2f}\"/px = focal length {focal:.2f} mm "
         f"(config says {cam.cfg['focal_length_mm']:g})")

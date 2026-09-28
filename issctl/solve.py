@@ -210,7 +210,7 @@ def _mono(img):
     return g.mean(axis=2) if g.ndim == 3 else g
 
 
-def find_stars(img, max_stars=80, kernel=15, sigma=5.0, max_area=150, edge=4, tile=64, busy=2.0, lively_max=0.04):
+def find_stars(img, max_stars=80, kernel=15, sigma=4.0, max_area=150, edge=4, tile=64, busy=2.0, lively_max=0.04):
     """Star positions, brightest first, as (x, y, flux) - and NOT the lit building next to them.
 
     solve-field's own extractor ranks sources by brightness, and from a balcony the brightest
@@ -426,8 +426,12 @@ def _fresh_timed(cam, skip=0, timeout=10.0):
     raise SolveError(f"{cam.name}: no frame within {timeout:.0f}s")
 
 
-def solve_camera(cam, solver, log=print):
+def solve_camera(cam, solver, log=print, after_move=False):
     """Grab a fresh frame at the solve exposure, solve it, and put the exposure back.
+
+    after_move: the frame in flight when a move ended was partly exposed DURING the move, and
+    its stars are trails - on the real mount one read 48.4"/px against 49.9 for every other and
+    threw a whole calibration off. Skip it.
 
     The ISS wants a few milliseconds; stars want the better part of a second. Only a camera whose
     exposure is in real milliseconds is switched - a raw V4L2 register has no fixed meaning.
@@ -441,7 +445,8 @@ def solve_camera(cam, solver, log=print):
             if cam.cfg.get("solve_gain"):
                 cam.set_gain(cam.cfg["solve_gain"])
         # after a change, the frame in flight was still exposed the old way
-        img, t = _fresh_timed(cam, skip=1 if switch else 0, timeout=10.0 + 3 * want / 1000.0)
+        img, t = _fresh_timed(cam, skip=1 if (switch or after_move) else 0,
+                              timeout=10.0 + 3 * max(want, cam.exposure_ms) / 1000.0)
     finally:
         if switch:
             cam.set_exposure(saved[0])
