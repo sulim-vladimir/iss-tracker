@@ -70,12 +70,33 @@ class Camera:
             self._thread.join(timeout=3)
         self._close()
 
+    def _restart(self):
+        """Get a stalled stream going again. Only drivers that can stall need it."""
+
     def _run(self):
         n, t_fps = 0, time.monotonic()
+        misses = 0
         while not self._stop.is_set():
             img, t = self._grab()
             if img is None:
+                # A frame rate that only updates when a frame arrives freezes at its last value
+                # when they stop - the stall then looks like a healthy 0.9 fps. Let it fall.
+                el = time.monotonic() - t_fps
+                if el >= 1.0:
+                    self.fps, n, t_fps = n / el, 0, time.monotonic()
+                misses += 1
+                if misses >= 3:
+                    # The ASI120MM Mini stalled for good on the real rig (USB 2.0, a bus shared
+                    # with the Arduino): every request timed out and the loop just asked again.
+                    print(f"{self.name}: no frame {misses} times running - restarting the stream")
+                    try:
+                        self._restart()
+                    except Exception as e:
+                        print(f"{self.name}: restart failed: {e}")
+                        time.sleep(1.0)
+                    misses = 0
                 continue
+            misses = 0
             gate = self.gate  # snapshot: a click may replace it while we are detecting
             det = detect(img, self.cfg["detect_sigma"], self.cfg["detect_min_area"], self.bayer, gate,
                          max_area=self.cfg.get("detect_max_area", 0),
@@ -273,6 +294,22 @@ class AsiCamera(Camera):
         applied = self._control(self.cam, "Gain", self._asi.ASI_GAIN, self.gain)
         if applied is not None:
             self.gain = applied
+
+    def _restart(self):
+        """Restart the stream - or, when the camera dropped off USB and came back as a new
+        device (seen for real: the Mini disconnected mid-session), open it all over again."""
+        try:
+            self.cam.stop_video_capture()
+            time.sleep(0.2)
+            self.cam.start_video_capture()
+            return
+        except Exception as e:
+            print(f"{self.name}: stream restart failed ({e}) - reopening the camera")
+        try:
+            self.cam.close()
+        except Exception:
+            pass
+        self._open()
 
     def _grab(self):
         try:

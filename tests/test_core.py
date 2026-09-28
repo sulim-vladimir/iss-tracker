@@ -255,3 +255,35 @@ def test_move_to_overshoots_only_where_needed(cfg):
     overshoot = target[1] - path[:, 1].min()
     assert slack[1] <= overshoot < 4 * slack[1]
     assert np.allclose(mount.position(), target, atol=0.01)
+
+
+def test_a_stalled_camera_restarts_its_stream_and_says_so():
+    """The ASI120MM Mini stopped delivering frames mid-session: the loop kept asking, the frame
+    rate stayed frozen at its last value, and nothing recovered. It must restart the stream, and
+    the frame rate must fall so a stall is visible."""
+    import time
+
+    from issctl.camera import Camera
+    from issctl.clock import Clock
+
+    class Stalling(Camera):
+        def __init__(self):
+            super().__init__("guide", {"width": 4, "height": 4, "bin": 1, "exposure_ms": 1,
+                                       "gain": 0, "detect_sigma": 5, "detect_min_area": 1}, Clock())
+            self.restarts, self.calls = 0, 0
+
+        def _grab(self):
+            self.calls += 1
+            time.sleep(0.05)
+            if self.calls <= 3 or self.restarts:
+                return (np.zeros((4, 4), np.uint8), 0.0) if self.calls <= 3 or self.calls > 60 else (None, None)
+            return None, None
+
+        def _restart(self):
+            self.restarts += 1
+
+    cam = Stalling().start()
+    time.sleep(2.5)
+    cam.stop()
+    assert cam.restarts >= 1
+    assert cam.fps < 1.0

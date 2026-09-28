@@ -410,8 +410,9 @@ def make_solver(cam, site, world=None):
 
 # ---- taking a frame to solve ----
 
-def _fresh_timed(cam, skip=0, timeout=10.0):
-    """The next frame to arrive after `skip` more, with the time it was exposed."""
+def _fresh_timed(cam, skip=0, timeout=10.0, not_before=None):
+    """The next frame to arrive after `skip` more, with the time it was exposed - and, with
+    not_before (clock time), none that arrived before it."""
     deadline = time.monotonic() + timeout
     last = cam.latest_frame()[2]
     seen = 0
@@ -419,7 +420,7 @@ def _fresh_timed(cam, skip=0, timeout=10.0):
         frame, t, seq = cam.latest_frame()
         if seq != last and frame is not None:
             last = seq
-            if seen >= skip:
+            if seen >= skip and (not_before is None or t is None or t >= not_before):
                 return frame, t
             seen += 1
         time.sleep(0.01)
@@ -444,9 +445,13 @@ def solve_camera(cam, solver, log=print, after_move=False):
             cam.set_exposure(want)
             if cam.cfg.get("solve_gain"):
                 cam.set_gain(cam.cfg["solve_gain"])
-        # after a change, the frame in flight was still exposed the old way
+        # After a change, frames already queued in the camera were still exposed the old way -
+        # skipping one is not enough: a guide at 200 ms has several in flight, and a solve of one
+        # of those is a black frame of noise. Only one exposed wholly after the switch will do.
+        exp_s = max(want, cam.exposure_ms) / 1000.0
         img, t = _fresh_timed(cam, skip=1 if (switch or after_move) else 0,
-                              timeout=10.0 + 3 * max(want, cam.exposure_ms) / 1000.0)
+                              timeout=10.0 + 4 * exp_s,
+                              not_before=cam.clock.now() + 1.2 * exp_s if switch else None)
     finally:
         if switch:
             cam.set_exposure(saved[0])
