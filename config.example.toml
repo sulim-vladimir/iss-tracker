@@ -141,6 +141,12 @@ servo_beta = 0.3
 servo_give_up_s = 20          # stop the run after this long with no detection at all
 servo_reseed_deg = 30         # re-anchor the frozen reference once the estimate walks this far
 
+# ---- "Coming up": bright satellites due through the guide field or the visible sky -------
+[forecast]
+minutes = 60                  # how far ahead to look
+field_max_mag = 7.5           # faintest predicted magnitude listed for the guide field
+sky_max_mag = 6.0             # ...and for "anywhere I can see" (the sky mask above)
+
 [preview]
 enabled = true
 port = 8080
