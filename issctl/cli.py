@@ -409,26 +409,36 @@ def cmd_console(args, cfg):
         ui["jog_raw"] = rates is None
         ui["jog_rates"] = j * speeds[ui["speed"]] if rates is None else rates
 
+    fails = {"t": -1e9}
+
     def keepalive():
         saved = (mount.position().copy(), time.monotonic())
         while not ui["quit"]:
-            # keep the stored position fresh, so a crash or power cut loses at most a few seconds
-            now_pos = mount.position()
-            if time.monotonic() - saved[1] > 5.0 and np.any(np.abs(now_pos - saved[0]) > 0.01):
-                saved = (now_pos.copy(), time.monotonic())
-                try:
-                    persist()
-                except Exception:
-                    pass
-            if ui["mode"] == "track":
-                pass  # the tracker owns the mount while a pass is running
-            elif aborted():
-                mount.set_rates(0.0, 0.0)
-            elif not ui["busy"]:
-                r = ui["jog_rates"]
-                if ui["tracking"]:
-                    r = r + sidereal()
-                mount.set_rates(*r)
+            # One bad cycle must not end the loop: if this thread dies, nothing feeds the
+            # firmware's watchdog and the mount stops 0.5 s later, silently, until a restart.
+            try:
+                # keep the stored position fresh, so a crash or power cut loses at most a few seconds
+                now_pos = mount.position()
+                if time.monotonic() - saved[1] > 5.0 and np.any(np.abs(now_pos - saved[0]) > 0.01):
+                    saved = (now_pos.copy(), time.monotonic())
+                    try:
+                        persist()
+                    except Exception:
+                        pass
+                if ui["mode"] == "track":
+                    pass  # the tracker owns the mount while a pass is running
+                elif aborted():
+                    mount.set_rates(0.0, 0.0)
+                elif not ui["busy"]:
+                    r = ui["jog_rates"]
+                    if ui["tracking"]:
+                        r = r + sidereal()
+                    mount.set_rates(*r)
+            except Exception as e:
+                if time.monotonic() - fails["t"] > 10.0:
+                    say(f"mount keepalive: {type(e).__name__}: {e} - retrying")
+                    fails["t"] = time.monotonic()
+                time.sleep(0.2)
             time.sleep(0.05)
 
     def persist():

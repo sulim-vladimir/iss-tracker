@@ -181,6 +181,16 @@ def limit_correction(cmd, err, accel):
     return np.clip(cmd, -cap, cap)
 
 
+def _valid_p(resp):
+    """A whole position reply. Noise on the USB line has delivered a truncated one ("P 1234"),
+    and parsing that killed the thread that keeps the firmware's watchdog fed."""
+    parts = resp.split()
+    try:
+        return parts[0] == "P" and len(parts) >= 3 and all(np.isfinite(float(x)) for x in parts[1:3])
+    except ValueError:
+        return False
+
+
 class SerialMount(Mount):
     def __init__(self, cfg, state, clock):
         import serial
@@ -210,7 +220,7 @@ class SerialMount(Mount):
             deadline = time.monotonic() + 1.0
             while time.monotonic() < deadline:
                 resp = self.ser.readline().decode(errors="replace").strip()
-                if resp.startswith(expect):
+                if resp.startswith(expect) and (expect != "P" or _valid_p(resp)):
                     return resp
                 if resp.startswith("ERR"):
                     raise RuntimeError(f"firmware: {resp} (for '{line}')")
