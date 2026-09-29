@@ -210,7 +210,7 @@ def _mono(img):
     return g.mean(axis=2) if g.ndim == 3 else g
 
 
-def find_stars(img, max_stars=80, kernel=15, sigma=4.0, peak_sigma=6.0, max_area=1000, edge=4,
+def find_stars(img, max_stars=80, kernel=15, sigma=3.0, peak_sigma=5.0, max_area=1000, edge=4,
                tile=64, busy=2.0, lively_max=0.04):
     """Star positions, brightest first, as (x, y, flux) - and NOT the lit building next to them.
 
@@ -237,7 +237,9 @@ def find_stars(img, max_stars=80, kernel=15, sigma=4.0, peak_sigma=6.0, max_area
     base = float(np.median(tmed))
     # Clear sky above 3 sigma is noise and the odd star; a lit facade is edges everywhere.
     lively = np.mean(tiles > base + 3.0 * sky_noise, axis=2)
-    sky = (tnoise < busy * sky_noise) & (lively < lively_max)
+    quiet = tnoise < busy * sky_noise
+    sky = quiet & (lively < lively_max)
+    lit = th > base + 3.0 * sky_noise
     mask = (th > base + sigma * sky_noise).astype(np.uint8)
     n, lab, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
     out = []
@@ -246,7 +248,8 @@ def find_stars(img, max_stars=80, kernel=15, sigma=4.0, peak_sigma=6.0, max_area
         if area < 2 or area > max_area:
             continue
         cy, cx = min(ty - 1, (y0 + bh // 2) // tile), min(tx - 1, (x0 + bw // 2) // tile)
-        if not sky[cy, cx]:
+        if not sky[cy, cx] and not (quiet[cy, cx] and _alone_in_tile(lit, cy, cx, tile, stats[i],
+                                                                        lively_max)):
             continue
         if max(bw, bh) > 2.5 * min(bw, bh) or area < 0.35 * bw * bh:
             continue          # a line or a smear: an edge, a wire, a trail
@@ -261,7 +264,8 @@ def find_stars(img, max_stars=80, kernel=15, sigma=4.0, peak_sigma=6.0, max_area
         wts = th[y0:y0 + bh, x0:x0 + bw] * sel
         # Traced at `sigma`, kept only if it PEAKS well above it: at 4 sigma over a million
         # pixels a few dozen noise blobs always get through, and on a thin night they outnumber
-        # the stars and the solve fails.
+        # the stars and the solve fails. 3/5 rather than 4/6: on a 1 s, 8-bit guide frame near
+        # Mizar (tests/data/guide-mizar.png) 4/6 kept only the four brightest stars.
         if float(wts.max()) < base + peak_sigma * sky_noise:
             continue
         flux = float(wts.sum())
@@ -269,6 +273,18 @@ def find_stars(img, max_stars=80, kernel=15, sigma=4.0, peak_sigma=6.0, max_area
         out.append((float((xx * wts).sum() / flux), float((yy * wts).sum() / flux), flux))
     out.sort(key=lambda s: -s[2])
     return out[:max_stars]
+
+
+def _alone_in_tile(lit, cy, cx, tile, stat, lively_max):
+    """A bright star lights enough of its own tile to pass for scenery - on a real frame that
+    threw out the two brightest stars and the solve failed. Count the tile again without the
+    star's own neighbourhood: scenery is still lit, a star on clear sky is not."""
+    x0, y0, bw, bh, _ = stat
+    r = 2 * int(max(bw, bh)) + 6
+    ya, xa = cy * tile, cx * tile
+    t = lit[ya:ya + tile, xa:xa + tile].copy()
+    t[max(0, y0 - r - ya):max(0, y0 + bh + r - ya), max(0, x0 - r - xa):max(0, x0 + bw + r - xa)] = False
+    return float(t.mean()) < lively_max
 
 
 class AstrometrySolver:

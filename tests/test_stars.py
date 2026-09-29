@@ -271,6 +271,20 @@ def test_real_guide_frame_solves(cfg, site):
     assert np.hypot(*(named["alkaid"] - [1039, 187])) < 3
 
 
+def test_solves_a_noisy_frame_with_a_bright_pair(cfg, site):
+    """1 s at gain 100 near Mizar: the pair lit its own tile past the scenery limit and was
+    thrown out, and the old 4/6 sigma thresholds kept only the four brightest stars."""
+    import cv2
+
+    cam_cfg = cfg["cameras"]["guide"]
+    if missing_indexes(cam_cfg):
+        pytest.skip("index files missing - issctl solve-setup")
+    img = cv2.imread(str(DATA / "guide-mizar.png"), cv2.IMREAD_UNCHANGED)
+    sol = AstrometrySolver(cam_cfg, site).solve(img, 1790000000.0)
+    ra, dec = sol.radec(sol.centre())
+    assert abs(ra - 203.45) < 0.05 and abs(dec - 55.16) < 0.05
+
+
 def test_a_sync_relabels_the_position_history(cfg):
     """A frame exposed just before a sync must still be paired with the right counters: the
     history used to keep the old labels, and 'sync on stars' followed by 'calibrate on stars'
