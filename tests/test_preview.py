@@ -108,8 +108,9 @@ def test_each_camera_has_an_arming_button_the_script_can_find():
     html = _preview().page()
     js = asset("app.js")
     for name in ("guide", "main"):
-        assert f'id="bore-{name}"' in html
         assert f"imgClick('{name}',event,this)" in html
+    # only the guide's boresight is set by hand: main's is its frame centre
+    assert 'id="bore-guide"' in html and 'id="bore-main"' not in html
     assert "function armBoresight" in js and "function imgClick" in js
     # an armed click must not also select a target, or the gate would chase the boresight
     assert "return mnt('boresight'" in js

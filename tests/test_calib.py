@@ -486,3 +486,16 @@ def test_axis1_column_flips_sign_across_the_meridian():
     # a calibration from before axis2_cal was kept behaves exactly as it always did
     legacy = {"J": stored["J"], "dec_cal": 40.0}
     assert np.allclose(jacobian(legacy, 140.0), np.array(stored["J"]), atol=1e-9)
+
+
+def test_boresight_click_snaps_to_the_bright_spot_nearby():
+    from issctl.detect import snap
+
+    img = np.random.default_rng(0).normal(20, 3, (480, 640)).clip(0, 255).astype(np.uint8)
+    yy, xx = np.mgrid[0:480, 0:640]
+    for (cx, cy), amp in (((300.4, 200.7), 180.0), ((360.0, 260.0), 250.0)):
+        img = np.clip(img + amp * np.exp(-((xx - cx) ** 2 + (yy - cy) ** 2) / 4.5), 0, 255).astype(np.uint8)
+    # clicked 6 px off the fainter star: that one, not the brighter one further away
+    x, y = snap(img, 305.0, 196.0, radius=25)
+    assert abs(x - 300.4) < 0.3 and abs(y - 200.7) < 0.3
+    assert snap(img, 100.0, 100.0, radius=25) is None      # empty sky: nothing to snap to

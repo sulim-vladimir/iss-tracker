@@ -13,9 +13,7 @@
  <button onclick="api('/api/gain',{cam:'{{name}}',delta:25})">+</button></div>
 <div class="ctl"><label>Target</label><span id="sel-{{name}}"></span></div>
 <div class="ctl btns">
- <button onclick="api('/api/select',{cam:'{{name}}',clear:1})">Auto</button>
- <button id="bore-{{name}}" title="move the green cross: press this, then click the spot in this image. On the guide that spot must be the object sitting in the MIDDLE of the main image - that is what the boresight means. Only trust it on something a kilometre away or more, or the parallax between the two cameras is wider than the main field"
- onclick="armBoresight('{{name}}')">set boresight</button>{{centre}}</div>
+ <button onclick="api('/api/select',{cam:'{{name}}',clear:1})">Auto</button>{{bore}}{{centre}}</div>
 <div class="info" id="info-{{name}}"></div>
 {{extra}}</div>
 
@@ -28,6 +26,10 @@
  onclick="mnt('calibrate',{cam:'NAME',mode:'scene'})">calibrate on scenery</button>
  <button id="corners-NAME" title="draw the corners that 'calibrate on scenery' would follow. If few or none appear, there is too little structure here - focus it, or point somewhere with more detail"
  onclick="api('/api/corners',{cam:'NAME',on: this.className!=='on' ? 1 : 0})">show corners</button>
+
+<!-- @bore -->
+ <button id="bore-NAME" title="move the green cross: press this, then click the object sitting in the MIDDLE of the main image - the click snaps to the brightest spot nearby. That is what the boresight means. Only trust it on something a kilometre away or more, or the parallax between the two cameras is wider than the main field"
+ onclick="armBoresight('NAME')">set boresight</button>
 
 <!-- @in_frame -->
 <button title="move the object to the middle of this image (grey cross)"
@@ -101,14 +103,19 @@
   onclick="mnt('star_boresight',{})">boresight on star</button>
   <button title="the star is in the guide but not in the main camera: walk a spiral round here, one main field per step, until main sees it (30' by default; Stop cancels)"
   onclick="mnt('spiral',{})">spiral search in main</button>
+  <button title="with a star anywhere in the main camera: move each axis 1.8' either way and measure the main matrix in its own pixels (no guide involved), then centre the star. Takes up the Dec slack first"
+  onclick="mnt('maincal',{})">calibrate main on star</button>
   <button title="forget the star alignment - only after the tripod itself has moved"
-  onclick="if(confirm('Forget the star alignment?')) mnt('align_clear',{})">clear alignment</button></div>
- <div class="info" id="cal-info"></div></div>
+  onclick="if(confirm('Forget the star alignment?')) mnt('align_clear',{})">clear alignment</button></div></div>
 
 <!-- @log -->
 <div class="panel box grow"><h2>Log
  <button class="small" title="copy the whole log to the clipboard" onclick="copyLog(this)">copy</button></h2>
  <div class="info" id="log"></div></div>
+
+<!-- @calinfo -->
+<div class="panel box grow"><h2>Calibration</h2>
+ <div class="info" id="cal-info"></div></div>
 
 <!-- @warnings -->
 <div class="panel box grow"><h2>Warnings</h2>

@@ -387,7 +387,7 @@ def cmd_console(args, cfg):
             super().__setitem__(key, value)
 
     ui = Messages({"jog": np.zeros(2), "speed": 2, "tracking": False, "busy": False,
-                   "quit": False, "msg": "", "frame": "guide", "abort": threading.Event(),
+                   "quit": False, "msg": "", "frame": "axes", "abort": threading.Event(),
                    "mode": "console", "motors": True, "jog_rates": np.zeros(2)})
     picked = {}     # the pixel you last clicked in each image, kept for the hand-set boresight
 
@@ -624,8 +624,26 @@ def cmd_console(args, cfg):
                      log=say, abort=aborted, radius_deg=radius,
                      slack_deg=state.get("backlash_deg")).run()
         if hit is not None:
-            say("star in the main camera. Next: 'calibrate on target' in main, then "
-                "'boresight on star'")
+            say("star in the main camera. Next: 'calibrate main on star'")
+
+    def do_main_on_star():
+        """The main camera's matrix from moving the star it sees - its own pixels, no guide."""
+        from .search import calibrate_on_star
+        if "main" not in cams:
+            say("no main camera")
+            return
+        say("calibrating main on the star...")
+        warnings = []
+        cal = calibrate_on_star(mount, cams["main"],
+                                track_rate=sidereal() if ui["tracking"] else None, log=say,
+                                abort=aborted, slack_deg=state.get("backlash_deg"),
+                                existing=state.get("cameras", {}).get("main"), warnings=warnings)
+        state.setdefault("cameras", {})["main"] = cal
+        state["calibrated_at"] = time.time()
+        state["calibration_warnings"] = warnings
+        persist()
+        say("main calibrated on the star" + (f" - {len(warnings)} warning(s)" if warnings else "")
+            + ". The guide boresight is unchanged: if servo hands over to main, it was right")
 
     def do_solve_centre(name):
         """Put a named target on the boresight using the solved frame instead of the counters:
@@ -790,6 +808,23 @@ def cmd_console(args, cfg):
         say(f"{name} target on the {'frame centre' if target_px else 'boresight'} "
             f"({off_px:.0f} px off)")
 
+    def snap_click(name, x, y):
+        """The brightest spot near a click in this camera's latest frame, else the click."""
+        from .detect import snap
+        cam = cams[name]
+        frame = cam.latest()[0]
+        radius = max(20.0, 0.03 * cam.width)
+        hit = None if frame is None else snap(
+            frame, x, y, radius, sigma=cam.cfg.get("detect_sigma", 6.0),
+            min_area=cam.cfg.get("detect_min_area", 3), bayer=bool(cam.cfg.get("bayer")))
+        if hit is None:
+            say(f"{name}: nothing bright within {radius:.0f} px of the click - using the click "
+                f"itself")
+            return x, y
+        say(f"{name}: snapped to the bright spot at {hit[0]:.1f},{hit[1]:.1f} "
+            f"({np.hypot(hit[0] - x, hit[1] - y):.0f} px from the click)")
+        return float(hit[0]), float(hit[1])
+
     def set_boresight(name, fx, fy):
         """Put this camera's boresight on the pixel that was just clicked.
 
@@ -802,16 +837,19 @@ def cmd_console(args, cfg):
         if cam is None:
             say(f"no {name} camera")
             return
+        if name == "main":
+            say("main's boresight is its frame centre - set the GUIDE boresight instead")
+            return
         if cal is None:
             say(f"{name} has no calibration to put a boresight in - calibrate it first")
             return
-        x, y = float(fx) * cam.width, float(fy) * cam.height
-        cal["boresight"] = [x, y]
+        x, y = snap_click(name, float(fx) * cam.width, float(fy) * cam.height)
+        cal["boresight"] = [float(x), float(y)]
         persist()
         centre = np.array([(cam.width - 1) / 2, (cam.height - 1) / 2])
         from .calib import cal_px_per_deg
         off = float(np.linalg.norm(np.array([x, y]) - centre)) / cal_px_per_deg(cal)
-        say(f"{name} boresight set to {x:.0f},{y:.0f} - {off:.2f} deg from the frame centre"
+        say(f"{name} boresight set to {x:.1f},{y:.1f} - {off:.2f} deg from the frame centre"
             + (" (the ISS now gets driven to that spot, not the middle)" if name == "main" else
                " - it must be the object that is in the MIDDLE of the main image"))
 
@@ -842,6 +880,7 @@ def cmd_console(args, cfg):
         if pm is None or pg is None:
             say("click the SAME object in the main image and in the guide image, then press this")
             return
+        pm, pg = snap_click("main", *pm), snap_click("guide", *pg)
         guide = cams["guide"]
         # No mount position here on purpose: the axis-to-sky factor is common to both cameras and
         # cancels in the ratio, so this works on a mount that was pushed round by hand.
@@ -919,7 +958,7 @@ def cmd_console(args, cfg):
         if aborted() and action not in ("stop", "frame", "speed"):
             ui["abort"].clear()  # any deliberate command clears the latched stop
         if action in ("jog", "goto", "track", "calibrate", "centre", "starcal",
-                      "solve_centre", "gohome", "spiral") and not ui["motors"]:
+                      "solve_centre", "gohome", "spiral", "maincal") and not ui["motors"]:
             mount.enable(True)
             ui["motors"] = True
         if action == "jog":
@@ -946,6 +985,9 @@ def cmd_console(args, cfg):
         elif action == "spiral":
             ui["jog"][:] = 0
             in_background(do_spiral)
+        elif action == "maincal":
+            ui["jog"][:] = 0
+            in_background(do_main_on_star)
         elif action == "home":
             ui["jog"][:] = 0
             ui["tracking"] = False

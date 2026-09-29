@@ -83,3 +83,48 @@ def test_gives_up_and_returns_when_there_is_nothing(cfg):
         cam.stop()
     assert hit is None
     assert np.allclose(mount.position(), start, atol=0.01)
+
+
+def test_calibrates_main_on_the_star_despite_dec_backlash(cfg):
+    """In main's own pixels, every point approached from the same side: 10' of Dec slack - more
+    than the whole move - must not show in the matrix."""
+    from issctl.calib import jacobian
+    from issctl.search import calibrate_on_star
+
+    clock = Clock(speed=5.0)
+    mount = SimMount(cfg, {}, clock, start=[20.0, 40.0], backlash=[0.0, 0.17])
+    mount.query()
+    world = CalibWorld(cfg, mount, offset=(0.0, 0.0), decoys=(),
+                       rotations={"guide": 0.0, "main": 30.0})
+    cam = SimCamera("main", cfg["cameras"]["main"], clock, world, fps=10.0).start()
+    warnings, logs = [], []
+    try:
+        cal = calibrate_on_star(mount, cam, log=logs.append, warnings=warnings, settle_s=0.0,
+                                slew_rate=3.0, frames=2)
+        left = world.pixel("main", mount.clock.now())
+    finally:
+        cam.stop()
+    axis2 = mount.physical_at(mount.clock.now())[1] + world.pointing_error[1]
+    truth = jacobian(world.true_cal["main"], axis2)
+    J = np.array(cal["J"])
+    assert np.allclose(J, truth, atol=0.02 * np.abs(truth).max()), (J, truth, logs)
+    assert not warnings, warnings
+    assert np.hypot(*(np.array(left) - cal["boresight"])) < 30        # and it is centred
+
+
+def test_main_calibration_refuses_nonsense_axes(cfg, monkeypatch):
+    from issctl import search as srch
+
+    clock = Clock(speed=5.0)
+    mount = SimMount(cfg, {}, clock, start=[20.0, 40.0])
+    mount.query()
+    world = CalibWorld(cfg, mount, offset=(0.0, 0.0), decoys=())
+    cam = SimCamera("main", cfg["cameras"]["main"], clock, world, fps=10.0).start()
+    # an axis2 that drags the image the same way as axis1 - what a slipping clutch looks like
+    monkeypatch.setattr(srch, "axes_angle", lambda J: 12.0)
+    try:
+        with pytest.raises(RuntimeError, match="deg apart"):
+            srch.calibrate_on_star(mount, cam, log=lambda *a: None, settle_s=0.0, slew_rate=3.0,
+                                   frames=1)
+    finally:
+        cam.stop()

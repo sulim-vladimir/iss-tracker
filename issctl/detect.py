@@ -76,3 +76,13 @@ def detect(img, sigma=6.0, min_area=3, bayer=False, gate=None, max_width=1300,
         return None
     i = int(np.argmax(np.where(valid, flux, -np.inf)))
     return Detection(float(fx[i]), float(fy[i]), float(flux[i]), int(areas[i]))
+
+
+def snap(img, x, y, radius, sigma=6.0, min_area=3, bayer=False):
+    """The centroid of the brightest blob within `radius` of a click, or None.
+
+    A click on a star in a scaled-down browser image lands a few pixels off it, and one screen
+    pixel is two or three sensor pixels; the star's own centroid is good to a fraction of one.
+    That difference is the whole of what a boresight is for."""
+    det = detect(img, sigma=sigma, min_area=min_area, bayer=bayer, gate=(x, y, radius))
+    return None if det is None else (det.x, det.y)

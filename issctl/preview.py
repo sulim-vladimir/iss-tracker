@@ -92,9 +92,12 @@ def render(cam, cal, max_width=800, corners=False):
     k = min(1.0, max_width / img.shape[1])
     if k < 1:
         img = cv2.resize(img, None, fx=k, fy=k, interpolation=cv2.INTER_AREA)
-    if cal:
+    cx, cy = int((cam.width - 1) / 2 * k), int((cam.height - 1) / 2 * k)
+    if cam.name == "main":
+        # main's aim point IS its frame centre: a plain centre cross, no green boresight mark
+        cv2.drawMarker(img, (cx, cy), (160, 160, 160), cv2.MARKER_CROSS, 26, 1)
+    elif cal:
         bx, by = (int(cal["boresight"][0] * k), int(cal["boresight"][1] * k))
-        cx, cy = int((cam.width - 1) / 2 * k), int((cam.height - 1) / 2 * k)
         if abs(bx - cx) > 4 or abs(by - cy) > 4:   # frame centre, when it differs from the boresight
             cv2.drawMarker(img, (cx, cy), (160, 160, 160), cv2.MARKER_CROSS, 26, 1)
         cv2.drawMarker(img, (bx, by), (0, 220, 0), cv2.MARKER_CROSS, 34, 2)
@@ -130,6 +133,8 @@ class Preview:
         cam_panels = "".join(
             fill(f["panel"], name=n, title=n.capitalize(),
                    extra=f["record"] if (n == "main" and can_record) else "",
+                   # main's aim point is its frame centre; only the guide's is set by hand
+                   bore=f["bore"].replace("NAME", n) if (n != "main" and can_move) else "",
                    centre=(f["centre"].replace("EXTRA", "" if n == "main" else f["in_frame"])
                            .replace("NAME", n)
                            .replace("LABEL", "centre it" if n == "main" else "send to main")
@@ -142,6 +147,7 @@ class Preview:
                       mount_panel=fill(f["mount"], estop=estop) if can_move else "",
                       status_panel=f["status"] if can_move else "",
                       warnings_panel=f["warnings"] if can_move else "",
+                      calinfo_panel=f["calinfo"] if can_move else "",
                       log_panel=f["log"] if can_move else "",
                       messages_panel=f["messages"] if can_move else "",
                       cams=json.dumps(list(self.cams)))
