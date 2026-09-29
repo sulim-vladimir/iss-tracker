@@ -264,11 +264,20 @@ Not needed after moving the tripod, re-homing, or simply starting a new session.
 
 ## Browser control panel
 
+![The console in the browser](docs/console.png)
+
+*The console on 2026-09-30: the guide (left, 17° field) locked on a picked object, the main camera
+(0.4° field) with a star in view, the mount and calibration controls on the right, and along the
+bottom the sky chart, the **Coming up** list of bright satellites due through the guide field,
+messages, the calibration summary and the log.*
+
 `track` and `console` serve a page on `[preview] port` (override with `--port`, e.g. if something
 already uses 8080). Both cameras appear side by side, each with:
 
-* the live MJPEG view with the aim cross (green), search gate (blue) and detection (red) - image
-  only, no text burned in, so it matches the raw sensor data;
+* the live MJPEG view with the aim cross, search gate (blue) and detection (red) - image only, no
+  text burned in, so it matches the raw sensor data. On the guide the cross is green and marks the
+  boresight, where the centre of the main camera looks; on main it is a plain grey cross at the
+  frame centre, which is main's aim point;
 * status text under the frame: local time, seconds relative to track start, alt/az with compass
   point, which camera is steering, TLE time offset, sunlit fraction;
 * exposure and gain, as `-`/`+` steps (x1.5, +/-25) or an exact value typed in;
