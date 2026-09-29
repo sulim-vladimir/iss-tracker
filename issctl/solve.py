@@ -210,7 +210,7 @@ def _mono(img):
     return g.mean(axis=2) if g.ndim == 3 else g
 
 
-def find_stars(img, max_stars=80, kernel=15, sigma=3.0, peak_sigma=5.0, max_area=1000, edge=4,
+def find_stars(img, max_stars=80, kernel=15, sigma=4.0, peak_sigma=6.0, max_area=1000, edge=4,
                tile=64, busy=2.0, lively_max=0.04):
     """Star positions, brightest first, as (x, y, flux) - and NOT the lit building next to them.
 
@@ -222,7 +222,10 @@ def find_stars(img, max_stars=80, kernel=15, sigma=3.0, peak_sigma=5.0, max_area
     """
     import cv2
 
-    g = _mono(img)
+    # A star covers several pixels and the noise of a 1 s, 8-bit guide frame does not: smoothing
+    # by about a star's width first is what lets the faint ones stand out. Without it, six
+    # frames in a row near Mizar and Thuban (tests/data/guide-mizar.png) never solved.
+    g = cv2.GaussianBlur(_mono(img), (0, 0), 1.0)
     k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel, kernel))
     th = cv2.morphologyEx(g, cv2.MORPH_TOPHAT, k)
     h, w = g.shape
@@ -264,8 +267,7 @@ def find_stars(img, max_stars=80, kernel=15, sigma=3.0, peak_sigma=5.0, max_area
         wts = th[y0:y0 + bh, x0:x0 + bw] * sel
         # Traced at `sigma`, kept only if it PEAKS well above it: at 4 sigma over a million
         # pixels a few dozen noise blobs always get through, and on a thin night they outnumber
-        # the stars and the solve fails. 3/5 rather than 4/6: on a 1 s, 8-bit guide frame near
-        # Mizar (tests/data/guide-mizar.png) 4/6 kept only the four brightest stars.
+        # the stars and the solve fails.
         if float(wts.max()) < base + peak_sigma * sky_noise:
             continue
         flux = float(wts.sum())

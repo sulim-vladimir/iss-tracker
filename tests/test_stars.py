@@ -283,6 +283,11 @@ def test_solves_a_noisy_frame_with_a_bright_pair(cfg, site):
     sol = AstrometrySolver(cam_cfg, site).solve(img, 1790000000.0)
     ra, dec = sol.radec(sol.centre())
     assert abs(ra - 203.45) < 0.05 and abs(dec - 55.16) < 0.05
+    # a sparse field near Thuban: fewer bright stars, the faint ones carry the solve
+    img = cv2.imread(str(DATA / "guide-thuban.png"), cv2.IMREAD_UNCHANGED)
+    t0 = time.monotonic()
+    AstrometrySolver(cam_cfg, site).solve(img, 1790000000.0)
+    assert time.monotonic() - t0 < 5
 
 
 def test_a_sync_relabels_the_position_history(cfg):

@@ -97,6 +97,8 @@
   onclick="mnt('align_add',{})">add star</button>
   <button title="with a bright star in the main camera: the solve says which star it is and where it sits in the guide, so the green cross goes exactly there. No parallax - the stars are at infinity"
   onclick="mnt('star_boresight',{})">boresight on star</button>
+  <button title="the star is in the guide but not in the main camera: walk a spiral round here, one main field per step, until main sees it (30' by default; Stop cancels)"
+  onclick="mnt('spiral',{})">spiral search in main</button>
   <button title="forget the star alignment - only after the tripod itself has moved"
   onclick="if(confirm('Forget the star alignment?')) mnt('align_clear',{})">clear alignment</button></div>
  <div class="info" id="cal-info"></div></div>

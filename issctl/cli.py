@@ -612,6 +612,20 @@ def cmd_console(args, cfg):
             f"{bore.round(1)} (star was {miss:.2f} deg from where the old boresight put it"
             + (f", {carried:.0f} px carried through the matrices" if carried > 1 else "") + ")")
 
+    def do_spiral():
+        """Walk a spiral round the current pointing until the main camera sees a star."""
+        from .search import Search
+        if "main" not in cams:
+            say("no main camera")
+            return
+        radius = float(cfg["cameras"]["main"].get("search_radius_deg", 0.5))
+        hit = Search(mount, cams["main"], track_rate=sidereal() if ui["tracking"] else None,
+                     log=say, abort=aborted, radius_deg=radius,
+                     slack_deg=state.get("backlash_deg")).run()
+        if hit is not None:
+            say("star in the main camera. Next: 'calibrate on target' in main, then "
+                "'boresight on star'")
+
     def do_solve_centre(name):
         """Put a named target on the boresight using the solved frame instead of the counters:
         exact however badly the mount knows where it is - and exactly as good as the boresight."""
@@ -904,7 +918,7 @@ def cmd_console(args, cfg):
         if aborted() and action not in ("stop", "frame", "speed"):
             ui["abort"].clear()  # any deliberate command clears the latched stop
         if action in ("jog", "goto", "track", "calibrate", "centre", "starcal",
-                      "solve_centre", "gohome") and not ui["motors"]:
+                      "solve_centre", "gohome", "spiral") and not ui["motors"]:
             mount.enable(True)
             ui["motors"] = True
         if action == "jog":
@@ -926,6 +940,9 @@ def cmd_console(args, cfg):
         elif action == "gohome":
             ui["jog"][:] = 0
             in_background(go_home)
+        elif action == "spiral":
+            ui["jog"][:] = 0
+            in_background(do_spiral)
         elif action == "home":
             ui["jog"][:] = 0
             ui["tracking"] = False

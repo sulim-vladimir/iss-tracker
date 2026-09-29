@@ -113,6 +113,7 @@ detect_sigma = 5.0
 detect_min_area = 20
 detect_max_area = 20000       # ~160 px across; the ISS is ~133 px at 1500 mm
 detect_edge_margin = 8
+search_radius_deg = 0.5       # "spiral search in main": how far round the start it looks
 bayer = "RGGB"
 record = true
 record_dir = "captures"
