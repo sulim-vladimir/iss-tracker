@@ -12,3 +12,4 @@ __pycache__/
 *.pyc
 firmware/**/build/
 data/astrometry/
+data/catalog/

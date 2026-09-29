@@ -13,6 +13,7 @@ from . import geometry as geo
 from . import predict as pr
 from .clock import Clock
 from .config import ROOT, SIM_STATE_FILE, STATE_FILE, load_config, load_state, save_state
+from .identify import write_session_state
 from .mask import SkyMask
 
 
@@ -940,6 +941,8 @@ def cmd_console(args, cfg):
         elif action == "gohome":
             ui["jog"][:] = 0
             in_background(go_home)
+        elif action == "identify":
+            identify_later(None)
         elif action == "spiral":
             ui["jog"][:] = 0
             in_background(do_spiral)
@@ -1030,6 +1033,26 @@ def cmd_console(args, cfg):
             return None
         return dict(info, now=clock.now(), source=tr.source if tr else "idle")
 
+    def identify_session(path=None):
+        """What was that? Runs beside everything else - it never touches the mount."""
+        from . import identify as idf
+        path = path or idf.latest_session()
+        if path is None:
+            say("what was that: no session log yet - follow something first")
+            return
+        g = cfg["cameras"]["guide"]
+        try:
+            say(f"what was that: comparing {Path(path).name} with the satellite catalogues...")
+            _, text = idf.what_was_that(path, state, site, frame=(g["width"], g["height"]),
+                                        log=say)
+            for line in text.splitlines():
+                say(line.strip())
+        except Exception as e:
+            say(f"what was that: {e}")
+
+    def identify_later(path):
+        threading.Thread(target=identify_session, args=(path,), daemon=True).start()
+
     def run_tracker(tracker, label):
         """Hand the mount to a tracker until it finishes, then give it back to the console."""
         session["tracker"] = tracker
@@ -1065,6 +1088,8 @@ def cmd_console(args, cfg):
                                   FreeRun(mount.position()),
                                   log=lambda s: ui.__setitem__("msg", s),
                                   log_path=logs / f"servo-{stamp}.csv")
+                write_session_state(logs / f"servo-{stamp}.csv", state)
+                session["csv"] = logs / f"servo-{stamp}.csv"
                 session["info"] = {"mode": "servo", "start": clock.now(), "end": None,
                                    "rise": None, "max_alt": None, "rise_at": "-",
                                    "starts_at": f"{datetime.datetime.now():%H:%M:%S}"}
@@ -1075,6 +1100,9 @@ def cmd_console(args, cfg):
             finally:
                 ui["mode"] = "console"
                 session["tracker"] = None
+                done = session.pop("csv", None)
+                if done is not None:
+                    identify_later(done)
                 recorder.set_enabled(False)
                 recorder.set_gate(True)
                 try:
@@ -1123,12 +1151,17 @@ def cmd_console(args, cfg):
                 tracker = Tracker(cfg, state, mount, cams, clock, traj,
                                   log=lambda s: ui.__setitem__("msg", s),
                                   log_path=logs / f"track-{stamp}.csv")
+                write_session_state(logs / f"track-{stamp}.csv", state)
+                session["csv"] = logs / f"track-{stamp}.csv"
                 run_tracker(tracker, "tracking")
             except Exception as e:
                 ui["msg"] = f"tracking error: {e}"
             finally:
                 ui["mode"] = "console"
                 session["tracker"] = None
+                done = session.pop("csv", None)
+                if done is not None:
+                    identify_later(done)
                 recorder.set_enabled(False)
                 recorder.set_gate(True)  # back to manual control in console mode
                 try:
@@ -1390,6 +1423,19 @@ def servo_window(sat, site, p, mount_cfg, model=None, dt=1.0):
     return float(t[i0]), float(t[i1] - t[i0]), bool(reach[i0:i1 + 1].all())
 
 
+def cmd_identify(args, cfg):
+    from . import identify as idf
+    path = Path(args.csv) if args.csv else idf.latest_session()
+    if path is None:
+        print("no servo-*.csv or track-*.csv in logs/")
+        return
+    g = cfg["cameras"]["guide"]
+    print(f"{path.name}:")
+    _, text = idf.what_was_that(path, load_state(), pr.Site(cfg), frame=(g["width"], g["height"]),
+                                offline=args.offline)
+    print(text)
+
+
 def cmd_track(args, cfg):
     from .control import Tracker
 
@@ -1638,11 +1684,15 @@ def main(argv=None):
     p.add_argument("--clouds", type=int, default=0, help="simulate N unpredicted cloud gaps")
     p.add_argument("--cloud-seed", type=int, default=0)
 
+    p = sub.add_parser("identify", help="what was that? name the satellite a session followed")
+    p.add_argument("csv", nargs="?", help="session log (default: the newest in logs/)")
+    p.add_argument("--offline", action="store_true", help="use the catalogues already downloaded")
+
     args = ap.parse_args(argv)
     cfg = load_config(args.config)
     {"passes": cmd_passes, "mount-test": cmd_mount_test, "console": cmd_console,
      "track": cmd_track, "axis-scale": cmd_axis_scale, "solve-setup": cmd_solve_setup,
-     "solve": cmd_solve}[args.cmd](args, cfg)
+     "solve": cmd_solve, "identify": cmd_identify}[args.cmd](args, cfg)
 
 
 if __name__ == "__main__":

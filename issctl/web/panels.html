@@ -67,7 +67,9 @@
   <input id="passidx" placeholder="next" style="width:56px" title="pass index from 'passes', or blank for the next usable one"></div>
  <div class="ctl">
   <button id="servobtn" title="servo mode: follow whatever you click in the GUIDE image - a satellite, the ISS, a plane - with no orbit and no alignment. Shorten the guide exposure first (8 ms for the ISS, 50-200 ms for fainter satellites), press this, then click the object. Stops by itself after servo_give_up_s with nothing detected"
-  onclick="mnt(MODE==='track' ? 'untrack' : 'servo', {})">Follow what I click</button></div>
+  onclick="mnt(MODE==='track' ? 'untrack' : 'servo', {})">Follow what I click</button>
+  <button title="name the satellite the last session followed, from its log and the satellite catalogues (public and amateur-observed classified ones). Also runs by itself when a session ends"
+  onclick="mnt('identify',{})">what was that?</button></div>
  <div class="ctl">
   <button id="motorbtn" onclick="mnt('motors',{on: MOTORS ? 0 : 1})">motors off</button></div></div>
 
