@@ -103,13 +103,27 @@ def write_session_state(csv_path, state):
     Path(csv_path).with_suffix(".json").write_text(json.dumps(keep))
 
 
+def object_axes(state, axes, px, source, frame=(1280, 960)):
+    """Counters that would put the OBJECT on the guide frame centre - the direction the
+    alignment describes. A guide detection is carried there through the guide matrix; main holds
+    it on its centre, which the guide boresight marks."""
+    axes = np.asarray(axes, dtype=float)
+    guide = (state.get("cameras") or {}).get("guide")
+    if not guide:
+        return axes
+    centre = np.array([(frame[0] - 1) / 2.0, (frame[1] - 1) / 2.0])
+    px = np.asarray(px if source == "guide" else guide["boresight"], dtype=float)
+    return axes + np.linalg.solve(jacobian(guide, axes[1]), centre - px)
+
+
+def sky_vectors(state, axes_list):
+    return np.array([align.sky_unit(*align.pointing_hadec(state, a)) for a in axes_list])
+
+
 def read_track(csv_path, state, frame=(1280, 960), samples=SAMPLES):
     """(unix times, sky unit vectors in the local HA/Dec frame) of the OBJECT, from the frames
-    where a camera saw it. The guide pixel is carried onto the guide frame centre - the direction
-    the alignment describes - through the guide matrix."""
+    where a camera saw it."""
     rows = list(csv.DictReader(open(csv_path)))
-    guide = (state.get("cameras") or {}).get("guide")
-    centre = np.array([(frame[0] - 1) / 2.0, (frame[1] - 1) / 2.0])
     seen, last = [], None
     for r in rows:
         if r["source"] not in ("guide", "main") or r["det_x"] in ("", "nan"):
@@ -118,38 +132,48 @@ def read_track(csv_path, state, frame=(1280, 960), samples=SAMPLES):
         if key == last:
             continue            # the CSV repeats the last detection between frames
         last = key
-        axes = np.array([float(r["a1"]), float(r["a2"])])
-        if guide:
-            J = jacobian(guide, axes[1])
-            if r["source"] == "guide":
-                px = np.array([float(r["det_x"]), float(r["det_y"])])
-            else:           # main holds it on the main boresight = the guide boresight
-                px = np.asarray(guide["boresight"], dtype=float)
-            axes = axes + np.linalg.solve(J, centre - px)
-        seen.append((float(r["t"]), axes))
+        px = (float(r["det_x"]), float(r["det_y"]))
+        seen.append((float(r["t"]), object_axes(state, (float(r["a1"]), float(r["a2"])), px,
+                                                r["source"], frame)))
     if len(seen) < 3:
         raise ValueError(f"{Path(csv_path).name}: the cameras saw the object in fewer than 3 "
                          f"frames - nothing to identify")
     pick = np.unique(np.linspace(0, len(seen) - 1, min(samples, len(seen))).round().astype(int))
-    t = np.array([seen[i][0] for i in pick])
-    v = np.array([align.sky_unit(*align.pointing_hadec(state, seen[i][1])) for i in pick])
-    return t, v
+    return (np.array([seen[i][0] for i in pick]), sky_vectors(state, [seen[i][1] for i in pick]))
+
+
+def build(tles):
+    """Catalogue lines as skyfield satellites, once: constructing 16 000 of them is most of the
+    time a ranking takes."""
+    from skyfield.api import EarthSatellite, load
+
+    ts = load.timescale()
+    out = []
+    for name, sid, l1, l2 in tles:
+        try:
+            out.append((name, sid, EarthSatellite(l1, l2, name, ts)))
+        except Exception:
+            continue
+    return out
 
 
 def identify(t, v, tles, site, top=5):
     """Rank catalogue objects by how closely they flew the track (median separation, deg)."""
-    from skyfield.api import EarthSatellite, load
+    return rank(t, v, build(tles), site, top)
+
+
+def rank(t, v, sats, site, top=5):
+    """identify() over satellites already built."""
+    from skyfield.api import load
 
     ts = load.timescale()
     when = ts.from_datetimes([_utc(x) for x in t])
-    here = site.topos
     alt, az = geo.hadec_to_altaz(*_hadec(v), site.lat)      # skyfield answers in alt/az
     track = _altaz_unit(np.asarray(alt), np.asarray(az))
     res = []
-    for name, sid, l1, l2 in tles:
+    for name, sid, sat in sats:
         try:
-            sat = EarthSatellite(l1, l2, name, ts)
-            a, z, d = (sat - here).at(when).altaz()
+            a, z, d = (sat - site.topos).at(when).altaz()
         except Exception:
             continue
         w = _altaz_unit(a.degrees, z.degrees)
@@ -157,9 +181,86 @@ def identify(t, v, tles, site, top=5):
         res.append({"name": name, "id": sid, "median_deg": float(np.median(sep)),
                     "max_deg": float(sep.max()), "range_km": float(np.mean(d.km)),
                     "alt": [float(a.degrees[0]), float(a.degrees[-1])],
-                    "az": [float(z.degrees[0]), float(z.degrees[-1])]})
+                    "az": [float(z.degrees[0]), float(z.degrees[-1])], "sat": (name, sid, sat)})
     res.sort(key=lambda r: r["median_deg"])
     return res[:top]
+
+
+def verdict(matches):
+    """'sure', 'probably' or None for the best of a ranking - the rule describe() words."""
+    if not matches:
+        return None
+    best = matches[0]
+    runner = matches[1]["median_deg"] if len(matches) > 1 else np.inf
+    clear = runner > 2 * best["median_deg"]
+    if best["median_deg"] < MATCH_DEG and clear:
+        return "sure"
+    if best["median_deg"] < LIKELY_DEG and clear:
+        return "probably"
+    return None
+
+
+class LiveIdentifier:
+    """Names the object while it is being followed, for the guide caption.
+
+    Fed each new detection; every few seconds it ranks the catalogue against the last WINDOW_S of
+    them. The first ranking takes the whole catalogue, a few seconds on the Pi; after that only
+    the leading candidates are re-ranked, which is fast, until the fit gets worse and the whole
+    catalogue is searched again. The catalogue is built once and reused for every session."""
+
+    WINDOW_S = 30.0
+    EVERY_S = 5.0
+    CANDIDATES = 40
+
+    def __init__(self, site, frame=(1280, 960), catalog_dir=CATALOG_DIR, log=print):
+        self.site, self.frame, self.catalog_dir, self.log = site, frame, catalog_dir, log
+        self.sats = None
+        self.reset()
+
+    HOLD_S = 15.0     # keep the last name this long through one ranking that fits nothing
+
+    def reset(self):
+        self.samples, self.candidates, self.label, self.last_rank = [], None, "", -1e9
+        self.named_at = -1e9
+
+    def add(self, t, state, axes, px, source):
+        if not (state.get("alignment") or {}).get("model"):
+            return          # without the star alignment the counters say nothing about the sky
+        self.samples.append((float(t), object_axes(state, axes, px, source, self.frame), state))
+        cut = float(t) - self.WINDOW_S
+        self.samples = [x for x in self.samples if x[0] >= cut]
+
+    def update(self, now):
+        """Rank if it is time and there is enough to rank. Returns the label."""
+        if now - self.last_rank < self.EVERY_S or len(self.samples) < 4 \
+                or self.samples[-1][0] - self.samples[0][0] < 3.0:
+            return self.label
+        self.last_rank = now
+        if self.sats is None:
+            self.sats = build(load_tles(refresh_catalogs(self.catalog_dir, log=self.log)))
+        pick = np.unique(np.linspace(0, len(self.samples) - 1, min(12, len(self.samples)))
+                         .round().astype(int))
+        t = np.array([self.samples[i][0] for i in pick])
+        v = np.array([sky_vectors(self.samples[i][2], [self.samples[i][1]])[0] for i in pick])
+        fits = lambda r: bool(r) and r[0]["median_deg"] < LIKELY_DEG
+        res = rank(t, v, self.candidates or self.sats, self.site, top=self.CANDIDATES)
+        if self.candidates is not None and not fits(res):
+            res = rank(t, v, self.sats, self.site, top=self.CANDIDATES)     # lost it: search all
+        self.candidates = [r["sat"] for r in res]
+        kind = verdict(res)
+        if kind == "sure":
+            label = res[0]["name"]
+        elif kind == "probably":
+            label = f"probably {res[0]['name']}"
+        elif fits(res) and len(res) > 1 and res[1]["median_deg"] < LIKELY_DEG:
+            label = f"{res[0]['name']} or {res[1]['name']}"     # a formation pair, too close to split yet
+        else:
+            label = ""
+        if label:
+            self.label, self.named_at = label, now
+        elif now - self.named_at > self.HOLD_S:
+            self.label = ""
+        return self.label
 
 
 def _hadec(v):

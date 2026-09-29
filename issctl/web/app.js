@@ -40,6 +40,8 @@ function applyMount(m) {
   // Alt/az sits under the sky chart and the axis angles are not something you read while
   // working, so this panel carries only what has nowhere else to go: what just happened.
   document.getElementById('mount-msg').textContent = m.msg || '\u2014';
+  const ib = document.getElementById('identbtn');
+  if (ib) { const on = m.identify_on !== false; ib.textContent = on ? 'naming ON' : 'naming off'; ib.className = on ? 'on' : ''; }
   const sb = document.getElementById('siderealbtn');
   if (sb) {
     sb.textContent = m.tracking ? 'sidereal ON' : 'sidereal off';
@@ -91,8 +93,9 @@ function apply(s) {
     if (eu) eu.textContent = c.exposure_unit || 'ms';
     const cb = document.getElementById('corners-' + n);
     if (cb) cb.className = (s.corners || []).includes(n) ? 'on' : '';
+    const sat = n === 'guide' && s.mount && s.mount.sat_label ? '  \u00b7 ' + s.mount.sat_label : '';
     document.getElementById('stat-' + n).textContent =
-      c.fps.toFixed(0) + ' fps  ' + (c.det ? 'detected' : 'no detection');
+      c.fps.toFixed(0) + ' fps  ' + (c.det ? 'detected' : 'no detection') + sat;
     const info = document.getElementById('info-' + n);
     if (info) info.textContent = ((s.status || {})[n] || []).join('\n');
     const sel = document.getElementById('sel-' + n);

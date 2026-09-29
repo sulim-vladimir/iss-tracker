@@ -126,3 +126,30 @@ def test_refuses_a_session_that_saw_nothing(tmp_path):
                    "det_y,lit,open\n1,0,0,0,0,0,0,0,0,0,0,0,predict,nan,nan,1,1\n")
     with pytest.raises(ValueError, match="fewer than 3"):
         idf.read_track(log, {}, FRAME)
+
+
+def test_names_it_live_while_following(tmp_path, tles, site):
+    from issctl.model import PointingModel
+
+    sat, ts, times = _visible(tles[1], site)
+    log = tmp_path / "servo-live.csv"
+    _write_session(log, sat, ts, times, site)
+    rows = list(csv.DictReader(open(log)))
+    state = {"alignment": {"model": dict(PointingModel().to_dict(), n_points=4)}}
+    live = idf.LiveIdentifier(site, FRAME)
+    live.sats = idf.build(tles)                       # no downloading in a test
+    labels = []
+    for r in rows[::4]:                               # a detection every 2 s
+        t = float(r["t"])
+        live.add(t, state, (float(r["a1"]), float(r["a2"])),
+                 (float(r["det_x"]), float(r["det_y"])), "guide")
+        labels.append(live.update(t))
+    assert labels[0] == ""                            # too little to go on at first
+    assert labels[-1] == "NOSS 3-8 (B)"
+    assert live.candidates and len(live.candidates) <= live.CANDIDATES
+
+
+def test_live_names_nothing_without_a_star_alignment(site):
+    live = idf.LiveIdentifier(site, FRAME)
+    live.add(0.0, {}, (10.0, 40.0), (640.0, 480.0), "guide")
+    assert live.samples == []

@@ -982,6 +982,12 @@ def cmd_console(args, cfg):
             in_background(go_home)
         elif action == "identify":
             identify_later(None)
+        elif action == "identify_on":
+            state["identify_on"] = params.get("on") not in (None, "0", "false")
+            persist()
+            say("satellite naming " + ("on: live in the guide caption, and after each session"
+                                       if state["identify_on"] else
+                                       "off ('what was that?' still works when pressed)"))
         elif action == "spiral":
             ui["jog"][:] = 0
             in_background(do_spiral)
@@ -1095,9 +1101,34 @@ def cmd_console(args, cfg):
     def identify_later(path):
         threading.Thread(target=identify_session, args=(path,), daemon=True).start()
 
+    from .identify import LiveIdentifier
+    live = LiveIdentifier(site, frame=(cfg["cameras"]["guide"]["width"],
+                                       cfg["cameras"]["guide"]["height"]), log=say)
+
+    def name_it_live(tracker):
+        """Feed the live identifier each new detection while this tracker runs. Reads only."""
+        live.reset()
+        last, failed = None, False
+        while session["tracker"] is tracker:
+            src = tracker.source
+            px = tracker.last_px.get(src)
+            if src in ("guide", "main") and px is not None and (src, px) != last:
+                last = (src, px)
+                live.add(clock.now(), state, mount.position(), px, src)
+            if not state.get("identify_on", True):
+                live.label = ""
+            elif not failed:
+                try:
+                    live.update(clock.now())
+                except Exception as e:
+                    failed = True
+                    say(f"live identification off for this session: {e}")
+            time.sleep(0.1)
+
     def run_tracker(tracker, label):
         """Hand the mount to a tracker until it finishes, then give it back to the console."""
         session["tracker"] = tracker
+        threading.Thread(target=name_it_live, args=(tracker,), daemon=True).start()
         ui["mode"] = "track"
         ui["jog"][:] = 0
         ui["tracking"] = False
@@ -1143,7 +1174,7 @@ def cmd_console(args, cfg):
                 ui["mode"] = "console"
                 session["tracker"] = None
                 done = session.pop("csv", None)
-                if done is not None:
+                if done is not None and state.get("identify_on", True):
                     identify_later(done)
                 recorder.set_enabled(False)
                 recorder.set_gate(True)
@@ -1202,7 +1233,7 @@ def cmd_console(args, cfg):
                 ui["mode"] = "console"
                 session["tracker"] = None
                 done = session.pop("csv", None)
-                if done is not None:
+                if done is not None and state.get("identify_on", True):
                     identify_later(done)
                 recorder.set_enabled(False)
                 recorder.set_gate(True)  # back to manual control in console mode
@@ -1243,7 +1274,9 @@ def cmd_console(args, cfg):
                 "alignment": align.describe(state),
                 "session": ((session["info"] or {}).get("mode", "pass")
                             if ui["mode"] == "track" else None),
-                "busy": ui["busy"], "msg": ui["msg"], "jog": ui["jog"].tolist(), "cal": cal}
+                "busy": ui["busy"], "msg": ui["msg"], "jog": ui["jog"].tolist(), "cal": cal,
+                "sat_label": live.label if state.get("identify_on", True) else "",
+                "identify_on": state.get("identify_on", True)}
 
     from .ser import RecordControl
     main_cfg = cfg["cameras"]["main"]
