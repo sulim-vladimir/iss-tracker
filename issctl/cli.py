@@ -114,14 +114,20 @@ def sky_payload(cfg, mask, traj=None, site=None):
     return out
 
 
-def apply_saved_settings(cams, state):
-    """Re-apply the exposure/gain last used for each camera, so a restart looks the same."""
+def apply_saved_settings(cams, state, log=print):
+    """Re-apply the exposure/gain last used for each camera, so a restart looks the same.
+
+    A camera that has just re-enumerated on USB answers the first control with "General error";
+    that used to kill the console on start-up, with the mount left stopped. Skip it and say so."""
     for name, cam in cams.items():
         saved = state.get("camera_settings", {}).get(name, {})
-        if "exposure_ms" in saved:
-            cam.set_exposure(saved["exposure_ms"])
-        if "gain" in saved:
-            cam.set_gain(saved["gain"])
+        try:
+            if "exposure_ms" in saved:
+                cam.set_exposure(saved["exposure_ms"])
+            if "gain" in saved:
+                cam.set_gain(saved["gain"])
+        except Exception as e:
+            log(f"{name}: could not restore its saved exposure/gain ({e}) - set them by hand")
 
 
 def remember_position(state, state_path, mount):
@@ -980,6 +986,9 @@ def cmd_console(args, cfg):
         elif action == "gohome":
             ui["jog"][:] = 0
             in_background(go_home)
+        elif action == "forecast":
+            mode = "field" if params.get("mode") == "field" else "sky"
+            threading.Thread(target=do_forecast, args=(mode,), daemon=True).start()
         elif action == "identify":
             identify_later(None)
         elif action == "identify_on":
@@ -1097,6 +1106,38 @@ def cmd_console(args, cfg):
                 say(line.strip())
         except Exception as e:
             say(f"what was that: {e}")
+
+    from .forecast import Forecaster, field_track
+    forecaster = Forecaster(site, log=say)
+
+    def do_forecast(mode):
+        """Coming up: bright satellites through the guide field, or anywhere visible from here.
+        Reads only - it runs beside everything else and never touches the mount."""
+        ui["forecast"] = dict(ui.get("forecast") or {}, busy=True)
+        try:
+            now = clock.now()
+            minutes = float(cfg.get("forecast", {}).get("minutes", 60))
+            if mode == "field":
+                _, alt, az = pointing()
+                times = now + np.arange(0.0, minutes * 60.0, 10.0)
+                follow = bool(ui["tracking"])
+                items = forecaster.run(now, minutes=minutes, max_mag=float(
+                    cfg.get("forecast", {}).get("field_max_mag", 7.5)),
+                    field=field_track(site, alt, az, now, times, follow))
+                where = (f"the guide field (alt {alt:.0f} az {az:.0f}, "
+                         f"{'following the stars' if follow else 'fixed'})")
+            else:
+                items = forecaster.run(now, minutes=minutes, mask=SkyMask.from_config(cfg),
+                                       min_alt=cfg["site"]["min_altitude"], max_mag=float(
+                                           cfg.get("forecast", {}).get("sky_max_mag", 6.0)))
+                where = "the sky you can see"
+            ui["forecast"] = {"mode": mode, "at": now, "where": where, "items": items,
+                              "busy": False}
+            say(f"coming up: {len(items)} bright pass{'es' * (len(items) != 1)} through {where} "
+                f"in the next {minutes:.0f} min")
+        except Exception as e:
+            ui["forecast"] = dict(ui.get("forecast") or {}, busy=False)
+            say(f"coming up: {e}")
 
     def identify_later(path):
         threading.Thread(target=identify_session, args=(path,), daemon=True).start()
@@ -1251,6 +1292,14 @@ def cmd_console(args, cfg):
             tr.stop_requested = True
             ui["msg"] = "stopping tracking..."
 
+    def tracking_note():
+        """Which camera the running tracker is steering with, for the camera captions."""
+        tr = session["tracker"]
+        if tr is None or ui["mode"] != "track":
+            return None
+        return {"source": tr.source, "main_streak": int(getattr(tr, "main_streak", 0)),
+                "handoff": int(tr.tr.get("main_handoff_frames", 0))}
+
     def mount_status():
         pos, alt_s, az_s = pointing()
         cal = {}
@@ -1276,7 +1325,9 @@ def cmd_console(args, cfg):
                             if ui["mode"] == "track" else None),
                 "busy": ui["busy"], "msg": ui["msg"], "jog": ui["jog"].tolist(), "cal": cal,
                 "sat_label": live.label if state.get("identify_on", True) else "",
-                "identify_on": state.get("identify_on", True)}
+                "identify_on": state.get("identify_on", True),
+                "forecast": ui.get("forecast"), "now": clock.now(),
+                "track": tracking_note()}
 
     from .ser import RecordControl
     main_cfg = cfg["cameras"]["main"]

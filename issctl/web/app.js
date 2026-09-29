@@ -40,6 +40,7 @@ function applyMount(m) {
   // Alt/az sits under the sky chart and the axis angles are not something you read while
   // working, so this panel carries only what has nowhere else to go: what just happened.
   document.getElementById('mount-msg').textContent = m.msg || '\u2014';
+  showComing(m.forecast, m.now);
   const ib = document.getElementById('identbtn');
   if (ib) { const on = m.identify_on !== false; ib.textContent = on ? 'naming ON' : 'naming off'; ib.className = on ? 'on' : ''; }
   const sb = document.getElementById('siderealbtn');
@@ -95,7 +96,7 @@ function apply(s) {
     if (cb) cb.className = (s.corners || []).includes(n) ? 'on' : '';
     const sat = n === 'guide' && s.mount && s.mount.sat_label ? '  \u00b7 ' + s.mount.sat_label : '';
     document.getElementById('stat-' + n).textContent =
-      c.fps.toFixed(0) + ' fps  ' + (c.det ? 'detected' : 'no detection') + sat;
+      c.fps.toFixed(0) + ' fps  ' + (c.det ? 'detected' : 'no detection') + trackNote(n, s.mount && s.mount.track) + sat;
     const info = document.getElementById('info-' + n);
     if (info) info.textContent = ((s.status || {})[n] || []).join('\n');
     const sel = document.getElementById('sel-' + n);
@@ -240,4 +241,35 @@ function copyLog(btn) {
     document.body.removeChild(ta);
     done(ok);
   }
+}
+
+// ---- coming up: bright satellites through the guide field, or anywhere visible ----
+function showComing(f, now) {
+  const box = document.getElementById('coming');
+  if (!box) return;
+  if (!f) { box.textContent = ''; return; }
+  if (f.busy && !f.items) { box.textContent = 'working it out...'; return; }
+  const hm = t => new Date(t * 1000).toTimeString().slice(0, 8);
+  const rows = (f.items || []).filter(r => r.end > now).slice(0, 12).map(r => {
+    const when = r.start > now ? 'in ' + clock(r.start - now) : 'NOW, ' + clock(r.end - now) + ' left';
+    const where = f.mode === 'field' ? `${r.sep.toFixed(1)}° from centre`
+                                     : `alt ${r.alt.toFixed(0)}° az ${r.az.toFixed(0)}°`;
+    return `${hm(r.peak)}  ${when.padEnd(14)} mag ${r.mag.toFixed(1).padStart(4)}  ${r.name}\n`
+         + `          ${where}, ${r.range_km} km`;
+  });
+  box.textContent = (f.busy ? '(updating) ' : '') + `${f.where}, worked out ${hm(f.at)}:\n`
+    + (rows.length ? rows.join('\n') : 'nothing bright in the next hour');
+}
+
+// ---- which camera the tracker is steering with, shown in each camera's caption ----
+function trackNote(name, t) {
+  if (!t) return '';
+  if (t.source === name) return '  \u00b7 TRACKING uses this camera';
+  if (t.source === 'guide' || t.source === 'main')
+    return name === 'main' && t.handoff
+      ? `  \u00b7 standby (handoff ${Math.min(t.main_streak, t.handoff)}/${t.handoff} frames)`
+      : '  \u00b7 standby';
+  const why = {predict: 'coasting on prediction', shadow: 'in Earth shadow - coasting',
+               blocked: 'behind an obstruction - coasting'}[t.source] || t.source;
+  return '  \u00b7 ' + why;
 }

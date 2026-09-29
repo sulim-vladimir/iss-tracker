@@ -56,11 +56,10 @@ body{background:#2f3439;color:#e8e8e8;font:14px/1.4 system-ui,sans-serif;margin:
  #recinfo{color:#b9c1c8}
  .hint{color:#93a0ab;font-size:13px}
  /* The chart is square: without a ceiling its height follows the panel width and runs off the
-    bottom of the page. The readings sit beside it rather than under it - the chart is already
-    as tall as this row needs to be. */
- .panel.sky{flex:0 1 auto;max-width:none;display:flex;align-items:flex-start;gap:12px}
+    bottom of the page. The readings sit under it, the same width, so the panel stays narrow. */
+ .panel.sky{flex:0 1 auto;max-width:none;display:flex;flex-direction:column;align-items:flex-start;gap:8px}
  #sky{flex:0 0 auto;width:300px;max-width:100%;display:block;background:#20242a;border-radius:6px}
- #sky-info{margin-top:0;flex:1 1 auto;min-width:150px}
+ #sky-info{margin-top:0;width:300px;max-width:100%}
  #siderealbtn.on{background:#3a6b46}
  /* On a phone every panel stacks, and the arrows would end up below the main frame and the
     sky chart - a scroll away from the guide image you are steering by. display:contents

@@ -136,6 +136,15 @@
 <button id="estop" onclick="api('/api/estop',{})">EMERGENCY STOP</button>
 <span id="estop-msg"></span>
 
+<!-- @coming -->
+<div class="panel box grow coming"><h2>Coming up</h2>
+ <div class="ctl">
+  <button title="bright satellites that will cross the guide field in the next hour - fixed on the stars if sidereal tracking is on"
+  onclick="mnt('forecast',{mode:'field'})">through the guide field</button>
+  <button title="the brightest passes anywhere above min_altitude and inside the sky openings, in the next hour"
+  onclick="mnt('forecast',{mode:'sky'})">anywhere I can see</button></div>
+ <div class="info" id="coming"></div></div>
+
 <!-- @sky -->
 <div class="panel sky">
 <svg id="sky" viewBox="0 0 330 330"></svg>
