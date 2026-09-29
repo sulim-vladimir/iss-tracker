@@ -39,9 +39,20 @@ def axis1_factor(cal, axis2):
     Only the CHANGE in declination since the matrix was measured, never the absolute value. Both
     ends come from the same step counter, so a mount that has no idea where it is cancels itself
     out and this is exactly 1 until you slew.
+
+    Across a meridian flip the column also changes SIGN - the tube now turns the other way round
+    under the same axis1 step (seen in the simulator: centring on the far side moved 330', then
+    602', away). Only the raw axis2 knows the side, and dec_cal alone lost it, so calibrations
+    now keep axis2_cal and use the signed cosine of axis2, which turns negative past the pole by
+    itself. One without it keeps the old, same-side-only behaviour.
     """
-    dec = float(geo.axis2_to_dec(axis2))
-    k = np.cos(np.radians(dec)) / max(np.cos(np.radians(cal.get("dec_cal", 0.0))), 0.05)
+    a2_cal = cal.get("axis2_cal")
+    if a2_cal is None:
+        dec = float(geo.axis2_to_dec(axis2))
+        k = np.cos(np.radians(dec)) / max(np.cos(np.radians(cal.get("dec_cal", 0.0))), 0.05)
+    else:
+        c_cal = np.cos(np.radians(float(a2_cal)))
+        k = np.cos(np.radians(float(axis2))) / (np.sign(c_cal) * max(abs(c_cal), 0.05))
     return float(np.sign(k) * max(abs(k), 0.05))
 
 
@@ -779,7 +790,8 @@ def calibrate_cameras(mount, cams, steps=None, track_rate=None, log=print, abort
                                 f"or a moving target")
             mount.move_to(start(-d), track_rate=track_rate, abort=abort, max_rate=slew_rate)
             mount.move_to(start(), track_rate=track_rate, abort=abort, max_rate=slew_rate)
-    dec_cal = float(geo.axis2_to_dec(mount.position()[1]))
+    axis2_cal = float(mount.position()[1])
+    dec_cal = float(geo.axis2_to_dec(axis2_cal))
     if abs(np.cos(np.radians(dec_cal))) < 0.5 and warnings is not None:
         # Near the pole axis1 rotates the field instead of shifting it, so its column is
         # meaningless and cos(dec_cal) rescaling blows up everywhere else.
@@ -805,7 +817,7 @@ def calibrate_cameras(mount, cams, steps=None, track_rate=None, log=print, abort
         # source weeks ago is worth far more than a guess made now. The cross-camera block below
         # overwrites it on the runs that do measure it.
         prior = ((existing or {}).get(n) or {}).get("boresight")
-        result[n] = {"J": J.tolist(), "dec_cal": dec_cal,
+        result[n] = {"J": J.tolist(), "dec_cal": dec_cal, "axis2_cal": axis2_cal,
                      "boresight": list(prior) if prior is not None else
                      [(cam.width - 1) / 2, (cam.height - 1) / 2]}
         sv = np.linalg.svd(J, compute_uv=False)

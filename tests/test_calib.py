@@ -458,3 +458,31 @@ def test_measure_waits_for_a_slow_camera():
             return None, det, self.seq
 
     assert np.allclose(measure(Slow(), n=10, timeout=1.0), [10.0, 20.0])
+
+
+def test_axis1_column_flips_sign_across_the_meridian():
+    """Measured on one side of the pier, used on the other: the tube turns the other way under
+    the same axis1 step, and centring without the sign flip ran away (330', then 602')."""
+    from issctl.model import PointingModel
+    from issctl.solve import SimSolution
+
+    cam = {"pixel_um": 3.75, "bin": 1, "focal_length_mm": 15.5, "width": 1280, "height": 960}
+    true = ideal_calibration(cam, 20.0)
+    model = PointingModel()
+    centre = np.array([639.5, 479.5])
+
+    def measured(a1, a2, eps=0.05):
+        sol = SimSolution(true, *model.camera_frame(a1, a2), 0.0, 1280, 960)
+        seen = sol.hadec(centre)
+        cols = []
+        for d in ([eps, 0.0], [0.0, eps]):
+            moved = SimSolution(true, *model.camera_frame(a1 + d[0], a2 + d[1]), 0.0, 1280, 960)
+            cols.append((moved.pixel_hadec(*seen) - centre) / eps)
+        return np.column_stack(cols)
+
+    stored = {"J": measured(20.0, 40.0).tolist(), "dec_cal": 40.0, "axis2_cal": 40.0}
+    for a1, a2 in ((-160.0, 140.0), (-150.0, 125.0), (30.0, 55.0)):
+        assert np.allclose(jacobian(stored, a2), measured(a1, a2), atol=1.0), (a1, a2)
+    # a calibration from before axis2_cal was kept behaves exactly as it always did
+    legacy = {"J": stored["J"], "dec_cal": 40.0}
+    assert np.allclose(jacobian(legacy, 140.0), np.array(stored["J"]), atol=1e-9)

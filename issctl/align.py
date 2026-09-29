@@ -36,6 +36,12 @@ from .solve import SolveError, field_deg, solve_camera
 
 RESYNC_DEG = 3.0          # a point this far from the model means the counters no longer apply
 CONE_SPREAD_DEG = 30.0    # below this sky spread, cone and polar axis cannot be told apart
+# Two star calibrations agree when their polar axes are this close. One run's RA turn is about a
+# degree, so its pole is only as good as the solves: ~0.1 deg with 2" solves, ~0.6 with 10".
+REPEAT_POLE_DEG = 0.5
+REPEAT_ROT_DEG = 0.5      # camera rotation between runs, from the axis2 column
+REPEAT_SCALE = 0.01       # camera scale between runs
+INDEPENDENT_DEG = 20.0    # runs closer than this share the same patch of sky
 
 
 def points(state):
@@ -138,6 +144,8 @@ def refit(state, mount=None, cams_state=None):
         for cal in (cams_state or {}).values():
             if "dec_cal" in cal:
                 cal["dec_cal"] = float(cal["dec_cal"] + (shift if east else -shift))
+                if "axis2_cal" in cal:      # relabelled with the counters themselves
+                    cal["axis2_cal"] = float(cal["axis2_cal"] + shift)
         residuals = getattr(model, "residuals_arcsec", None)
         model = PointingModel(model.rotvec_deg, 0.0, model.cone, model.rms_arcsec, model.n_points)
         model.residuals_arcsec = residuals
@@ -186,15 +194,59 @@ def sync_to(state, mount, ha, dec):
     return best
 
 
+def polar_error(pole):
+    """Where the RA axis points relative to the celestial pole, as (up, east) in degrees on the
+    sky: up is toward the zenith, east toward the eastern horizon.
+
+    In the local HA/Dec frame the pole is +z, the zenith lies toward +x (HA 0, upper meridian)
+    and +y is the west point, so these are just the pole vector's other two components -
+    exact to first order, which at a few degrees is a few percent."""
+    pole = np.asarray(pole, dtype=float)
+    pole = pole * np.sign(pole[2] or 1.0)
+    return float(np.degrees(np.arcsin(pole[0]))), float(np.degrees(np.arcsin(-pole[1])))
+
+
+def describe_polar(pole):
+    up, east = polar_error(pole)
+    return (f"RA axis {abs(up):.2f} deg {'above' if up >= 0 else 'below'} the pole and "
+            f"{abs(east):.2f} deg {'east' if east >= 0 else 'west'} of it: "
+            f"{'lower' if up >= 0 else 'raise'} it {abs(up):.2f}, "
+            f"turn it {abs(east):.2f} {'west' if east >= 0 else 'east'} (on the sky)")
+
+
 def describe(state):
     pts = points(state)
     model = current_model(state)
     if model is None:
         return (f"{len(pts)} star point{'s' * (len(pts) != 1)}, no model yet - "
                 f"'calibrate on stars' or add stars in different parts of the sky")
-    pole = model.R @ np.array([0.0, 0.0, 1.0])
-    ha, dec = np.degrees(np.arctan2(pole[1], pole[0])), np.degrees(np.arcsin(pole[2]))
-    return (f"{model.describe()} | polar axis points at ha {ha:+.1f} dec {dec:+.1f}")
+    return f"{model.describe()} | {describe_polar(model.R @ np.array([0.0, 0.0, 1.0]))}"
+
+
+def compare_runs(prev, run):
+    """How well two star calibrations agree. Each run carries its own polar axis (from its RA
+    turn alone, not the shared fit) and its camera's axis2 column, which is bolted to the tube
+    and so the same anywhere in the sky and on either side of the pier.
+
+    Returns (message, list of disagreements)."""
+    sep = float(angle_arcsec(sky_unit(*prev["at"]), sky_unit(*run["at"])) / 3600.0)
+    pole = float(angle_arcsec(np.asarray(prev["pole"]), np.asarray(run["pole"])) / 3600.0)
+    rot = float(geo.wrap180(run["rot_deg"] - prev["rot_deg"]))
+    scale = run["px_per_deg"] / prev["px_per_deg"] - 1.0
+    bad = []
+    if pole > REPEAT_POLE_DEG:
+        bad.append(f"polar axis differs by {pole:.2f} deg (tolerance {REPEAT_POLE_DEG:g})")
+    if abs(rot) > REPEAT_ROT_DEG:
+        bad.append(f"camera rotation differs by {rot:+.2f} deg - was the camera turned?")
+    if abs(scale) > REPEAT_SCALE:
+        bad.append(f"camera scale differs by {scale * 100:+.1f}% - refocused?")
+    kind = ("independent check" if sep >= INDEPENDENT_DEG else
+            f"same patch of sky, so repeatability only - for an independent check calibrate "
+            f"{INDEPENDENT_DEG:g}+ deg away")
+    msg = (f"vs the previous run {sep:.0f} deg away ({kind}): polar axis {pole:.2f} deg apart, "
+           f"camera rotation {rot:+.2f} deg, scale {scale * 100:+.2f}% - "
+           + ("AGREE" if not bad else "DISAGREE"))
+    return msg, bad
 
 
 # ---- camera calibration from solves ----
@@ -313,15 +365,36 @@ def calibrate_on_stars(mount, cam, solver, state, step_deg=None, track_rate=None
     rep = angle_arcsec(shots[0][0].vector(b), shots[2][0].vector(b)) / 3600.0
     log(f"{cam.name}: returning to the start differed by {rep * 60:.1f}' on the sky")
 
+    # This run's own verdict, before the shared fit mixes it with earlier ones
+    pole = np.asarray(dirs[0]["v"], dtype=float)
+    pole = pole * np.sign(pole[2] or 1.0)
+    run = {"t": float(shots[0][0].t), "camera": cam.name, "at": list(shots[0][0].hadec(b)),
+           "step_deg": step, "pole": pole.tolist(),
+           "rot_deg": float(np.degrees(np.arctan2(J[1, 1], J[0, 1]))),
+           "px_per_deg": float(np.linalg.norm(J[:, 1]))}
+    log(f"{cam.name}: this run alone: {describe_polar(pole)}")
+    runs = state.setdefault("alignment", {}).setdefault("runs", [])
+    prev = next((r for r in reversed(runs) if r["camera"] == cam.name), None)
+    if prev is not None:
+        msg, bad = compare_runs(prev, run)
+        log(f"{cam.name}: {msg}")
+        if warnings is not None:
+            warnings += [f"{cam.name}: star calibrations disagree: {m}" for m in bad]
+    else:
+        log(f"{cam.name}: first star calibration since the alignment was cleared - repeat it "
+            f"{INDEPENDENT_DEG:g}+ deg away to confirm it")
+
     for s, a in shots:
         add_point(state, a, *s.hadec(b), s.t, source=f"starcal-{cam.name}")
+    runs.append(run)
     state["alignment"].setdefault("axis_dirs", []).extend(dirs)
     model, shift = refit(state, mount, state.get("cameras"))
     if shift:
         log(f"Dec index corrected by {shift:+.2f} deg - axis2 now reads the true declination")
     log(f"alignment: {describe(state)}")
 
-    dec_cal = float(geo.axis2_to_dec(mount.position()[1]))
+    axis2_cal = float(mount.position()[1])
+    dec_cal = float(geo.axis2_to_dec(axis2_cal))
     # From the solves' own scale: J also carries how far the axes really turned, and on a
     # mount whose RA gives short measure that reads as a shorter lens.
     arcsec = float(np.median([s.scale_arcsec() for s, _ in shots]))
@@ -335,7 +408,7 @@ def calibrate_on_stars(mount, cam, solver, state, step_deg=None, track_rate=None
                         f"config.toml. Unlike an indoor calibration this is not muddled by "
                         f"target distance or gearing.")
     # J is measured at the centre; the boresight is carried forward untouched
-    return {"J": J.tolist(), "dec_cal": dec_cal,
+    return {"J": J.tolist(), "dec_cal": dec_cal, "axis2_cal": axis2_cal,
             "boresight": list(cal_old.get("boresight", b.tolist())), "source": "stars"}
 
 

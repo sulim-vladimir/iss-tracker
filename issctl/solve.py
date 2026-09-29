@@ -210,7 +210,8 @@ def _mono(img):
     return g.mean(axis=2) if g.ndim == 3 else g
 
 
-def find_stars(img, max_stars=80, kernel=15, sigma=4.0, max_area=150, edge=4, tile=64, busy=2.0, lively_max=0.04):
+def find_stars(img, max_stars=80, kernel=15, sigma=4.0, peak_sigma=6.0, max_area=1000, edge=4,
+               tile=64, busy=2.0, lively_max=0.04):
     """Star positions, brightest first, as (x, y, flux) - and NOT the lit building next to them.
 
     solve-field's own extractor ranks sources by brightness, and from a balcony the brightest
@@ -258,6 +259,11 @@ def find_stars(img, max_stars=80, kernel=15, sigma=4.0, max_area=150, edge=4, ti
             continue          # other structure all around it: part of the scenery
         sel = lab[y0:y0 + bh, x0:x0 + bw] == i
         wts = th[y0:y0 + bh, x0:x0 + bw] * sel
+        # Traced at `sigma`, kept only if it PEAKS well above it: at 4 sigma over a million
+        # pixels a few dozen noise blobs always get through, and on a thin night they outnumber
+        # the stars and the solve fails.
+        if float(wts.max()) < base + peak_sigma * sky_noise:
+            continue
         flux = float(wts.sum())
         yy, xx = np.mgrid[y0:y0 + bh, x0:x0 + bw]
         out.append((float((xx * wts).sum() / flux), float((yy * wts).sum() / flux), flux))

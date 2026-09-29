@@ -53,6 +53,8 @@
   <input id="target" title="star or planet name, 'RAh Dec', '18:36:56 +38:47:01', or 'altaz ALT AZ'"
   placeholder="vega / jupiter" style="width:104px">
   <button onclick="mnt('goto',{target:tgt()})">goto</button>
+  <button title="slew back to home: counterweight down, tube along the polar axis. Tracking stops"
+  onclick="if(confirm('Slew to home (counterweight down, tube at the pole)?')) mnt('gohome',{})">go home</button>
   <button onclick="mnt('sync',{target:tgt()})">sync</button>
   <button title="solve the guide frame and move this target exactly onto the green cross - works however little the mount knows where it is"
   onclick="mnt('solve_centre',{target:tgt()})">centre by solve</button></div>
@@ -73,7 +75,8 @@
 <!-- @status -->
 <div class="panel box calib"><h2>Calibration</h2>
  <div class="ctl">
-  <button onclick="if(confirm('Set current position as home?')) mnt('home',{})">set home</button>
+  <button title="DECLARE the current pose to be home. Does not move. Throws the star alignment away - only for when the tube really is at home and the counters are lost"
+  onclick="if(confirm('Declare the CURRENT pose as home?\n\nThis does not move the mount. It redefines the counters and throws away the star alignment. To slew back to home, use \'go home\' instead.')) mnt('home',{})">set home</button>
   <button title="calibrate both cameras by following the detected target - the only mode that can measure the guide-&gt;main boresight"
   onclick="mnt('calibrate',{})">both cameras on target</button>
   <button title="calibrate both cameras by following the scenery itself. Nothing to select first. Measures the image scale, but not the boresight"

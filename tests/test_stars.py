@@ -138,6 +138,46 @@ def test_star_calibration_finds_the_cone_from_one_spot(cfg):
         assert err < 0.2, (a, err)
 
 
+def _starcal(mount, cam, solver, state, warnings=None, logs=None):
+    return align.calibrate_on_stars(mount, cam, solver, state, warnings=warnings,
+                                    log=(logs.append if logs is not None else lambda *a: None),
+                                    slew_rate=3.0, settle_s=0.0)
+
+
+def test_star_calibration_reports_the_polar_error(cfg):
+    mount, world, cam, solver = rig(cfg)
+    state, logs = {}, []
+    _starcal(mount, cam, solver, state, logs=logs)
+    truth = align.polar_error(world.sky_model.R @ [0.0, 0.0, 1.0])
+    ours = align.polar_error(align.current_model(state).R @ [0.0, 0.0, 1.0])
+    run = align.polar_error(state["alignment"]["runs"][0]["pole"])
+    assert np.allclose(ours, truth, atol=0.2) and np.allclose(run, truth, atol=0.2)
+    assert any("this run alone" in m for m in logs)
+    assert "turn it" in align.describe(state)
+
+
+def test_two_star_calibrations_far_apart_agree(cfg):
+    mount, world, cam, solver = rig(cfg)
+    state, warnings, logs = {}, [], []
+    _starcal(mount, cam, solver, state, warnings, logs)
+    mount.move_to(mount.position() + [35.0, 10.0], max_rate=3.0)
+    _starcal(mount, cam, solver, state, warnings, logs)
+    assert not warnings, warnings
+    msg = [m for m in logs if "vs the previous run" in m]
+    assert len(msg) == 1 and "independent check" in msg[0] and "AGREE" in msg[0]
+
+
+def test_star_calibrations_flag_a_turned_camera(cfg):
+    mount, world, cam, solver = rig(cfg)
+    state, warnings = {}, []
+    _starcal(mount, cam, solver, state, warnings)
+    c, s = np.cos(np.radians(3.0)), np.sin(np.radians(3.0))
+    J = np.array(world.true_cal["guide"]["J"])
+    world.true_cal["guide"]["J"] = (np.array([[c, -s], [s, c]]) @ J).tolist()
+    _starcal(mount, cam, solver, state, warnings)
+    assert len(warnings) == 1 and "camera rotation" in warnings[0]
+
+
 def test_sync_after_a_hand_push_keeps_the_alignment(cfg):
     mount, world, cam, solver = rig(cfg)
     state = {}

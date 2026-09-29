@@ -150,14 +150,14 @@ reports a confident translation that never happened.
 
 ## Not built yet
 
-* **The fitted pointing model.** `issctl/model.py` has a 5-parameter model (orientation, Dec
-  index, cone error) that is still **not wired into** the planner, mount or pass mode. Servo mode
-  made it unnecessary for tracking, but it is still what would let the PLANNER say whether a pass
-  is reachable before you go outside, and what `sync` should feed instead of shifting the index.
-  The maths is verified: from 6 points with 5" noise it recovers a 53.66 deg axis tilt and points
-  to 3.6" median. Two well-separated points are enough to fix the orientation, and the ISS itself
-  supplies them - but a single-pass fit absorbs the TLE timing error into the orientation, so do
-  not persist one as the mount's alignment.
+* ~~The fitted pointing model~~ - done: star calibration (`align.calibrate_on_stars`) fits it
+  and it feeds goto, sync, the tracking rates, pass planning and `servo_window`. Each star
+  calibration also reports the polar error on its own ("lower it X, turn it Y west") and compares
+  itself with the previous run: polar axis within 0.5 deg, camera rotation within 0.5 deg, scale
+  within 1%. Only runs 20+ deg apart are an independent check. One run's pole is only as good as
+  the solves over its ~1 deg RA turn (sim: 0.1 deg at 2" solve noise, 0.6 deg at 10"); a bigger
+  `star_cal_step_deg` tightens it. Do not persist a single-pass ISS fit as the alignment - it
+  absorbs the TLE timing error into the orientation.
 * **Sensors** (accelerometer for tilt, magnetometer for repeatability) - discussed, postponed.
 * Backlash compensation; latency tuning from real logs.
 

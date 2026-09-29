@@ -609,17 +609,38 @@ def cmd_console(args, cfg):
         if not cal:
             say("calibrate the guide first - the move is worked out in its image")
             return
-        sol, _, _ = solve_here()
-        ha, dec, _, _ = pr.target_hadec(name, site, sol.t)
-        px = sol.pixel_hadec(ha, dec)
-        d = centring_move(cal, mount.position()[1], px)
-        if d is None:
-            say(f"{name} is too far from the guide field to centre from here - goto it first")
-            return
-        mount.move_to(mount.position() + d,
-                      track_rate=sidereal() if ui["tracking"] else None,
-                      abort=aborted, approach=state.get("backlash_deg"))
-        say(f"{name} moved onto the boresight ({np.hypot(*d) * 60:.1f}' move)")
+        # Repeat until it is there: on the real mount each move landed ~5% short (the RA drive's
+        # short measure plus slack), so a single move left 20' and it took three presses.
+        for attempt in range(1, 5):
+            sol, _, _ = solve_here()
+            ha, dec, _, _ = pr.target_hadec(name, site, sol.t)
+            px = sol.pixel_hadec(ha, dec)
+            axis2 = mount.position()[1]
+            d = centring_move(cal, axis2, px)
+            if d is None:
+                say(f"{name} is too far from the guide field to centre from here - goto it first")
+                return
+            off = float(np.hypot(*(d * geo.sky_metric(axis2)))) * 60
+            if off < 1.0:
+                say(f"{name} is on the boresight ({off:.1f}' off, {attempt - 1} move"
+                    f"{'s' * (attempt != 2)})")
+                return
+            if aborted():
+                return
+            mount.move_to(mount.position() + d,
+                          track_rate=sidereal() if ui["tracking"] else None,
+                          abort=aborted, approach=state.get("backlash_deg"))
+            say(f"{name}: moved {off:.1f}' towards the boresight")
+        say(f"{name}: still not within 1' after 4 moves - the guide matrix may need redoing")
+
+    def go_home():
+        """Slew to the home pose: counterweight down, tube along the polar axis. Home as the
+        counters know it - after syncs that is within a few degrees of the mechanical one."""
+        from .mount import HOME
+        ui["tracking"] = False
+        say("going home...")
+        mount.move_to(HOME.copy(), abort=aborted)
+        say("home reached" if not aborted() else "going home aborted")
 
     def do_cal(only=None, mode="blob"):
         say(f"calibrating{'' if mode == 'blob' else f' on the scene ({mode})'}...")
@@ -873,7 +894,7 @@ def cmd_console(args, cfg):
         if aborted() and action not in ("stop", "frame", "speed"):
             ui["abort"].clear()  # any deliberate command clears the latched stop
         if action in ("jog", "goto", "track", "calibrate", "centre", "starcal",
-                      "solve_centre") and not ui["motors"]:
+                      "solve_centre", "gohome") and not ui["motors"]:
             mount.enable(True)
             ui["motors"] = True
         if action == "jog":
@@ -892,6 +913,9 @@ def cmd_console(args, cfg):
                              else "arrows drive the mount axes directly")
         elif action == "track":
             ui["tracking"] = params.get("on") not in (None, "0", "false")
+        elif action == "gohome":
+            ui["jog"][:] = 0
+            in_background(go_home)
         elif action == "home":
             ui["jog"][:] = 0
             ui["tracking"] = False

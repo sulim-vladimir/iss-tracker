@@ -26,8 +26,10 @@ body{background:#2f3439;color:#e8e8e8;font:14px/1.4 system-ui,sans-serif;margin:
  .row.cams .col{display:grid;grid-template-columns:repeat(2,minmax(150px,200px));gap:12px;
                  align-content:start;flex:0 0 auto}
  .row.cams .col .panel{width:auto;max-width:none;min-width:0;box-sizing:border-box;margin:0}
- .row.cams .col .panel.calib,
- .row.cams .col .panel.msgs{grid-column:1 / -1}
+ .row.cams .col .panel.calib{grid-column:1 / -1}
+ /* Messages sit above the warnings, in the middle column of the second row. */
+ .col.stack{display:flex;flex-direction:column;gap:16px;flex:1 1 320px;min-width:260px}
+ .col.stack .panel{flex:0 0 auto;width:100%;max-width:none;min-width:0;margin:0}
  /* The frames take whatever is left, and the main camera takes the larger share of it. */
  .row.cams .panel.cam{flex:1 1 420px;max-width:none}
  .row.cams .panel.cam-main{flex-grow:1.6}
@@ -67,6 +69,7 @@ body{background:#2f3439;color:#e8e8e8;font:14px/1.4 system-ui,sans-serif;margin:
  @media (max-width:760px){
   .row{flex-direction:column}
   .row.cams .col{display:contents}
+  .col.stack{width:100%}
   .panel{max-width:none;width:100%;min-width:0;order:5}
   .panel.cam-guide{order:1}
   .panel.slew{order:2}
