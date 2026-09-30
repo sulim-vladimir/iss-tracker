@@ -141,7 +141,6 @@ class Preview:
                       mount_panel=fill(f["mount"], estop=estop) if can_move else "",
                       status_panel=f["status"] if can_move else "",
                       warnings_panel=f["warnings"] if can_move else "",
-                      calinfo_panel=f["calinfo"] if can_move else "",
                       coming_panel=f["coming"] if can_move else "",
                       log_panel=f["log"] if can_move else "",
                       messages_panel=f["messages"] if can_move else "",
