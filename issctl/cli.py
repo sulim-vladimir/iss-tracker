@@ -132,10 +132,18 @@ def cmd_passes(args, cfg):
             print(f"   usable: {describe_windows(sat, site, rep, rep['track_start'])}")
 
 
+def guide_radius_deg(cfg):
+    """Half the guide field's short side: the circle certainly in view, whatever the camera's
+    rotation. The sky chart draws it round the pointing; "Through the guide field" counts it."""
+    from .solve import field_deg
+    return 0.5 * min(field_deg(cfg["cameras"]["guide"]))
+
+
 def sky_payload(cfg, mask, traj=None, site=None):
     """Static data for the sky chart: the pass track, the mask and the horizon limit."""
     out = {"mask": {"openings": mask.openings, "blockers": mask.blockers},
-           "min_alt": cfg["site"]["min_altitude"], "track": []}
+           "min_alt": cfg["site"]["min_altitude"], "track": [],
+           "guide_radius_deg": round(guide_radius_deg(cfg), 2)}
     if traj is not None and site is not None:
         step = max(1, len(traj.t) // 400)
         if getattr(traj, "az", None) is not None:
@@ -1194,7 +1202,8 @@ def cmd_console(args, cfg):
                 follow = bool(ui["tracking"])
                 items = forecaster.run(now, minutes=minutes, max_mag=float(
                     cfg.get("forecast", {}).get("field_max_mag", 7.5)),
-                    field=field_track(site, alt, az, now, times, follow))
+                    field=field_track(site, alt, az, now, times, follow),
+                    radius_deg=guide_radius_deg(cfg))
                 where = (f"Through the guide field (alt {alt:.0f}° az {az:.0f}°, "
                          f"{'following the stars' if follow else 'fixed'})")
             else:

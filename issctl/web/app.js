@@ -133,6 +133,20 @@ function pickSky(ev) {     // a click on the chart: the alt/az under it, for "Go
 function gotoSky() {
   if (SKY_PICK) mnt('goto_altaz', {az: SKY_PICK[0].toFixed(2), alt: SKY_PICK[1].toFixed(2)});
 }
+function skyCircle(alt, az, radius) {
+  // A circle ON THE SKY of `radius` degrees round (alt, az), as chart points. The chart stretches
+  // things sideways away from the zenith, so a plain SVG circle would be the wrong shape.
+  const d = Math.PI / 180, a0 = alt * d, r = radius * d, pts = [];
+  for (let b = 0; b < 360; b += 10) {
+    const br = b * d;
+    const a1 = Math.asin(Math.sin(a0) * Math.cos(r) + Math.cos(a0) * Math.sin(r) * Math.cos(br));
+    const z1 = az * d + Math.atan2(Math.sin(br) * Math.sin(r) * Math.cos(a0),
+                                   Math.cos(r) - Math.sin(a0) * Math.sin(a1));
+    const [x, y] = pos(z1 / d, a1 / d);
+    pts.push(x.toFixed(1) + ',' + y.toFixed(1));
+  }
+  return pts.join(' ');
+}
 function pos(az, alt) {
   const r = (90 - Math.max(alt, 0)) / 90 * R, a = az * Math.PI / 180;
   return [CX + r * Math.sin(a), CY - r * Math.cos(a)];
@@ -186,10 +200,11 @@ function drawSky(s) {
       svg.appendChild(el('line', {x1: x - dx, y1: y - dy, x2: x + dx, y2: y + dy,
         stroke: '#ffd24a', 'stroke-width': 2}));
   }
-  if (s.pointing) {  // where the mount looks
+  if (s.pointing) {  // where the mount looks, and what the guide sees round it
     const [x, y] = pos(s.pointing[1], s.pointing[0]);
-    svg.appendChild(el('circle', {cx: x, cy: y, r: 6, fill: 'none', stroke: '#ffd24a',
-      'stroke-width': 2}));
+    const ring = skyCircle(s.pointing[0], s.pointing[1], (SKY && SKY.guide_radius_deg) || 6.5);
+    svg.appendChild(el('polygon', {points: ring, fill: '#ffd24a', 'fill-opacity': 0.08,
+      stroke: '#ffd24a', 'stroke-width': 1.5}));
     svg.appendChild(el('circle', {cx: x, cy: y, r: 1.5, fill: '#ffd24a'}));
   }
   if (s.target) {  // the ISS itself: solid red dot, drawn on top
