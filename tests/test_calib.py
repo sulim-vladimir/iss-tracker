@@ -437,3 +437,21 @@ def test_detect_edge_margin_is_the_frame_edge_not_the_window_edge():
     assert detect(img, 6.0, 12, False, edge_margin=20) is None      # (12 px: no noise blobs)
     assert detect(img, 6.0, 12, False, (12.0, 500.0, 40.0), edge_margin=20) is None
     assert detect(img, 6.0, 12, False, (12.0, 500.0, 40.0)) is not None
+
+
+def test_smoothing_finds_a_faint_object_the_plain_threshold_misses():
+    """A satellite a little brighter than the noise, spread over a few pixels: 6 sigma per pixel
+    never saw it (the red circle never appeared on the rig); smoothed by a star's width, it is."""
+    from issctl.detect import detect
+
+    rng = np.random.default_rng(7)
+    img = rng.normal(20, 4, (480, 640))
+    yy, xx = np.mgrid[0:480, 0:640]
+    img += 11.0 * np.exp(-((xx - 300.3) ** 2 + (yy - 200.6) ** 2) / (2 * 1.4 ** 2))
+    img = np.clip(img, 0, 255).astype(np.uint8)
+    gate = (305.0, 197.0, 38.0)
+    assert detect(img, 6.0, 3, False, gate) is None
+    got = detect(img, 5.0, 3, False, gate, smooth=1.0)
+    assert got is not None and abs(got.x - 300.3) < 1.0 and abs(got.y - 200.6) < 1.0
+    # and in the same frame, away from it, the smoothed 5 sigma finds nothing
+    assert detect(img, 5.0, 3, False, (100.0, 400.0, 38.0), smooth=1.0) is None

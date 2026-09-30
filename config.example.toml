@@ -88,6 +88,8 @@ usb_bandwidth = 80
 latency_s = 0.01              # extra delay between mid-exposure and frame arrival
 detect_sigma = 6.0
 detect_min_area = 3
+detect_smooth = 1.0           # px: smoothing first lifts faint stars/satellites above the noise
+detect_sigma_picked = 5.0     # threshold inside a pick you clicked (a small circle): fainter still
 detect_max_area = 0           # reject sprawling regions (0 = no limit); a lit wall is not a star
 detect_edge_margin = 3        # ignore blobs touching the frame border (vignetting, scenery edges)
 # Plate solving (star calibration, sync on stars). The ISS exposure is far too short for stars,

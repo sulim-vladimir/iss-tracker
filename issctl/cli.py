@@ -928,8 +928,9 @@ def cmd_console(args, cfg):
         frame = cam.latest()[0]
         radius = max(20.0, 0.03 * cam.width)
         hit = None if frame is None else snap(
-            frame, x, y, radius, sigma=cam.cfg.get("detect_sigma", 6.0),
-            min_area=cam.cfg.get("detect_min_area", 3), bayer=bool(cam.cfg.get("bayer")))
+            frame, x, y, radius, sigma=cam.cfg.get("detect_sigma_picked", cam.cfg.get("detect_sigma", 6.0)),
+            min_area=cam.cfg.get("detect_min_area", 3), bayer=bool(cam.cfg.get("bayer")),
+            smooth=cam.cfg.get("detect_smooth", 0.0))
         if hit is None:
             say(f"{name}: nothing bright within {radius:.0f} px of the click - using the click "
                 f"itself")

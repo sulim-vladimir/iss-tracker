@@ -103,9 +103,15 @@ class Camera:
                 continue
             misses = restarts = 0
             gate = self.gate  # snapshot: a click may replace it while we are detecting
-            det = detect(img, self.cfg["detect_sigma"], self.cfg["detect_min_area"], self.bayer, gate,
+            # Inside a pick you made, a lower threshold: the search is a small circle round what
+            # you clicked, so it can afford to take fainter things without picking up noise.
+            sigma = self.cfg["detect_sigma"]
+            if gate is not None and self.manual:
+                sigma = self.cfg.get("detect_sigma_picked", sigma)
+            det = detect(img, sigma, self.cfg["detect_min_area"], self.bayer, gate,
                          max_area=self.cfg.get("detect_max_area", 0),
-                         edge_margin=self.cfg.get("detect_edge_margin", 0))
+                         edge_margin=self.cfg.get("detect_edge_margin", 0),
+                         smooth=self.cfg.get("detect_smooth", 0.0))
             if det:
                 det.t = t
                 if self.follow and gate is not None and self.gate is gate:
