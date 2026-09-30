@@ -12,7 +12,7 @@
  <input id="gain-{{name}}" onchange="api('/api/gain',{cam:'{{name}}',value:this.value})">
  <button onclick="api('/api/gain',{cam:'{{name}}',delta:25})">+</button></div>
 <div class="ctl"><label>Target</label><span id="sel-{{name}}"></span></div>
-<div class="ctl btns">
+{{servo}}<div class="ctl btns">
  <button onclick="api('/api/select',{cam:'{{name}}',clear:1})">Auto</button>{{bore}}{{centre}}</div>
 <div class="info" id="info-{{name}}"></div>
 {{extra}}</div>
@@ -26,6 +26,11 @@
  onclick="mnt('calibrate',{cam:'NAME',mode:'scene'})">calibrate on scenery</button>
  <button id="corners-NAME" title="draw the corners that 'calibrate on scenery' would follow. If few or none appear, there is too little structure here - focus it, or point somewhere with more detail"
  onclick="api('/api/corners',{cam:'NAME',on: this.className!=='on' ? 1 : 0})">show corners</button>
+
+<!-- @servo -->
+<div class="ctl btns">
+ <button id="servobtn" title="servo mode: follow whatever you click in this image - a satellite, the ISS, a plane - with no orbit and no alignment. Either order works: click the object then press this, or press this then click it (a click always restarts the lock on what you clicked). Shorten the exposure first: 8 ms for the ISS, 50-200 ms for fainter satellites. Stops by itself after servo_give_up_s with nothing detected"
+ onclick="mnt(MODE==='track' ? 'untrack' : 'servo', {})">Follow what I click</button></div>
 
 <!-- @bore -->
  <button id="bore-NAME" title="move the green cross: press this, then click the object sitting in the MIDDLE of the main image - the click snaps to the brightest spot nearby. That is what the boresight means. Only trust it on something a kilometre away or more, or the parallax between the two cameras is wider than the main field"
@@ -64,12 +69,12 @@
   <button id="siderealbtn" title="follow the stars at sidereal rate"
   onclick="mnt('track',{on: this.className === 'on' ? 0 : 1})">sidereal off</button></div>
  <div class="ctl">
-  <button id="trackbtn" onclick="mnt(MODE==='track' ? 'untrack' : 'track',
-    {pass: document.getElementById('passidx').value})">Track next pass</button>
-  <input id="passidx" placeholder="next" style="width:56px" title="pass index from 'passes', or blank for the next usable one"></div>
+  <button id="trackbtn" title="plan and track the next usable pass of the satellite named on the right - the ISS if it is blank"
+  onclick="mnt(MODE==='track' ? 'untrack' : 'track',
+    {sat: document.getElementById('trackname').value, pass: document.getElementById('passidx').value})">Track next pass</button>
+  <input id="trackname" placeholder="ISS" style="width:96px" title="satellite name or NORAD number (e.g. 42065, NOSS 3-8 (B)) - blank for the ISS">
+  <input id="passidx" placeholder="next" style="width:40px" title="pass index from 'issctl passes', or blank for the next usable one"></div>
  <div class="ctl">
-  <button id="servobtn" title="servo mode: follow whatever you click in the GUIDE image - a satellite, the ISS, a plane - with no orbit and no alignment. Shorten the guide exposure first (8 ms for the ISS, 50-200 ms for fainter satellites), press this, then click the object. Stops by itself after servo_give_up_s with nothing detected"
-  onclick="mnt(MODE==='track' ? 'untrack' : 'servo', {})">Follow what I click</button>
   <button title="name the satellite the last session followed, from its log and the satellite catalogues (public and amateur-observed classified ones). Also runs by itself when a session ends"
   onclick="mnt('identify',{})">what was that?</button>
   <button id="identbtn" title="name satellites automatically: live in the guide caption while following, and once more when the session ends. Off saves the Pi a few seconds of work per session; 'what was that?' works either way"

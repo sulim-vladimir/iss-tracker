@@ -53,6 +53,42 @@ def describe_windows(sat, site, rep, t_ref):
     return ", ".join(out)
 
 
+ISS_NAMES = ("", "iss", "25544", "iss (zarya)", "zarya")
+
+
+class UnknownSatellite(ValueError):
+    """No catalogue entry, or several, for what was asked."""
+
+
+def get_satellite(cfg, query=None, offline=False, log=print):
+    """(skyfield satellite, name) for "ISS" or any catalogue satellite, by name or NORAD number.
+
+    The ISS keeps its own TLE ([tle] url, refreshed every max_age_hours) - the one the tracker has
+    always used. Anything else comes from the satellite catalogues (identify.py): CelesTrak's
+    active and visual groups and McCants' classified orbits."""
+    from . import identify as idf
+    if str(query or "").strip().lower() in ISS_NAMES:
+        return pr.make_satellite(pr.get_tle(cfg, offline=offline)), "ISS"
+    tles = idf.load_tles(idf.refresh_catalogs(log=log, offline=offline))
+    found = idf.find_satellite(query, tles)
+    if not found:
+        raise UnknownSatellite(f"no satellite called '{query}' in the catalogues")
+    if len(found) > 1:
+        names = ", ".join(f"{n} ({i})" for n, i, _, _ in found[:6])
+        raise UnknownSatellite(f"'{query}' matches {len(found)} satellites: {names}"
+                         + (" ..." if len(found) > 6 else "") + " - give the number")
+    name, sid, l1, l2 = found[0]
+    return pr.make_satellite((name, l1, l2)), name
+
+
+def pass_at(rows, t):
+    """The pass from list_passes that is up at time t (a Coming-up entry), or None."""
+    for row in rows:
+        if row[0]["rise"] - 60 <= t <= row[0]["set"] + 60:
+            return row
+    return None
+
+
 def describe_shadow(rep, t_ref=None):
     if not rep["shadow"]:
         return "sunlit throughout" if rep["sunlit_s"] > 0 else "in shadow throughout"
@@ -82,11 +118,11 @@ def list_passes(cfg, sat, site, t0, hours, mask=None, model=None):
 
 def cmd_passes(args, cfg):
     site = pr.Site(cfg)
-    sat = pr.make_satellite(pr.get_tle(cfg, offline=args.offline))
+    sat, name = get_satellite(cfg, args.sat, offline=args.offline)
     mask = SkyMask.from_config(cfg)
     now = time.time()
     model = align.current_model(load_state())
-    print(f"TLE age {pr.tle_age_days(sat, now):.1f} days | sky: {mask.describe()} | "
+    print(f"{name} | TLE age {pr.tle_age_days(sat, now):.1f} days | sky: {mask.describe()} | "
           f"mount: {model.describe() if model else 'no star alignment - assumed polar aligned'}")
     for i, (p, rep, vis) in enumerate(list_passes(cfg, sat, site, now, args.hours, mask, model)):
         print(f"{i:2d} {fmt_t(p['rise'])}  max {p['max_alt']:4.1f}  {vis:7s} {describe(rep)}")
@@ -936,7 +972,7 @@ def cmd_console(args, cfg):
             # "track" with "on" is the sidereal toggle, handled below. Taking every "track" as a
             # pass made the sidereal button start an ISS session - with a usable pass coming,
             # a slew to where it begins.
-            return start_tracking(params.get("pass"))
+            return start_tracking(params.get("pass"), params.get("sat"), params.get("at"))
         if action == "servo":
             return start_servo()
         if action == "untrack":
@@ -1227,7 +1263,9 @@ def cmd_console(args, cfg):
         session["thread"] = threading.Thread(target=run_session, name="servo-session", daemon=True)
         session["thread"].start()
 
-    def start_tracking(index=None):
+    def start_tracking(index=None, which=None, at=None):
+        """Track the next usable pass of a satellite - the ISS unless `which` names another, by
+        name or NORAD number. `at` (unix time, a Coming-up entry) picks the pass up at that time."""
         if session["thread"] and session["thread"].is_alive():
             return
         from .control import Tracker
@@ -1235,14 +1273,20 @@ def cmd_console(args, cfg):
         def run_session():
             try:
                 ui["msg"] = "planning pass..."
-                sat = pr.make_satellite(pr.get_tle(cfg))
+                sat, name = get_satellite(cfg, which, log=say)
                 mask = SkyMask.from_config(cfg)
                 model = align.current_model(state)
                 rows = list_passes(cfg, sat, site, clock.now() - 60, 24, mask, model)
                 if not rows:
-                    ui["msg"] = "no passes in the next 24 h"
+                    ui["msg"] = f"{name}: no passes in the next 24 h"
                     return
-                if index not in (None, ""):
+                if at not in (None, ""):
+                    row = pass_at(rows, float(at))
+                    if row is None:
+                        ui["msg"] = f"{name}: no pass at {fmt_t(float(at))}"
+                        return
+                    p, rep, _ = row
+                elif index not in (None, ""):
                     p, rep, _ = rows[int(index)]
                 else:
                     cand = [r for r in rows if r[2] == "visible" and r[1]["useful_s"] > 0] or rows
@@ -1252,19 +1296,21 @@ def cmd_console(args, cfg):
                 rise, _ = pr.pass_horizon(sat, site, p)
                 session["traj"] = traj
                 session["info"] = {
-                    "start": traj.t_start, "end": traj.t_end, "rise": rise,
+                    "name": name, "start": traj.t_start, "end": traj.t_end, "rise": rise,
                     "max_alt": p["max_alt"],
                     "rise_at": f"{datetime.datetime.fromtimestamp(rise):%H:%M:%S}",
                     "starts_at": f"{datetime.datetime.fromtimestamp(traj.t_start):%H:%M:%S}"}
                 if rep["useful_s"] <= 0:
-                    ui["msg"] = f"pass at {fmt_t(p['rise'])} is not usable ({describe(rep)})"
+                    ui["msg"] = f"{name}: pass at {fmt_t(p['rise'])} is not usable ({describe(rep)})"
                     return
+                say(f"{name}: pass rising {fmt_t(p['rise'])}, max alt {p['max_alt']:.0f}, "
+                    f"{describe(rep)}")
                 stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
                 logs = ROOT / "logs"
                 logs.mkdir(exist_ok=True)
                 tracker = Tracker(cfg, state, mount, cams, clock, traj,
                                   log=lambda s: ui.__setitem__("msg", s),
-                                  log_path=logs / f"track-{stamp}.csv")
+                                  log_path=logs / f"track-{stamp}.csv", name=name)
                 write_session_state(logs / f"track-{stamp}.csv", state)
                 session["csv"] = logs / f"track-{stamp}.csv"
                 run_tracker(tracker, "tracking")
@@ -1299,6 +1345,19 @@ def cmd_console(args, cfg):
             return None
         return {"source": tr.source, "main_streak": int(getattr(tr, "main_streak", 0)),
                 "handoff": int(tr.tr.get("main_handoff_frames", 0))}
+
+    def click_target(name, x, y):
+        """A click on a camera image. While a session runs it goes to the tracker - "this is the
+        target, start again on it" - so servo can be started first and clicked after; before
+        one it only points the camera's detection at the object, which the session then picks up."""
+        tr = session["tracker"]
+        if tr is not None and ui["mode"] == "track":
+            if x is None:
+                tr.clear_selection(name)
+            else:
+                tr.select(name, x, y)
+        elif x is not None:
+            cams[name].select(x, y)
 
     def mount_status():
         pos, alt_s, az_s = pointing()
@@ -1338,6 +1397,7 @@ def cmd_console(args, cfg):
         start_preview(cams, state, args.port or cfg["preview"]["port"], status=status_lines,
                       controls=make_controls(cams, recorder, mount_action, mount_status,
                                              estop=emergency_stop, stopped=aborted,
+                                             on_select=click_target,
                                              on_settings=lambda n, c: remember_settings(state, state_path, n, c),
                                              sky=sky_now, pointing=lambda: pointing()[1:],
                                              target=target_now, pass_info=pass_now,
@@ -1576,7 +1636,10 @@ def cmd_track(args, cfg):
         from .sim import SimWorld, misalignment
 
         site = pr.Site(cfg)
-        sat = pr.make_satellite(pr.SIM_TLE)
+        if args.sat:
+            sat, name = get_satellite(cfg, args.sat, offline=True)
+        else:
+            sat, name = pr.make_satellite(pr.SIM_TLE), "ISS"
         mask = SkyMask.from_config(cfg)
         passes = pr.find_passes(sat, site, pr.time_to_unix(sat.epoch), 48)
         model = misalignment(site.lat, (args.polar_error, -0.6 * args.polar_error),
@@ -1633,7 +1696,7 @@ def cmd_track(args, cfg):
     else:
         clock = Clock()
         site = pr.Site(cfg)
-        sat = pr.make_satellite(pr.get_tle(cfg, offline=args.offline))
+        sat, name = get_satellite(cfg, args.sat, offline=args.offline)
         mask = SkyMask.from_config(cfg)
         rows = list_passes(cfg, sat, site, time.time() - 60, 24, mask)
         if not rows:
@@ -1653,7 +1716,7 @@ def cmd_track(args, cfg):
         apply_saved_settings(cams, state)
         lead = None
 
-    print(f"pass {fmt_t(p['rise'])} max {p['max_alt']:.1f} deg: {describe(rep)}")
+    print(f"{name}: pass {fmt_t(p['rise'])} max {p['max_alt']:.1f} deg: {describe(rep)}")
     horizon_rise, horizon_set = pr.pass_horizon(sat, site, p)
     print(f"sky path: {sky_path(sat, site, p)}")
     print(f"above horizon: {fmt_t(horizon_rise)} .. {datetime.datetime.fromtimestamp(horizon_set):%H:%M:%S} "
@@ -1683,7 +1746,7 @@ def cmd_track(args, cfg):
               "click it in the guide image")
     else:
         reference = traj
-    tracker = Tracker(cfg, state, mount, cams, clock, reference, log_path=log_path)
+    tracker = Tracker(cfg, state, mount, cams, clock, reference, log_path=log_path, name=name)
 
     def status_lines(name):
         if name != "guide":
@@ -1754,6 +1817,7 @@ def main(argv=None):
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("passes", help="list upcoming passes and whether the mount can follow them")
+    p.add_argument("--sat", help="satellite name or NORAD number (default: the ISS)")
     p.add_argument("--hours", type=float, default=48)
     p.add_argument("--offline", action="store_true")
 
@@ -1781,7 +1845,8 @@ def main(argv=None):
     p.add_argument("--web", action="store_true",
                    help="browser only, no terminal UI (handy over SSH or from a phone)")
 
-    p = sub.add_parser("track", help="track a pass")
+    p = sub.add_parser("track", help="track a pass of the ISS or any catalogued satellite")
+    p.add_argument("--sat", help="satellite name or NORAD number (default: the ISS)")
     p.add_argument("--port", type=int, help="preview port (default from config)")
     p.add_argument("--pass", dest="pass_index", type=int, help="index from 'passes' (default: next visible)")
     p.add_argument("--offline", action="store_true")
@@ -1816,9 +1881,13 @@ def main(argv=None):
 
     args = ap.parse_args(argv)
     cfg = load_config(args.config)
-    {"passes": cmd_passes, "mount-test": cmd_mount_test, "console": cmd_console,
-     "track": cmd_track, "axis-scale": cmd_axis_scale, "solve-setup": cmd_solve_setup,
-     "solve": cmd_solve, "identify": cmd_identify}[args.cmd](args, cfg)
+    commands = {"passes": cmd_passes, "mount-test": cmd_mount_test, "console": cmd_console,
+                "track": cmd_track, "axis-scale": cmd_axis_scale, "solve-setup": cmd_solve_setup,
+                "solve": cmd_solve, "identify": cmd_identify}
+    try:
+        commands[args.cmd](args, cfg)
+    except UnknownSatellite as e:
+        raise SystemExit(str(e))
 
 
 if __name__ == "__main__":

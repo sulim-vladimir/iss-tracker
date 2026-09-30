@@ -112,3 +112,52 @@ class _FakeTrajectory:
 
     def open_at(self, tq):
         return 1.0
+
+
+class _ClickCam:
+    """Just what the tracker touches on a camera when it is told what to follow."""
+
+    def __init__(self, width=1280, height=960):
+        self.width, self.height, self.gate, self.manual = width, height, None, False
+
+    def select(self, x, y, radius=None):
+        self.gate, self.manual = (x, y, 40.0), True
+
+    def clear_selection(self):
+        self.gate, self.manual = None, False
+
+    def latest(self):
+        return None, None, 0            # no frames of its own: the test feeds _vision directly
+
+
+def test_a_click_during_servo_restarts_on_the_clicked_object(cfg):
+    """Started first, servo locks onto the brightest thing - often a star. A click on the real
+    target then has to win outright: before, it was either rejected as a jump (the console never
+    passed clicks on) or blended half-way in with the old rate, which lurches the mount."""
+    from issctl.calib import axes_offset_from_pixel, ideal_calibration
+    from issctl.detect import Detection
+
+    clock = Clock()
+    mount = SimMount(cfg, {}, clock, start=HOME + [30.0, -40.0])
+    cal = ideal_calibration(cfg["cameras"]["guide"], rotation_deg=20.0, dec_cal=50.0)
+    cam = _ClickCam()
+    t = Tracker(cfg, {"cameras": {"guide": cal}}, mount, {"guide": cam}, clock, FreeRun())
+    t.step()
+
+    def seen(x, y):
+        now = clock.now()
+        t._vision("guide", Detection(x, y, 1000.0, 20, now))
+        return now
+
+    for _ in range(3):                      # locked on a "star" and following it for a while
+        seen(500.0, 400.0)
+        clock.sleep(0.2)
+    t.cross_rate[:] = [0.05, -0.02]          # whatever it had learned about the star
+    t.select("guide", 800.0, 600.0)          # the user clicks the satellite, 360 px away
+    now = seen(800.0, 600.0)
+    meas = mount.position_at(now)
+    target = meas + axes_offset_from_pixel(cal, meas[1], (800.0, 600.0))
+    p, _ = t.traj.at(now)
+    assert np.allclose(p + t.cross_at(now), target, atol=1e-3)   # all the way there, at once
+    assert np.allclose(t.cross_rate, 0.0)                        # and none of the star's motion
+    assert cam.manual and t.source == "guide"

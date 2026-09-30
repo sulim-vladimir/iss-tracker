@@ -76,7 +76,9 @@ class FreeRun:
 
 
 class Tracker:
-    def __init__(self, cfg, state, mount, cameras, clock, traj, log=print, log_path=None):
+    def __init__(self, cfg, state, mount, cameras, clock, traj, log=print, log_path=None,
+                 name="ISS"):
+        self.name = name          # what is being followed, for the messages
         self.cfg, self.mount, self.cams, self.clock, self.traj, self.log = cfg, mount, cameras, clock, traj, log
         m, tr = cfg["mount"], cfg["tracking"]
         self.tr = tr
@@ -141,6 +143,11 @@ class Tracker:
         cam.select(x, y)
         self.force_accept = True
         self.main_streak = 0
+        # A fresh start on the clicked object, not a correction blended into whatever was being
+        # followed: that may have been a star, and half a jump plus a rate kick is a lurch.
+        self.last_good = -np.inf
+        if self.servo:
+            self.cross_rate[:] = 0.0      # in servo mode the rate belonged to the old object
         self.log(f"target selected by hand in {name} at ({x:.0f}, {y:.0f})")
 
     def clear_selection(self, name=None):
@@ -317,7 +324,7 @@ class Tracker:
         if visible != self.visible:
             reason = "shadow" if lit < self.tr["shadow_threshold"] else "blocked"
             if not visible:
-                self.log(f"ISS {'entering Earths shadow' if reason == 'shadow' else 'behind an obstruction'}"
+                self.log(f"{self.name} {'entering Earths shadow' if reason == 'shadow' else 'behind an obstruction'}"
                          " - coasting on prediction")
                 self.source = reason
                 self.main_streak = 0
@@ -327,7 +334,7 @@ class Tracker:
                     if not cam.manual:
                         cam.gate = None
             else:
-                self.log("ISS should be back in view - looking for it again")
+                self.log(f"{self.name} should be back in view - looking for it again")
                 self.source = "predict"
             if self.on_visibility:
                 self.on_visibility(visible, reason)

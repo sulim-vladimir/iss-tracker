@@ -135,6 +135,7 @@ class Preview:
                    extra=f["record"] if (n == "main" and can_record) else "",
                    # main's aim point is its frame centre; only the guide's is set by hand
                    bore=f["bore"].replace("NAME", n) if (n != "main" and can_move) else "",
+                   servo=f["servo"] if (n == "guide" and can_move) else "",
                    centre=(f["centre"].replace("EXTRA", "" if n == "main" else f["in_frame"])
                            .replace("NAME", n)
                            .replace("LABEL", "centre it" if n == "main" else "send to main")

@@ -193,8 +193,9 @@ a button in the browser; the sections below explain them.
    main camera does not see it, and **calibrate main on star** - see [Main camera](#main-camera).
 6. **Guide boresight.** With the star in the middle of the main image, press **set boresight** on
    the guide and click the star: the click snaps to the nearest bright spot.
-7. **Track.** **Track next pass** for the ISS, or **Follow what I click** (servo) for anything you
-   can see in the guide - check **Coming up** for what is due. Keep the page open: it carries the
+7. **Track.** **Track next pass** for the ISS or any catalogued satellite (or **track** on a
+   **Coming up** row), or **Follow what I click** under the guide image (servo) for anything you
+   can see. Keep the page open: it carries the
    [emergency stop](#emergency-stop). Recording goes to `captures/*.ser`, the control log to
    `logs/track-*.csv` or `logs/servo-*.csv`.
 
@@ -324,13 +325,20 @@ after moving the tripod - that is a new star alignment, not a new calibration.
 ## Tracking
 
 **Pass mode** (**Track next pass**, `p` in the terminal, or `./issctl.sh track`) plans the next usable
-ISS pass through the pointing model and the sky mask, slews to the start `lead_s` early and follows
-the prediction, correcting timing and cross-track error from the cameras.
+pass through the pointing model and the sky mask, slews to the start `lead_s` early and follows the
+prediction, correcting timing and cross-track error from the cameras. It works for **any satellite**:
+leave the box next to the button empty for the ISS, or type a name or NORAD number (`42065`,
+`NOSS 3-8 (B)`) - it is looked up in the same catalogues as the naming, classified ones included.
+Each **Coming up** row has a **track** button for exactly that pass. From the command line:
+`./issctl.sh passes --sat 42065`, `./issctl.sh track --sat 42065`. In simulation, pass mode on
+NOSS 3-8 (B) kept the main camera in control 96% of the run at a median 10".
 
-**Servo mode** (**Follow what I click**, `v`, or `track --servo`) follows whatever you click in the
-guide image, with no orbit, no site and no alignment - only the camera calibration. The position and
-rate come from the camera alone (`servo_alpha`/`servo_beta`), so point the tube at the object, click
-it, and the loop keeps it on the boresight. It stops by itself after `servo_give_up_s` with nothing
+**Servo mode** (**Follow what I click**, under the guide image; `v`, or `track --servo`) follows
+whatever you click in the guide image, with no orbit, no site and no alignment - only the camera
+calibration. The position and rate come from the camera alone (`servo_alpha`/`servo_beta`), so point
+the tube at the object and the loop keeps it on the boresight. **Either order works**: click the
+object and then press the button, or press it and then click. A click during the session always
+restarts the lock on what you clicked, so if it has grabbed a star, click the satellite. It stops by itself after `servo_give_up_s` with nothing
 detected. This is what works for any satellite you can see, and on a mount facing the wrong way:
 in simulation, with the tripod turned 90 deg in azimuth, pass mode is 78 deg off while servo mode holds
 the target to a median 5-7" on the main camera.
@@ -379,7 +387,8 @@ Only satellites that are sunlit while the sky here is dark (sun 6 deg below the 
 listed, with a countdown, the estimated magnitude, where it will be and its range. The brightness
 comes from the standard magnitude, the range and the phase angle - good to about a magnitude, and a
 tumbling rocket body does what it likes. The best hours are the first two after dusk and before dawn;
-around midnight most low satellites are in Earth's shadow.
+around midnight most low satellites are in Earth's shadow. **track** on a row plans and tracks that
+pass in pass mode.
 
 ## Browser control panel
 
@@ -401,8 +410,9 @@ picture and up moves it up, whatever the camera's rotation, through its matrix.
 
 **Target & tracking**: goto/sync by name (`vega`, `jupiter`, `moon`, or `18.6 38.8`), go home,
 **centre by solve** (put a named object on the guide boresight using the plate solve, not the
-counters), sidereal on/off, **Track next pass**, **Follow what I click**, **what was that?**,
-**naming on/off**, motors off.
+counters), sidereal on/off, **Track next pass** with its satellite box (blank = ISS),
+**what was that?**, **naming on/off**, motors off. **Follow what I click** sits under the guide
+image, the only camera it follows from.
 
 **Calibration**: set home, the target/scenery calibrations, and the star tools. Along the bottom: the
 sky chart with the coordinates under it, **Coming up**, **Messages**, the **Calibration** summary
@@ -503,12 +513,16 @@ Simulated results for the same pass (104 s lit, then shadow):
 * **The guide -> main handoff has not happened on the real sky yet.** The first real servo track held
   its target on the guide only, because the main matrix was then calibrated against the guide and
   15-20% off. **calibrate main on star** is built to fix that and is waiting for a clear night.
-* **Next: mark the window with the tube.** The balcony's opening is not mapped yet (`openings = []`),
-  so "anywhere I can see" still lists passes behind the wall. Planned: point the guide at the edges of
-  the opening, press **mark window edge** at each, and save the outline as the sky mask.
-* **Next: interception.** Pick a pass from **Coming up**; the mount waits where the satellite will
-  enter the window, and servo starts by itself on the first matching detection, already moving at
-  the predicted rate. That is the route to satellites too faint to spot and click in time.
+* **The balcony's view is not mapped** (`openings = []`), so "anywhere I can see" also lists passes
+  behind the wall or buildings. A detailed map is not worth it: the window frame is close, so any
+  small move of the tripod shifts its edges by degrees. Pass mode does not need it - it follows the
+  prediction behind the wall and the guide picks the satellite up when it comes into view. If a
+  filter is ever wanted, a coarse sector (azimuth range and minimum altitude) survives tripod moves.
+* **Next: faint satellites in pass mode.** Before its first lock the tracker searches the whole
+  guide frame and trusts the brightest blob - right for the ISS, wrong for a mag 5 satellite next to
+  a mag 2 star. Planned: search only round the predicted position, and accept only a blob that stays
+  still in the frame while the stars stream past (the mount follows the prediction). Later:
+  automatic guide exposure from the predicted brightness; for now exposure is set by hand.
 * **The tracker logs alt/az for an ideal, polar-aligned mount** (`control.py`, `Tracker.altaz`),
   several degrees off on this tripod. Identification does not use those columns; the fix is to go
   through the pointing model.

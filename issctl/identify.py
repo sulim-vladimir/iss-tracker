@@ -87,6 +87,17 @@ def load_tles(paths):
     return out
 
 
+def find_satellite(query, tles):
+    """Catalogue entries matching a NORAD number or a name: an exact number or name wins, else
+    every name containing the text (case ignored). Returns a list of (name, id, line1, line2)."""
+    q = str(query).strip()
+    if q.isdigit():
+        return [t for t in tles if t[1].lstrip("0") == q.lstrip("0")]
+    low = q.lower()
+    exact = [t for t in tles if t[0].lower() == low or t[1].lower() == low]
+    return exact or [t for t in tles if low in t[0].lower()]
+
+
 def session_state(csv_path, state):
     """The alignment and camera matrices in force when the session ran: the sidecar written at
     the start if there is one, otherwise today's (and a note saying so)."""

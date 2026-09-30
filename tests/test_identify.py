@@ -153,3 +153,33 @@ def test_live_names_nothing_without_a_star_alignment(site):
     live = idf.LiveIdentifier(site, FRAME)
     live.add(0.0, {}, (10.0, 40.0), (640.0, 480.0), "guide")
     assert live.samples == []
+
+
+def test_find_satellite_by_number_or_name(tles):
+    assert [t[0] for t in idf.find_satellite("42065", tles)] == ["NOSS 3-8 (B)"]
+    assert [t[0] for t in idf.find_satellite("042065", tles)] == ["NOSS 3-8 (B)"]
+    assert [t[0] for t in idf.find_satellite("noss 3-8 (a)", tles)] == ["NOSS 3-8 (A)"]
+    assert len(idf.find_satellite("noss", tles)) == 2          # ambiguous: both of the pair
+    assert idf.find_satellite("hubble", tles) == []
+
+
+def test_get_satellite_for_the_iss_and_for_anything_else(monkeypatch, cfg):
+    from issctl import cli
+
+    monkeypatch.setattr(idf, "refresh_catalogs", lambda *a, **k: [DATA / "sample.tle"])
+    sat, name = cli.get_satellite(cfg, "NOSS 3-8 (B)")
+    assert name == "NOSS 3-8 (B)" and sat.model.satnum == 42065
+    with pytest.raises(cli.UnknownSatellite, match="matches 2 satellites"):
+        cli.get_satellite(cfg, "noss")
+    with pytest.raises(cli.UnknownSatellite, match="no satellite called"):
+        cli.get_satellite(cfg, "hubble")
+    monkeypatch.setattr(cli.pr, "get_tle", lambda cfg, offline=False: cli.pr.SIM_TLE)
+    assert cli.get_satellite(cfg, "")[1] == "ISS" and cli.get_satellite(cfg, "25544")[1] == "ISS"
+
+
+def test_pass_at_picks_the_pass_up_at_that_time():
+    from issctl.cli import pass_at
+
+    rows = [({"rise": 100.0, "set": 700.0}, {}, "visible"), ({"rise": 6000.0, "set": 6500.0}, {}, "visible")]
+    assert pass_at(rows, 400.0) is rows[0] and pass_at(rows, 6100.0) is rows[1]
+    assert pass_at(rows, 3000.0) is None

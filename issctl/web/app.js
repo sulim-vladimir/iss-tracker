@@ -23,7 +23,7 @@ function applyMount(m) {
     vb.className = servo ? 'on' : '';
     vb.disabled = MODE === 'track' && !servo;
   }
-  for (const id of ['speedsel', 'framesel', 'target', 'passidx'])
+  for (const id of ['speedsel', 'framesel', 'target', 'passidx', 'trackname'])
     { const e = document.getElementById(id); if (e) e.disabled = (MODE === 'track' && id !== 'passidx'); }
   const sel = document.getElementById('speedsel');
   if (sel && !sel.options.length)
@@ -183,7 +183,8 @@ function drawSky(s) {
   // az under alt, with the labels padded to the same width so the numbers line up
   const fmt = (p, name) => p ? `${name} alt ${n5(p[0])}°\n${' '.repeat(name.length)} az  ${n5(p[1])}°` : '';
   document.getElementById('sky-info').textContent =
-    [passLine(s.pass), fmt(s.pointing, 'mount'), fmt(s.target, 'ISS  ')].filter(Boolean).join('\n');
+    [passLine(s.pass), fmt(s.pointing, 'mount'),
+     fmt(s.target, ((s.pass && s.pass.name) || 'ISS').slice(0, 12))].filter(Boolean).join('\n');
 }
 function clock(seconds) {
   const s = Math.max(0, Math.round(seconds));
@@ -193,11 +194,12 @@ function clock(seconds) {
 function passLine(p) {
   if (!p) return '';
   const rise = p.rise || p.start;           // horizon crossing, not the trackable segment
+  const who = p.name || 'ISS';
   if (p.now < rise)
-    return `next pass in ${clock(rise - p.now)}\n`
+    return `${who}: next pass in ${clock(rise - p.now)}\n`
          + `rises ${p.rise_at || p.starts_at}, max alt ${p.max_alt.toFixed(0)}°`;
   if (p.now < p.start)
-    return `ISS up, trackable in ${clock(p.start - p.now)} (at ${p.starts_at})`;
+    return `${who} up, trackable in ${clock(p.start - p.now)} (at ${p.starts_at})`;
   if (p.now <= p.end)
     return `tracking  t+${(p.now - p.start).toFixed(0)}s  ${clock(p.end - p.now)} left`;
   return 'pass over';
@@ -250,15 +252,37 @@ function showComing(f, now) {
   if (!f) { box.textContent = ''; return; }
   if (f.busy && !f.items) { box.textContent = 'working it out...'; return; }
   const hm = t => new Date(t * 1000).toTimeString().slice(0, 8);
-  const rows = (f.items || []).filter(r => r.end > now).slice(0, 12).map(r => {
+  const rows = (f.items || []).filter(r => r.end > now).slice(0, 12);
+  const key = f.at + ':' + rows.map(r => r.id + r.start).join(',');
+  if (box.dataset.key !== key) {        // rebuild only when the list changes, not every poll
+    box.dataset.key = key;
+    box.replaceChildren();
+    const head = document.createElement('div');
+    head.className = 'head';
+    box.appendChild(head);
+    for (const r of rows) {
+      const line = document.createElement('div');
+      line.className = 'row';
+      const b = document.createElement('button');
+      b.className = 'small';
+      b.textContent = 'track';
+      b.title = `plan and track this pass of ${r.name} (catalogue ${r.id})`;
+      b.onclick = () => mnt('track', {sat: r.id, at: r.peak});
+      const txt = document.createElement('span');
+      line.append(b, txt);
+      box.appendChild(line);
+    }
+  }
+  box.querySelector('.head').textContent = (f.busy ? '(updating) ' : '') + `${f.where}, worked out ${hm(f.at)}:`
+    + (rows.length ? '' : '\nnothing bright in the next hour');
+  box.querySelectorAll('.row span').forEach((el, i) => {
+    const r = rows[i];
     const when = r.start > now ? 'in ' + clock(r.start - now) : 'NOW, ' + clock(r.end - now) + ' left';
     const where = f.mode === 'field' ? `${r.sep.toFixed(1)}° from centre`
                                      : `alt ${r.alt.toFixed(0)}° az ${r.az.toFixed(0)}°`;
-    return `${hm(r.peak)}  ${when.padEnd(14)} mag ${r.mag.toFixed(1).padStart(4)}  ${r.name}\n`
-         + `          ${where}, ${r.range_km} km`;
+    el.textContent = ` ${hm(r.peak)}  ${when.padEnd(14)} mag ${r.mag.toFixed(1).padStart(4)}  ${r.name}\n`
+                   + `        ${where}, ${r.range_km} km`;
   });
-  box.textContent = (f.busy ? '(updating) ' : '') + `${f.where}, worked out ${hm(f.at)}:\n`
-    + (rows.length ? rows.join('\n') : 'nothing bright in the next hour');
 }
 
 // ---- which camera the tracker is steering with, shown in each camera's caption ----

@@ -114,3 +114,28 @@ def test_each_camera_has_an_arming_button_the_script_can_find():
     assert "function armBoresight" in js and "function imgClick" in js
     # an armed click must not also select a target, or the gate would chase the boresight
     assert "return mnt('boresight'" in js
+
+
+def test_every_function_the_page_calls_is_defined():
+    """A rewrite of the end of app.js once deleted trackNote, still called from the per-poll
+    update: the page stopped half-way through every refresh and only the browser console said
+    why. Every bare call must name a function the script defines or a browser built-in."""
+    import re
+
+    js = asset("app.js")
+    html = "".join(asset(n) for n in ("index.html", "panels.html"))
+    handlers = " ".join(re.findall(r'\son\w+="([^"]*)"', html))
+    # code only: text in string literals ("standby (handoff ...") is not a call
+    code = re.sub(r"'(?:\\.|[^'\\\n])*'|\"(?:\\.|[^\"\\\n])*\"|`(?:\\.|[^`\\])*`", "''",
+                  js + "\n" + handlers)
+    defined = set(re.findall(r"\bfunction\s+([A-Za-z_]\w*)", js))
+    defined |= set(re.findall(r"\b(?:const|let|var)\s+([A-Za-z_]\w*)\s*=\s*(?:\([^)]*\)|[A-Za-z_]\w*)\s*=>", js))
+    builtins = {"if", "for", "while", "switch", "return", "catch", "typeof", "function", "Number",
+                "String", "Boolean", "Date", "Math", "parseInt", "parseFloat", "isFinite", "fetch",
+                "setInterval", "setTimeout", "clearTimeout", "Option", "URLSearchParams", "confirm",
+                "alert", "encodeURIComponent", "Object", "Array", "Promise", "Error", "Set", "Map", "of"}
+    called = set(re.findall(r"(?<![\w.$])([A-Za-z_]\w*)\s*\(", code)) - builtins
+    # anything else called with ( that is a local helper parameter, e.g. fmt(...) passed around
+    params = set(re.findall(r"\(\s*([A-Za-z_]\w*)\s*(?:,|\))", js))
+    missing = sorted(c for c in called - defined - params if c not in ("async", "await"))
+    assert not missing, f"called but never defined: {missing}"
