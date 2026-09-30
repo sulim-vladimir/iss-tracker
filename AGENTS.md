@@ -102,7 +102,13 @@ Two things it is genuinely sensitive to, measured:
   same two numbers carry the entire motion. Sharing them cost a factor of five in accuracy
   (125" -> 23"), which is why `servo_alpha`/`servo_beta` exist.
 
-## Calibrating with no point source (scene mode)
+## Calibrating with no point source (scene mode) - REMOVED 2026-09-30
+
+Removed at the owner's request: star calibration (plate solving) replaced it, and it was never
+used on the rig. The code (FeatureTracker, scene_corners, the "show corners" overlay, `C` in the
+terminal) is gone; so are the browser's "calibrate on target"/"on scenery" buttons and "boresight
+from my picks" (`boresight_from_picks` itself stays: "boresight on star" uses it). What follows is
+kept as the record of what was learned, in case scenery calibration is ever wanted again.
 
 From this balcony there is often nothing point-like to calibrate on - just lit windows, or
 daylight scenery. `C` in the console, "on scene" in the browser, `mode="scene"` in

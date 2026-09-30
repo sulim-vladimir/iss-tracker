@@ -74,7 +74,7 @@ TLE (Celestrak) --> Skyfield --> refracted alt/az --> HA/Dec --+
 | `issctl/solve.py` | star detection and plate solving (astrometry.net's `solve-field`) |
 | `issctl/mount.py` | serial driver + simulated mount |
 | `issctl/camera.py`, `detect.py` | ZWO + V4L2 capture threads, blob detection |
-| `issctl/calib.py` | camera <-> axis calibration on a target or on scenery, boresight |
+| `issctl/calib.py` | camera <-> axis calibration on a point source, boresight |
 | `issctl/search.py` | spiral search for a star in the main camera; main calibration on that star |
 | `issctl/control.py` | tracking controller (pass and servo mode) |
 | `issctl/identify.py` | "what was that?": name the satellite a session followed, live and afterwards |
@@ -291,8 +291,8 @@ out of view it steps back until it reappears. It checks the axes are ~90 deg apa
 the optics (0.399"/px at 1500 mm), axis1/axis2 matches cos(Dec) and the star comes back where it
 started, and refuses a result whose axes are more than 10 deg from square. Then it centres the star.
 
-Calibrating the main camera *against the guide* (the older **calibrate on target** with both
-cameras) does not work at this ratio: moves that keep a star inside 7' shift the guide image by
+Calibrating the main camera *against the guide* (the older **calibrate on target**, now only `c`
+in the terminal console) does not work at this ratio: moves that keep a star inside 7' shift the guide image by
 1-4 px, and the ratio against that came out 15-20% wrong on the rig.
 
 **Main's aim point is its frame centre**, shown as a grey cross. The **guide boresight** - the green
@@ -300,19 +300,14 @@ cross in the guide image - marks where that centre looks: set it with **set bore
 (clicks snap to the nearest bright spot), or **boresight on star**, which identifies the main
 camera's star in the guide's plate solve.
 
-### Other calibration methods
+### Without stars
 
-Without stars - cloud, twilight, daytime - the cameras can be calibrated the older way:
-
-* **calibrate on target** follows one bright point source through small moves: a distant light
-  (an antenna beacon, a lamp a kilometre or more away) is easiest, since it does not move. It also
-  measures the guide boresight when both cameras see the same object.
-* **calibrate on scenery** follows the strongest corners anywhere in the frame (optical flow), for
-  when there is nothing point-like at all. It measures the matrix but not the boresight. Focus
-  matters: texture is the whole game, and defocus destroys it.
-* **boresight from my picks**: click the same object in both images; the offset is carried across
-  with the two matrices. Use something a kilometre or more away - nearer, the parallax between the
-  cameras is wider than the main field.
+The page only offers the star-based calibrations: **calibrate on stars** for the guide and the
+mount, and **calibrate main on star** for the main camera. The older way - following one bright
+point source (a distant lamp, a planet) through small moves - is still there from the terminal
+console, `c` (**calibrate on target**), for a cloudy night. It calibrates main against the guide,
+which came out 15-20% wrong on the rig, so prefer the star tools whenever there are stars.
+Calibration on scenery and "boresight from my picks" were removed on 2026-09-30.
 
 Mount the cameras at any angle: the matrix absorbs rotation and flip. Tolerance to a *wrong*
 calibration, from `--cal-rot-error` in simulation:
@@ -429,7 +424,7 @@ counters), sidereal on/off, **what was that?**, **naming on/off**, motors off. *
 the guide's exposure row: the guide is the only camera it follows from. **Go to point** under the
 sky chart slews to a point clicked on the chart and holds it still.
 
-**Calibration**: set home, the target/scenery calibrations, and the star tools. Along the bottom: the
+**Calibration**: set home and the star tools. Along the bottom: the
 sky chart with the coordinates under it, **Coming up**, **Messages**, the **Calibration** summary
 (matrices, star alignment, polar error), **Warnings** and the **Log**.
 
@@ -442,7 +437,7 @@ The sky chart under it shows the axes' current rates in deg/s.
 the serial port and cameras, so run one or the other.
 
 The terminal console has the same controls on keys: arrows jog, `t` sidereal, `g` goto, `s` sync,
-`H` home, `c`/`C` calibrate on target/scenery, `S` solve, `Y` sync on stars, `K` calibrate on stars,
+`H` home, `c` calibrate on target, `S` solve, `Y` sync on stars, `K` calibrate on stars,
 `A` add star, `B` boresight on star, `p` pass, `v` servo, `f` arrow frame, `x` camera,
 `-`/`=` exposure, `[`/`]` gain, `X` emergency stop, `q` quit.
 

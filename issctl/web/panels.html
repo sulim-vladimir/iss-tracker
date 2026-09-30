@@ -20,12 +20,6 @@
 <!-- @centre -->
 <button title="move the object to the green cross (where the main camera looks)"
  onclick="mnt('centre',{cam:'NAME'})">LABEL</button>EXTRA
- <button title="calibrate by following the detected target - a star, a planet or a distant lamp. The only mode that can measure the boresight"
- onclick="mnt('calibrate',{cam:'NAME'})">calibrate on target</button>
- <button title="no point source in view? Calibrate by following the scenery itself - the strongest corners anywhere in the frame. Nothing to select first. Measures the image scale, but not the boresight"
- onclick="mnt('calibrate',{cam:'NAME',mode:'scene'})">calibrate on scenery</button>
- <button id="corners-NAME" title="draw the corners that 'calibrate on scenery' would follow. If few or none appear, there is too little structure here - focus it, or point somewhere with more detail"
- onclick="api('/api/corners',{cam:'NAME',on: this.className!=='on' ? 1 : 0})">show corners</button>
 
 <!-- @servo -->
  <button id="servobtn" class="right" title="servo mode: press this, then click the object in the guide image - a satellite, the ISS, a plane - and the mount follows it, with no orbit and no alignment. A later click in the image moves the lock to what you clicked. Shorten the exposure first: 8 ms for the ISS, 50-200 ms for fainter satellites. Stops by itself after servo_give_up_s with nothing detected"
@@ -89,14 +83,7 @@
 <div class="panel box calib"><h2>Calibration</h2>
  <div class="ctl">
   <button title="DECLARE the current pose to be home. Does not move. Throws the star alignment away - only for when the tube really is at home and the counters are lost"
-  onclick="if(confirm('Declare the CURRENT pose as home?\n\nThis does not move the mount. It redefines the counters and throws away the star alignment. To slew back to home, use \'go home\' instead.')) mnt('home',{})">set home</button>
-  <button title="calibrate both cameras by following the detected target - the only mode that can measure the guide-&gt;main boresight"
-  onclick="mnt('calibrate',{})">both cameras on target</button>
-  <button title="calibrate both cameras by following the scenery itself. Nothing to select first. Measures the image scale, but not the boresight"
-  onclick="mnt('calibrate',{mode:'scene'})">both cameras on scenery</button></div>
- <div class="ctl">
-  <button title="No point source to measure the boresight with? Click the SAME object in the main image and in the guide image, then press this. Only trust it on something a kilometre away or more - nearer than that the parallax between the two cameras is wider than the main field"
-  onclick="mnt('boresight',{})">boresight from my picks</button></div>
+  onclick="if(confirm('Declare the CURRENT pose as home?\n\nThis does not move the mount. It redefines the counters and throws away the star alignment. To slew back to home, use \'go home\' instead.')) mnt('home',{})">set home</button></div>
  <h3>By the stars</h3>
  <div class="ctl">
   <button title="plate-solve the guide frame: where the boresight really points, and what is in view. Changes nothing"

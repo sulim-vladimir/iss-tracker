@@ -386,8 +386,8 @@ def cmd_console(args, cfg):
     import curses
     import threading
 
-    from .calib import (TRACKERS, axis1_plausible, axis1_stretch, boresight_from_picks,
-                        calibrate_cameras, centring_move, image_jog_rates, measure)
+    from .calib import (axis1_plausible, axis1_stretch, calibrate_cameras, centring_move,
+                        image_jog_rates, measure)
     from .mount import SIDEREAL_DEG_S, SimMount
     from .solve import solve_camera
 
@@ -799,7 +799,7 @@ def cmd_console(args, cfg):
         say("home reached" if not aborted() else "going home aborted")
 
     def do_cal(only=None, mode="blob"):
-        say(f"calibrating{'' if mode == 'blob' else f' on the scene ({mode})'}...")
+        say("calibrating on the target...")
         warnings = []
         res = calibrate_cameras(mount, cams, track_rate=sidereal() if ui["tracking"] else None,
                                 log=say, abort=aborted, warnings=warnings, only=only,
@@ -966,54 +966,6 @@ def cmd_console(args, cfg):
             + (" (the ISS now gets driven to that spot, not the middle)" if name == "main" else
                " - it must be the object that is in the MIDDLE of the main image"))
 
-    def do_boresight():
-        """Set the guide boresight from one object picked by hand in both images.
-
-        For when the object you can recognise is not in the middle of the main image and you
-        cannot put it there. Otherwise prefer set_boresight: it needs no matrices at all.
-
-        Only a point source lets the software decide that two cameras are looking at the same
-        thing. A person does not need one: any corner you can recognise in both pictures will do,
-        and the calibration run that measured J need not have seen a target at all.
-
-        What care cannot fix is parallax. The two cameras sit a baseline apart, so an object at
-        distance d puts the boresight out by baseline/d radians for a target at infinity - about
-        3 arcmin at 200 m with 0.2 m between them, against a main field of 7 arcmin. Use something
-        at a kilometre or more; the Moon or a planet is free of the problem entirely.
-        """
-        cal = state.get("cameras", {})
-        if "main" not in cams or "guide" not in cams:
-            say("the boresight says where the MAIN camera looks in the GUIDE image - need both")
-            return
-        if not cal.get("main") or not cal.get("guide"):
-            say("calibrate both cameras first - the offset between your two picks is carried "
-                "across with their matrices")
-            return
-        pm, pg = picked.get("main"), picked.get("guide")
-        if pm is None or pg is None:
-            say("click the SAME object in the main image and in the guide image, then press this")
-            return
-        pm, pg = snap_click("main", *pm), snap_click("guide", *pg)
-        guide = cams["guide"]
-        # No mount position here on purpose: the axis-to-sky factor is common to both cameras and
-        # cancels in the ratio, so this works on a mount that was pushed round by hand.
-        b, carried = boresight_from_picks(cal["main"], cal["guide"], pm, pg)
-        if not (0 <= b[0] < guide.width and 0 <= b[1] < guide.height):
-            say(f"that puts the boresight at {b.round(0)}, outside the guide frame - the two "
-                f"picks are probably not the same object")
-            return
-        cal["guide"]["boresight"] = [float(b[0]), float(b[1])]
-        state["calibrated_at"] = state.get("calibrated_at") or time.time()
-        persist()
-        centre = np.array([(guide.width - 1) / 2, (guide.height - 1) / 2])
-        from .calib import cal_px_per_deg
-        off_deg = float(np.linalg.norm(b - centre)) / cal_px_per_deg(cal["guide"])
-        say(f"boresight set by hand at {b.round(1)}, {off_deg:.2f} deg from the guide frame "
-            f"centre" + (f" (your main pick was off its boresight, so {carried:.0f} px of that "
-                         f"came from the matrices - re-do it with the object centred in main if "
-                         f"that looks wrong)" if carried > 2 else ""))
-        say("parallax: only trust this if the object is a kilometre away or more")
-
     def pointing():
         pos = mount.position()
         ha_p, dec_p = align.pointing_hadec(state, pos)
@@ -1174,8 +1126,6 @@ def cmd_console(args, cfg):
         elif action == "boresight":
             if params.get("fx") is not None and params.get("fy") is not None:
                 set_boresight(params.get("cam"), params["fx"], params["fy"])
-            else:
-                in_background(do_boresight)
         elif action == "backlash":
             if cams:
                 ui["jog"][:] = 0
@@ -1187,10 +1137,7 @@ def cmd_console(args, cfg):
                 ui["jog"][:] = 0
                 which = params.get("cam")
                 only = [which] if which in cams else None
-                mode = params.get("mode", "blob")
-                if mode not in TRACKERS:
-                    mode = "blob"
-                in_background(lambda: do_cal(only, mode))
+                in_background(lambda: do_cal(only))
             else:
                 ui["msg"] = "no cameras"
         elif action == "motors":
@@ -1554,8 +1501,6 @@ def cmd_console(args, cfg):
                     busy(lambda: goto(name))
             elif k == ord("c") and cams:
                 busy(do_cal)
-            elif k == ord("C") and cams:
-                busy(lambda: do_cal(mode="scene"))
             elif k in STAR_KEYS:
                 mount_action(STAR_KEYS[k], {})
             elif k == ord("p"):
@@ -1589,8 +1534,7 @@ def cmd_console(args, cfg):
             scr.erase()
             lines = [
                 "ISS mount console   q quit | arrows jog (toggle) | space stop jog | X EMERGENCY STOP | 1-5 speed | t sidereal",
-                "                    H home | s sync | g goto | c calibrate | C calibrate on scene | m mask point",
-                "                    (the browser has a selector for which scene tracker to use)",
+                "                    H home | s sync | g goto | c calibrate on target | m mask point",
                 "                    f arrow frame",
                 "                    stars: S solve | Y sync on stars | K calibrate on stars | "
                 "A add star | B boresight on star",

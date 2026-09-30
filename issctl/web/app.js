@@ -100,8 +100,6 @@ function apply(s) {
     if (document.activeElement !== g) g.value = c.gain;
     const eu = document.getElementById('expunit-' + n);
     if (eu) eu.textContent = c.exposure_unit || 'ms';
-    const cb = document.getElementById('corners-' + n);
-    if (cb) cb.className = (s.corners || []).includes(n) ? 'on' : '';
     const sat = n === 'guide' && s.mount && s.mount.sat_label ? '  \u00b7 ' + s.mount.sat_label : '';
     document.getElementById('stat-' + n).textContent =
       c.fps.toFixed(0) + ' fps  ' + (c.det ? 'detected' : 'no detection') + trackNote(n, s.mount && s.mount.track) + sat;
