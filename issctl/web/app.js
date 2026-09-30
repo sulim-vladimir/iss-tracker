@@ -19,7 +19,7 @@ function applyMount(m) {
   }
   const vb = document.getElementById('servobtn');
   if (vb) {
-    vb.textContent = servo ? 'Stop following' : 'Follow what I click';
+    vb.textContent = servo ? 'Stop following' : 'Follow';
     vb.className = servo ? 'on' : '';
     vb.disabled = MODE === 'track' && !servo;
   }

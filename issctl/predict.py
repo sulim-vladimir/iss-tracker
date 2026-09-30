@@ -283,8 +283,14 @@ def find_passes(sat, site, t0_unix, hours):
                                     unix_to_time(t0_unix + hours * 3600),
                                     altitude_degrees=site.min_altitude)
     passes, cur = [], None
-    for ti, ev in zip(times, events):
+    for k, (ti, ev) in enumerate(zip(times, events)):
         u = time_to_unix(ti)
+        if k == 0 and ev != 0:
+            # Already up when the search starts: a pass in progress has no rise to find, and
+            # used to be skipped - "no pass" for a satellite crossing the sky right now.
+            cur = {"rise": float(t0_unix)}
+            if ev == 2:
+                cur["culm"] = float(t0_unix)       # past its highest: it only sinks from here
         if ev == 0:
             cur = {"rise": u}
         elif ev == 1 and cur is not None:

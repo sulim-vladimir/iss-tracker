@@ -194,7 +194,7 @@ a button in the browser; the sections below explain them.
 6. **Guide boresight.** With the star in the middle of the main image, press **set boresight** on
    the guide and click the star: the click snaps to the nearest bright spot.
 7. **Track.** **Track next pass** for the ISS or any catalogued satellite (or pick a
-   **Coming up** row and press **track selected**), or **Follow what I click** under the guide image (servo) for anything you
+   **Coming up** row and press **track selected**), or **Follow** in the guide panel (servo) for anything you
    can see. Keep the page open: it carries the
    [emergency stop](#emergency-stop). Recording goes to `captures/*.ser`, the control log to
    `logs/track-*.csv` or `logs/servo-*.csv`.
@@ -333,7 +333,7 @@ Pick a pass in **Coming up** and press **track selected** to track exactly that 
 `./issctl.sh passes --sat 42065`, `./issctl.sh track --sat 42065`. In simulation, pass mode on
 NOSS 3-8 (B) kept the main camera in control 96% of the run at a median 10".
 
-**Servo mode** (**Follow what I click**, under the guide image; `v`, or `track --servo`) follows
+**Servo mode** (**Follow**, in the guide panel's button row; `v`, or `track --servo`) follows
 whatever you click in the guide image, with no orbit, no site and no alignment - only the camera
 calibration. The position and rate come from the camera alone (`servo_alpha`/`servo_beta`), so point
 the tube at the object and the loop keeps it on the boresight. **Either order works**: click the
@@ -412,8 +412,8 @@ picture and up moves it up, whatever the camera's rotation, through its matrix.
 **Target & tracking**: goto/sync by name (`vega`, `jupiter`, `moon`, or `18.6 38.8`), go home,
 **centre by solve** (put a named object on the guide boresight using the plate solve, not the
 counters), sidereal on/off, **Track next pass** with its satellite box (blank = ISS),
-**what was that?**, **naming on/off**, motors off. **Follow what I click** sits under the guide
-image, the only camera it follows from.
+**what was that?**, **naming on/off**, motors off. **Follow** sits in the guide
+panel's button row: the guide is the only camera it follows from.
 
 **Calibration**: set home, the target/scenery calibrations, and the star tools. Along the bottom: the
 sky chart with the coordinates under it, **Coming up**, **Messages**, the **Calibration** summary

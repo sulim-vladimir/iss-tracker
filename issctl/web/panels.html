@@ -12,8 +12,8 @@
  <input id="gain-{{name}}" onchange="api('/api/gain',{cam:'{{name}}',value:this.value})">
  <button onclick="api('/api/gain',{cam:'{{name}}',delta:25})">+</button></div>
 <div class="ctl"><label>Target</label><span id="sel-{{name}}"></span></div>
-{{servo}}<div class="ctl btns">
- <button onclick="api('/api/select',{cam:'{{name}}',clear:1})">Auto</button>{{bore}}{{centre}}</div>
+<div class="ctl btns">
+ <button onclick="api('/api/select',{cam:'{{name}}',clear:1})">Auto</button>{{bore}}{{centre}}{{servo}}</div>
 <div class="info" id="info-{{name}}"></div>
 {{extra}}</div>
 
@@ -28,9 +28,8 @@
  onclick="api('/api/corners',{cam:'NAME',on: this.className!=='on' ? 1 : 0})">show corners</button>
 
 <!-- @servo -->
-<div class="ctl btns">
  <button id="servobtn" title="servo mode: follow whatever you click in this image - a satellite, the ISS, a plane - with no orbit and no alignment. Either order works: click the object then press this, or press this then click it (a click always restarts the lock on what you clicked). Shorten the exposure first: 8 ms for the ISS, 50-200 ms for fainter satellites. Stops by itself after servo_give_up_s with nothing detected"
- onclick="mnt(MODE==='track' ? 'untrack' : 'servo', {})">Follow what I click</button></div>
+ onclick="mnt(MODE==='track' ? 'untrack' : 'servo', {})">Follow</button>
 
 <!-- @bore -->
  <button id="bore-NAME" title="move the green cross: press this, then click the object sitting in the MIDDLE of the main image - the click snaps to the brightest spot nearby. That is what the boresight means. Only trust it on something a kilometre away or more, or the parallax between the two cameras is wider than the main field"

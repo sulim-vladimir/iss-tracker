@@ -70,3 +70,19 @@ def test_field_follows_the_stars_when_tracking(site):
     turn = 2 * np.degrees(np.arcsin(np.cos(np.radians(dec)) * np.sin(np.radians(15.041 / 2))))
     assert moved == pytest.approx(turn, abs=0.01)
     assert np.allclose(stars[0], fixed[0])
+
+
+def test_a_pass_already_in_progress_is_found(site):
+    """Picking a satellite that is up right now said "no pass": the search only knew passes by
+    their rise, and this one had risen before the search began."""
+    from skyfield.api import load
+
+    tles = idf.load_tles([DATA / "sample.tle"])
+    sat = idf.build(tles)[1][2]
+    t0 = 1790640000.0
+    first = pr.find_passes(sat, site, t0, 24)[0]
+    for mid in (first["rise"] + 0.3 * (first["culm"] - first["rise"]),     # before the top
+                first["culm"] + 0.5 * (first["set"] - first["culm"])):     # after it
+        p = pr.find_passes(sat, site, mid, 24)[0]
+        assert p["rise"] == pytest.approx(mid) and p["set"] == pytest.approx(first["set"], abs=1)
+        assert p["rise"] <= p["culm"] <= p["set"]

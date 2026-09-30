@@ -30,8 +30,8 @@ import time
 import numpy as np
 
 from . import geometry as geo
-from .calib import axes_offset_from_pixel, cal_px_per_deg
-from .mount import limit_correction
+from .calib import axes_offset_from_pixel, cal_px_per_deg, jacobian
+from .mount import SIDEREAL_DEG_S, limit_correction
 
 SHADOW_OFFSET_CLAMP_S = 5.0
 
@@ -119,6 +119,13 @@ class Tracker:
         self.last_good = -np.inf
         self.rejected = 0
         self.force_accept = False
+        # Acquisition in pass mode: before the first lock, a detection is only a candidate. See
+        # _acquire - the brightest blob anywhere, trusted outright, was a star 60 deg away.
+        self.acquire_radius = tr.get("acquire_radius_arcmin", 180.0)
+        self.acquire_settle = tr.get("acquire_settle_deg", 1.0)
+        self.acquire_still_px = tr.get("acquire_still_px", 6.0)
+        self.acquire_s = (tr.get("acquire_min_s", 1.0), tr.get("acquire_max_s", 5.0))
+        self.candidates = {n: [] for n in cameras}
         self.last_px = {}
         self.stop_requested = False
         self.on_visibility = None
@@ -185,8 +192,15 @@ class Tracker:
         cal = self.cal.get(name)
         if cam.manual:
             return  # the user picked the target: leave their choice alone
-        if cal is None or not np.isfinite(self.last_good):
-            cam.gate = None  # never locked yet: nothing to bound the search with, use the whole frame
+        if cal is None:
+            cam.gate = None
+            return
+        if not np.isfinite(self.last_good):
+            # Never locked. Servo mode has no prediction to bound the search with; pass mode
+            # does, and the target cannot be further off it than the acquisition radius.
+            cam.gate = None if self.servo else (
+                cal["boresight"][0], cal["boresight"][1],
+                min(self.acquire_radius / 60.0 * cal_px_per_deg(cal), 0.5 * max(cam.width, cam.height)))
             return
         radius = self._jump_allowance(now - self.last_good) / 60.0 * cal_px_per_deg(cal)
         cam.gate = (cal["boresight"][0], cal["boresight"][1],
@@ -220,6 +234,9 @@ class Tracker:
 
         # A detection implying a big jump is another object (star, hot pixel, another satellite).
         jump = float(np.hypot(*(o * geo.sky_metric(meas[1])))) * 60
+        if not self.force_accept and not self.servo and not np.isfinite(self.last_good) \
+                and not self._acquire(name, det, meas, p, v, jump):
+            return
         if self.force_accept:
             self.force_accept = False  # user pointed at it, so believe it however far off it is
         elif np.isfinite(self.last_good) and jump > self._jump_allowance(det.t - self.last_good):
@@ -255,6 +272,40 @@ class Tracker:
         if name == "guide" and not self.cams[name].manual:
             cam = self.cams[name]
             cam.gate = (det.x, det.y, 0.15 * cam.width)
+
+    def _acquire(self, name, det, meas, p, v, jump):
+        """May this detection be the first lock? Pass mode only, and not for a hand pick.
+
+        The ISS is usually the brightest thing in the frame; nothing else is. Taking the brightest
+        blob anywhere, at any time, locked onto a star while the mount was still slewing to a
+        rocket body's rise point, and drove the estimate 60 deg off (real rig, 2026-09-30). So:
+        * nothing before the pass is trackable, and nothing while the mount is still slewing;
+        * nothing further from the prediction than acquire_radius_arcmin;
+        * and it must stay put in the frame: the mount follows the prediction, so the satellite
+          is nearly still while stars drift by at the satellite's own rate. It must hold within
+          acquire_still_px for as long as a star would take to move three times that far."""
+        cand = self.candidates[name]
+        if det.t < self.traj.t_start or jump > self.acquire_radius:
+            cand.clear()
+            return False
+        settle = geo.sky_metric(meas[1]) * (p + self.cross_at(det.t) - meas)
+        settle[0] = geo.wrap180(settle[0])
+        if float(np.hypot(*settle)) > self.acquire_settle:
+            cand.clear()                         # still slewing: the frame is a smear of sky
+            return False
+        cal = self.cal[name]
+        star_px_s = float(np.hypot(*(jacobian(cal, meas[1]) @ (np.asarray(v) - [SIDEREAL_DEG_S, 0.0]))))
+        need = float(np.clip(3 * self.acquire_still_px / max(star_px_s, 1e-6), *self.acquire_s))
+        cand.append((det.t, det.x, det.y))
+        # only what is still the same blob counts: drop the history once it has moved on
+        while cand and np.hypot(cand[0][1] - det.x, cand[0][2] - det.y) > self.acquire_still_px:
+            cand.pop(0)
+        if cand[-1][0] - cand[0][0] < need:
+            return False
+        cand.clear()
+        self.log(f"acquired {self.name} in {name}: held still {need:.1f} s, "
+                 f"{jump:.0f}' from the prediction")
+        return True
 
     def _check_timeouts(self, now):
         timeout = self.tr["lost_timeout_s"]
