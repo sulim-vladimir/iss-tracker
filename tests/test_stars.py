@@ -333,3 +333,38 @@ def test_sky_anchor_moves_with_the_tracking(cfg):
     time.sleep(0.2)
     elapsed = clock.now() - anchor.t0
     assert np.allclose(anchor([1.0, 0.0]), anchor.start + [1.0, 0.0] + rate * elapsed, atol=1e-3)
+
+
+class _Solved:
+    """What brightness() needs from a solve: the detected stars and the catalogue ones."""
+
+    def __init__(self, detected, catalog):
+        self.detected, self._cat = detected, catalog
+
+    def catalog(self):
+        return self._cat
+
+
+def test_brightness_of_a_star_and_of_something_no_catalogue_has():
+    from issctl.solve import brightness
+
+    zp = 15.0                                  # mag = 15 - 2.5 log10(flux)
+    rng = np.random.default_rng(4)
+    detected, catalog = [], []
+    for k in range(20):
+        m = 4.0 + 0.2 * k
+        x, y = 50.0 + 40 * k, 100.0 + 25 * (k % 7)
+        detected.append((x, y, 10 ** ((zp - m + rng.normal(0, 0.05)) / 2.5)))
+        catalog.append((np.array([x + 0.8, y - 0.5]), f"mag {m:.1f}", m))
+    catalog.append((np.array([50.4, 99.8]), "vega", -2.0))           # named, no magnitude
+    detected.append((700.0, 600.0, 10 ** ((zp - 5.3) / 2.5)))         # a satellite: not listed
+    sol = _Solved(detected, catalog)
+
+    star = brightness(sol, (453.0, 176.0))    # a sloppy click on the 11th star (mag 6.0)
+    assert star["mag"] == pytest.approx(6.0, abs=0.15) and star["catalog_mag"] == 6.0
+    assert star["n_ref"] == 20 and star["mag_err"] < 0.15
+    sat = brightness(sol, (705.0, 596.0))
+    assert sat["mag"] == pytest.approx(5.3, abs=0.15) and sat["catalog_label"] is None
+    named = brightness(sol, (51.0, 100.0))
+    assert named["catalog_label"] == "vega"                           # the name wins
+    assert brightness(sol, (5.0, 900.0))["px"] is None                 # nothing there

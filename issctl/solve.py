@@ -369,6 +369,7 @@ class AstrometrySolver:
             catalog = self._stars(work / "frame.rdls")
         sol = WcsSolution(header, self.site, t, g.shape[1], g.shape[0], catalog)
         sol.n_stars = len(stars)
+        sol.detected = stars            # (x, y, flux) as detected - for brightness()
         sol.elapsed_s = time.monotonic() - t0
         self.last = sol
         return sol
@@ -489,3 +490,56 @@ def solve_camera(cam, solver, log=print, after_move=False):
         + (f" from {sol.n_stars} stars" if getattr(sol, "n_stars", None) else "")
         + f": {sol.describe()}")
     return sol
+
+
+def brightness(sol, px, near_px=12.0, match_px=3.0):
+    """How bright is the thing at pixel px of a solved frame? Two answers, when they exist:
+
+    * measured: its flux against the frame's own zero point, fitted from every detected star the
+      solve matched to Tycho-2 - so it works for what no catalogue has, a satellite included;
+    * catalogue: the Tycho-2 (or named) star sitting there.
+
+    Returns a dict: px (the blob used), mag, mag_err, n_ref (stars behind the zero point),
+    catalog_label, catalog_mag, catalog_px. Missing answers are None."""
+    stars = np.array(getattr(sol, "detected", None) or np.zeros((0, 3)), dtype=float).reshape(-1, 3)
+    cat = [(np.asarray(p, dtype=float), label, float(m)) for p, label, m in sol.catalog()]
+    tycho = [c for c in cat if c[2] > -1.5]          # the named bright stars carry no magnitude
+    out = {"px": None, "mag": None, "mag_err": None, "n_ref": 0,
+           "catalog_label": None, "catalog_mag": None, "catalog_px": None}
+    # the frame's zero point: catalogue magnitude + 2.5 log10(measured flux), robustly
+    zps = []
+    for x, y, f in stars:
+        if f <= 0 or not tycho:
+            continue
+        d = [np.hypot(*(c[0] - (x, y))) for c in tycho]
+        k = int(np.argmin(d))
+        if d[k] <= match_px:
+            zps.append(tycho[k][2] + 2.5 * np.log10(f))
+    zp = err = None
+    if len(zps) >= 5:
+        zps = np.array(zps)
+        zp = float(np.median(zps))
+        err = float(1.4826 * np.median(np.abs(zps - zp)))
+        out["n_ref"] = len(zps)
+    px = np.asarray(px, dtype=float)
+    blob = None
+    if len(stars):
+        d = np.hypot(stars[:, 0] - px[0], stars[:, 1] - px[1])
+        k = int(np.argmin(d))
+        if d[k] <= near_px:
+            blob = stars[k]
+            out["px"] = [float(blob[0]), float(blob[1])]
+            if zp is not None and blob[2] > 0:
+                out["mag"] = round(zp - 2.5 * float(np.log10(blob[2])), 2)
+                out["mag_err"] = round(err, 2)
+    at = blob[:2] if blob is not None else px
+    if cat:
+        d = [np.hypot(*(c[0] - at)) for c in cat]
+        k = int(np.argmin(d))
+        if d[k] <= (match_px if blob is not None else near_px):
+            label, m = cat[k][1], cat[k][2]
+            named = [c for c in cat if c[2] <= -1.5 and np.hypot(*(c[0] - cat[k][0])) <= match_px]
+            out["catalog_label"] = named[0][1] if named else label
+            out["catalog_mag"] = None if m <= -1.5 else round(m, 1)
+            out["catalog_px"] = [float(cat[k][0][0]), float(cat[k][0][1])]
+    return out

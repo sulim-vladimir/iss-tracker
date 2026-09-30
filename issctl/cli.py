@@ -631,6 +631,35 @@ def cmd_console(args, cfg):
             f"mount thinks it is {off:.2f} deg from there"
             + (f"; in view: {', '.join(named)}" if named else ""))
 
+    def do_brightness(fx, fy):
+        """How bright is what was clicked in the guide image: a plate solve of a fresh frame
+        gives both the catalogue star there and the frame's own zero point - which also puts a
+        magnitude on things no catalogue has, a satellite included."""
+        from .solve import brightness
+        g = cams["guide"]
+        x, y = float(fx) * g.width, float(fy) * g.height
+        sol, _, _ = solve_here()
+        b = brightness(sol, (x, y))
+        parts = []
+        if b["mag"] is not None:
+            parts.append(f"measured magnitude {b['mag']:.1f} ± {b['mag_err']:.1f} "
+                         f"(against {b['n_ref']} catalogue stars in the frame)")
+        elif b["px"] is None:
+            parts.append("nothing detected within 12 px of the click")
+        else:
+            parts.append("too few catalogue stars matched to measure a magnitude")
+        if b["catalog_label"]:
+            if b["catalog_mag"] is None:                 # a named bright star, no magnitude kept
+                parts.append(f"catalogue: {b['catalog_label']}")
+            elif b["catalog_label"].startswith("mag"):
+                parts.append(f"catalogue (Tycho-2) magnitude {b['catalog_mag']:.1f}")
+            else:
+                parts.append(f"catalogue: {b['catalog_label']}, magnitude {b['catalog_mag']:.1f}")
+        elif b["px"] is not None:
+            parts.append("no catalogue star there - a satellite, or fainter than Tycho-2")
+        where = f"({b['px'][0]:.0f}, {b['px'][1]:.0f})" if b["px"] else f"({x:.0f}, {y:.0f})"
+        say(f"brightness at {where}: " + " · ".join(parts))
+
     def do_solve_sync():
         sol, axes, b = solve_here()
         d = align.sync_to(state, mount, *sol.hadec(b))
@@ -1072,6 +1101,12 @@ def cmd_console(args, cfg):
             say("satellite naming " + ("on: live in the guide caption, and after each session"
                                        if state["identify_on"] else
                                        "off ('what was that?' still works when pressed)"))
+        elif action == "brightness":
+            if solver is None or "guide" not in cams:
+                ui["msg"] = "no guide camera to solve"
+            else:
+                fx, fy = params.get("fx"), params.get("fy")
+                in_background(lambda: do_brightness(fx, fy))
         elif action == "goto_altaz":
             ui["jog"][:] = 0
             alt, az = float(params.get("alt", -90)), float(params.get("az", 0)) % 360.0

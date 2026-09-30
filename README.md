@@ -261,6 +261,12 @@ it, where the window allows. Runs closer than 20 deg only show repeatability.
 **Stay away from the pole** (Dec above ~60 deg): axis1 there rotates the field instead of shifting it.
 From a north-facing balcony that means pointing low - the same azimuth at alt 20 is Dec ~58.
 
+**Brightness** (guide panel): press it, then click a star or a satellite in the guide image. A plate
+solve of a fresh frame gives the catalogue star there with its magnitude, and a *measured* magnitude
+from the frame's own zero point, fitted to every Tycho-2 star the solve matched - so it also works
+for a satellite, which no star catalogue has. On the real guide frames the measured magnitudes
+agree with Tycho-2 to 0.3-0.6 mag; the spread is given with each answer.
+
 Other star tools: **add star** adds the current pointing as another alignment point; **clear
 alignment** forgets the model - only after the tripod itself moved. The model is kept in
 `data/state.json`.

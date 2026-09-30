@@ -13,7 +13,7 @@
  <button onclick="api('/api/gain',{cam:'{{name}}',delta:25})">+</button>{{servo}}</div>
 <div class="ctl"><label>Target</label><span id="sel-{{name}}"></span></div>
 <div class="ctl btns">
- <button onclick="api('/api/select',{cam:'{{name}}',clear:1})">Auto</button>{{bore}}{{centre}}</div>
+ <button onclick="api('/api/select',{cam:'{{name}}',clear:1})">Auto</button>{{bore}}{{bright}}{{centre}}</div>
 <div class="info" id="info-{{name}}"></div>
 {{extra}}</div>
 
@@ -30,6 +30,10 @@
 <!-- @servo -->
  <button id="servobtn" class="right" title="servo mode: press this, then click the object in the guide image - a satellite, the ISS, a plane - and the mount follows it, with no orbit and no alignment. A later click in the image moves the lock to what you clicked. Shorten the exposure first: 8 ms for the ISS, 50-200 ms for fainter satellites. Stops by itself after servo_give_up_s with nothing detected"
  onclick="MODE === 'track' ? mnt('untrack', {}) : armFollow()">Follow</button>
+
+<!-- @bright -->
+ <button id="brightbtn" title="press this, then click a star or a satellite in the guide image: a plate solve of a fresh frame gives its catalogue magnitude, and its brightness measured against the stars around it - which works for satellites too. Needs a frame that solves (0.5-2 s exposure, stars held still)"
+ onclick="armBright()">Brightness</button>
 
 <!-- @bore -->
  <button id="bore-NAME" title="move the green cross: press this, then click the object sitting in the MIDDLE of the main image - the click snaps to the brightest spot nearby. That is what the boresight means. Only trust it on something a kilometre away or more, or the parallax between the two cameras is wider than the main field"

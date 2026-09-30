@@ -247,7 +247,12 @@ setInterval(async () => apply(await (await fetch('/api/state')).json()), 1000);
 
 
 // ---- clicking an image: normally picks a target, but "set boresight" claims the next click ----
-let ARMED = null, FOLLOW_ARMED = false;
+let ARMED = null, FOLLOW_ARMED = false, BRIGHT_ARMED = false;
+function armBright() {        // "Brightness" claims the next click in the guide image
+  BRIGHT_ARMED = !BRIGHT_ARMED;
+  const b = document.getElementById('brightbtn');
+  if (b) { b.textContent = BRIGHT_ARMED ? 'Click a star' : 'Brightness'; b.className = BRIGHT_ARMED ? 'on' : ''; }
+}
 function armFollow() {        // "Follow" claims the next click in the guide image, like the boresight
   FOLLOW_ARMED = !FOLLOW_ARMED;
   if (FOLLOW_ARMED && ARMED) armBoresight(ARMED);
@@ -265,6 +270,7 @@ function imgClick(name, event, img) {
   const fx = event.offsetX / img.clientWidth, fy = event.offsetY / img.clientHeight;
   if (ARMED === name) { const n = name; armBoresight(name); return mnt('boresight', {cam: n, fx, fy}); }
   if (FOLLOW_ARMED && name === 'guide') { armFollow(); return mnt('servo', {fx, fy}); }
+  if (BRIGHT_ARMED && name === 'guide') { armBright(); return mnt('brightness', {fx, fy}); }
   return api('/api/select', {cam: name, fx, fy});
 }
 
