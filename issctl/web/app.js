@@ -340,9 +340,19 @@ function drawComing(svg, now) {
     const [x0, y0] = pos(r.path[i - 1][0], r.path[i - 1][1]), [x1, y1] = pos(r.path[i][0], r.path[i][1]);
     svg.appendChild(el('line', {x1: x0, y1: y0, x2: x1, y2: y1, 'stroke-width': 2, stroke: '#b784f5'}));
   }
+  // Where it is NOW, between the 10 s path points: jumping to the next point drew it up to
+  // 10 s ahead, which made a mount sitting right on it look as if it were trailing.
   let k = r.path.findIndex(p => p[2] >= now);
   const inside = k > 0 && now >= r.path[0][2];
-  const [az, alt] = inside ? r.path[k] : r.path[0];
+  let az, alt;
+  if (inside) {
+    const [a0, h0, t0] = r.path[k - 1], [a1, h1, t1] = r.path[k];
+    const f = (now - t0) / Math.max(t1 - t0, 1e-6), da = ((a1 - a0 + 540) % 360) - 180;
+    az = (a0 + f * da + 360) % 360;
+    alt = h0 + f * (h1 - h0);
+  } else {
+    [az, alt] = r.path[0];
+  }
   const [x, y] = pos(az, alt);
   svg.appendChild(el('circle', inside ? {cx: x, cy: y, r: 4, fill: '#b784f5'}
                                       : {cx: x, cy: y, r: 4, fill: 'none', stroke: '#b784f5', 'stroke-width': 2}));

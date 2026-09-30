@@ -79,6 +79,7 @@ class Tracker:
     def __init__(self, cfg, state, mount, cameras, clock, traj, log=print, log_path=None,
                  name="ISS"):
         self.name = name          # what is being followed, for the messages
+        self.state = state        # the star alignment, to turn axis angles into alt/az
         self.cfg, self.mount, self.cams, self.clock, self.traj, self.log = cfg, mount, cameras, clock, traj, log
         m, tr = cfg["mount"], cfg["tracking"]
         self.tr = tr
@@ -167,9 +168,12 @@ class Tracker:
         self.log("manual selection cleared, back to automatic")
 
     def altaz(self, pos=None):
-        """Where the telescope is actually pointing, in the sky the user sees."""
+        """Where the telescope is actually pointing, in the sky the user sees - through the star
+        alignment. The ideal mount put the target dot on the sky chart, and every alt/az in the
+        log, several degrees off on a tripod 3.7 deg from the pole."""
+        from . import align
         pos = self.mount.last[1] if pos is None else pos
-        ha, dec = geo.axes_to_hadec(pos[0], pos[1])
+        ha, dec = align.pointing_hadec(self.state or {}, pos)
         alt, az = geo.hadec_to_altaz(ha, dec, self.lat)
         return float(alt), float(az)
 
@@ -194,15 +198,19 @@ class Tracker:
         return float(np.max(t))
 
     def _intercept(self, now, margin=3.0):
-        """When to start following: the first moment of the pass the mount can reach ahead of
-        the satellite. Aiming at where it is NOW (a pass already up) had the mount arrive late
-        every time and trail it for the whole pass - it chased instead of waiting."""
+        """When to start following: the first moment of the pass that the satellite can be SEEN
+        (sunlit, and not behind a mapped obstruction) and the mount can reach ahead of it.
+        Aiming at where it is NOW (a pass already up) had the mount arrive late and trail it for
+        the whole pass; starting where the pass became trackable parked it in Earth's shadow."""
         here = self.mount.position()
         t = max(now, self.traj.t_start)
         while t < self.traj.t_end:
-            p, _ = self.traj.at(t)
-            if self._slew_time(here, p) + margin <= t - now:
-                return t
+            seen = (self.traj.illum_at(t) >= self.tr["shadow_threshold"]
+                    and self.traj.open_at(t) >= 0.5)
+            if seen:
+                p, _ = self.traj.at(t)
+                if self._slew_time(here, p) + margin <= t - now:
+                    return t
             t += 1.0
         return self.traj.t_start
 
@@ -512,8 +520,10 @@ class Tracker:
                             az = float(np.interp(self.hold_until, traj.t, np.unwrap(traj.az, period=360))) % 360
                         else:
                             alt, az = self.altaz(traj.at(self.hold_until)[0])
-                        self.log(f"{self.name} is already up: waiting ahead of it at alt {alt:.0f} "
-                                 f"az {az:.0f}, following from {self.hold_until - now:.0f} s")
+                        why = ("comes into sunlight" if traj.illum_at(max(now, traj.t_start))
+                               < self.tr["shadow_threshold"] else "can be met, ahead of it")
+                        self.log(f"{self.name}: waiting at alt {alt:.0f} az {az:.0f}, where it {why}; "
+                                 f"following from {self.hold_until - now:.0f} s")
                 if not started and now >= traj.t_start - 5.0:
                     started = True
                     if on_start:

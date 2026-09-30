@@ -201,3 +201,40 @@ def test_a_pass_already_up_is_met_ahead_not_chased(cfg):
     # a pass that has not started yet is simply met at its start
     later = _Pass(clock.now() + 600.0)
     assert Tracker(cfg, {"cameras": {}}, mount, {}, clock, later)._intercept(now) == later.t_start
+
+
+def test_alt_az_goes_through_the_star_alignment(cfg):
+    """The target dot and the logged alt/az used an ideal mount: 5 deg off the mount's own
+    reading on the rig, which goes through the model."""
+    from issctl import align
+    from issctl import geometry as geo
+    from issctl.sim import misalignment
+
+    model = misalignment(50.0, (3.0, -2.0), 20.0)
+    state = {"alignment": {"model": dict(model.to_dict(), n_points=4)}, "cameras": {}}
+    clock = Clock()
+    mount = SimMount(cfg, {}, clock, start=START)
+    mount.query()
+    t = Tracker(cfg, state, mount, {}, clock, _Pass(clock.now()))
+    alt, az = t.altaz(START)
+    ha, dec = align.pointing_hadec(state, START)
+    want = geo.hadec_to_altaz(ha, dec, t.lat)
+    assert alt == pytest.approx(float(want[0]), abs=1e-6) and az == pytest.approx(float(want[1]), abs=1e-6)
+    ideal = geo.hadec_to_altaz(*geo.axes_to_hadec(*START), t.lat)
+    assert abs(alt - float(ideal[0])) + abs(az - float(ideal[1])) > 1.0      # and that matters
+
+
+def test_it_waits_where_the_satellite_comes_into_sunlight(cfg):
+    """The mount went to where the pass became trackable - with the satellite still in Earth's
+    shadow. It must wait where it lights up."""
+    clock = Clock(speed=10.0)
+    mount = SimMount(cfg, {}, clock, start=START)
+    mount.query()
+    now = clock.now()
+    traj = _Moving(now + 30.0)                   # rises in 30 s...
+    traj.t0 = now
+    lights = now + 120.0                         # ...but only lights up 90 s after that
+    traj.illum_at = lambda tq: 1.0 if tq >= lights else 0.0
+    t = Tracker(cfg, {"cameras": {}}, mount, {}, clock, traj)
+    meet = t._intercept(now)
+    assert meet >= lights and meet < lights + 2.0
