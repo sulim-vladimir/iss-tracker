@@ -499,3 +499,44 @@ def test_boresight_click_snaps_to_the_bright_spot_nearby():
     x, y = snap(img, 305.0, 196.0, radius=25)
     assert abs(x - 300.4) < 0.3 and abs(y - 200.7) < 0.3
     assert snap(img, 100.0, 100.0, radius=25) is None      # empty sky: nothing to snap to
+
+
+def _frame_with(blobs, shape=(1096, 1936), seed=3):
+    rng = np.random.default_rng(seed)
+    img = rng.normal(20, 3, shape)
+    yy, xx = np.mgrid[0:shape[0], 0:shape[1]]
+    for (cx, cy), amp, s in blobs:
+        img += amp * np.exp(-((xx - cx) ** 2 + (yy - cy) ** 2) / (2 * s * s))
+    return np.clip(img, 0, 255).astype(np.uint8)
+
+
+def test_detect_in_a_gate_matches_the_whole_frame():
+    """Only a window round the gate is processed now; the answer must not change."""
+    from issctl.detect import detect
+
+    img = _frame_with([((901.3, 503.7), 150.0, 2.5)])
+    for bayer in (False, True):
+        full = detect(img, 5.0, 20, bayer)
+        for gate in ((900.0, 500.0, 60.0), (903.0, 499.0, 25.0)):   # an odd centre: Bayer phase
+            win = detect(img, 5.0, 20, bayer, gate)
+            assert abs(win.x - full.x) < 0.2 and abs(win.y - full.y) < 0.2, (bayer, gate)
+        assert abs(full.x - 901.3) < 0.3 and abs(full.y - 503.7) < 0.3
+
+
+def test_detect_keeps_to_its_gate_even_next_to_something_brighter():
+    from issctl.detect import detect
+
+    img = _frame_with([((600.0, 400.0), 60.0, 2.0), ((700.0, 400.0), 250.0, 3.0)])
+    got = detect(img, 5.0, 3, False, (600.0, 400.0, 40.0))
+    assert abs(got.x - 600.0) < 0.3
+    assert detect(img, 5.0, 3, False).x == pytest.approx(700.0, abs=0.3)      # no gate: brightest
+    assert detect(img, 5.0, 3, False, (300.0, 300.0, 40.0)) is None           # empty gate
+
+
+def test_detect_edge_margin_is_the_frame_edge_not_the_window_edge():
+    from issctl.detect import detect
+
+    img = _frame_with([((12.0, 500.0), 200.0, 2.0)])
+    assert detect(img, 6.0, 12, False, edge_margin=20) is None      # (12 px: no noise blobs)
+    assert detect(img, 6.0, 12, False, (12.0, 500.0, 40.0), edge_margin=20) is None
+    assert detect(img, 6.0, 12, False, (12.0, 500.0, 40.0)) is not None

@@ -105,6 +105,7 @@ function apply(s) {
       : 'brightest in frame';
   }
   if (s.mount) applyMount(s.mount);
+  LAST_STATE = s;
   drawSky(s);
   const em = document.getElementById('estop-msg');
   if (em) em.textContent = (s.stopped || (s.mount && s.mount.aborted)) ? 'motors halted' : '';
@@ -121,7 +122,7 @@ function apply(s) {
 }
 // ---- sky chart: zenith at the centre, horizon at the rim, north up, east right ----
 const CX = 165, CY = 165, R = 140;
-let SKY = null;
+let SKY = null, LAST_STATE = null;
 const SVGNS = 'http://www.w3.org/2000/svg';
 function pos(az, alt) {
   const r = (90 - Math.max(alt, 0)) / 90 * R, a = az * Math.PI / 180;
@@ -169,6 +170,7 @@ function drawSky(s) {
     svg.appendChild(el('line', {x1: x0, y1: y0, x2: x1, y2: y1, 'stroke-width': 2,
       stroke: !open ? '#c0504d' : (lit > 0.5 ? '#3fb9d6' : '#6b7580')}));
   }
+  drawComing(svg, (s.mount && s.mount.now) || Date.now() / 1000);
   if (s.pointing) {  // where the mount looks
     const [x, y] = pos(s.pointing[1], s.pointing[0]);
     svg.appendChild(el('circle', {cx: x, cy: y, r: 6, fill: 'none', stroke: '#ffd24a',
@@ -246,43 +248,72 @@ function copyLog(btn) {
 }
 
 // ---- coming up: bright satellites through the guide field, or anywhere visible ----
+let COMING = [], COMING_SEL = null;   // the rows on show, and the key of the one picked
+const comingKey = r => r.id + ':' + r.start;
+function comingSelected() { return COMING.find(r => comingKey(r) === COMING_SEL) || null; }
 function showComing(f, now) {
   const box = document.getElementById('coming');
   if (!box) return;
-  if (!f) { box.textContent = ''; return; }
+  if (!f) { box.textContent = ''; COMING = []; markComing(box); return; }
   if (f.busy && !f.items) { box.textContent = 'working it out...'; return; }
   const hm = t => new Date(t * 1000).toTimeString().slice(0, 8);
   const rows = (f.items || []).filter(r => r.end > now).slice(0, 12);
-  const key = f.at + ':' + rows.map(r => r.id + r.start).join(',');
+  COMING = rows;
+  if (!comingSelected()) COMING_SEL = null;              // it has gone by
+  const key = f.at + ':' + rows.map(comingKey).join(',');
   if (box.dataset.key !== key) {        // rebuild only when the list changes, not every poll
     box.dataset.key = key;
     box.replaceChildren();
-    const head = document.createElement('div');
-    head.className = 'head';
-    box.appendChild(head);
     for (const r of rows) {
       const line = document.createElement('div');
       line.className = 'row';
-      const b = document.createElement('button');
-      b.className = 'small';
-      b.textContent = 'track';
-      b.title = `plan and track this pass of ${r.name} (catalogue ${r.id})`;
-      b.onclick = () => mnt('track', {sat: r.id, at: r.peak});
-      const txt = document.createElement('span');
-      line.append(b, txt);
+      line.dataset.key = comingKey(r);
+      line.title = `${r.name} (catalogue ${r.id}) - click to show it on the sky chart`;
+      line.onclick = () => {
+        COMING_SEL = COMING_SEL === line.dataset.key ? null : line.dataset.key;
+        markComing(box);
+        if (LAST_STATE) drawSky(LAST_STATE);
+      };
       box.appendChild(line);
     }
   }
-  box.querySelector('.head').textContent = (f.busy ? '(updating) ' : '') + `${f.where}, worked out ${hm(f.at)}:`
-    + (rows.length ? '' : '\nnothing bright in the next hour');
-  box.querySelectorAll('.row span').forEach((el, i) => {
+  const head = document.getElementById('coming-head');
+  if (head) head.textContent = (f.busy ? ' (updating) ' : ' ') + `${f.where}, worked out ${hm(f.at)}`
+    + (rows.length ? '' : ' - nothing bright in the next hour');
+  box.querySelectorAll('.row').forEach((el, i) => {
     const r = rows[i];
     const when = r.start > now ? 'in ' + clock(r.start - now) : 'NOW, ' + clock(r.end - now) + ' left';
     const where = f.mode === 'field' ? `${r.sep.toFixed(1)}° from centre`
                                      : `alt ${r.alt.toFixed(0)}° az ${r.az.toFixed(0)}°`;
-    el.textContent = ` ${hm(r.peak)}  ${when.padEnd(14)} mag ${r.mag.toFixed(1).padStart(4)}  ${r.name}\n`
-                   + `        ${where}, ${r.range_km} km`;
+    el.textContent = `${hm(r.peak)}  ${when.padEnd(14)} mag ${r.mag.toFixed(1).padStart(4)}  ${r.name}\n`
+                   + `          ${where}, ${r.range_km} km`;
   });
+  markComing(box);
+}
+function trackComing() {
+  const r = comingSelected();
+  if (r) mnt('track', {sat: r.id, at: r.peak});
+}
+function markComing(box) {
+  box.querySelectorAll('.row').forEach(el => el.classList.toggle('sel', el.dataset.key === COMING_SEL));
+  const b = document.getElementById('comingtrack');
+  if (b) b.disabled = !comingSelected() || MODE === 'track';
+}
+// the picked pass on the sky chart: its path in violet, and where it is now (or where it comes in)
+function drawComing(svg, now) {
+  const r = comingSelected();
+  if (!r || !r.path || r.path.length < 2) return;
+  for (let i = 1; i < r.path.length; i++) {
+    const [x0, y0] = pos(r.path[i - 1][0], r.path[i - 1][1]), [x1, y1] = pos(r.path[i][0], r.path[i][1]);
+    svg.appendChild(el('line', {x1: x0, y1: y0, x2: x1, y2: y1, 'stroke-width': 2, stroke: '#b784f5'}));
+  }
+  let k = r.path.findIndex(p => p[2] >= now);
+  const inside = k > 0 && now >= r.path[0][2];
+  const [az, alt] = inside ? r.path[k] : r.path[0];
+  const [x, y] = pos(az, alt);
+  svg.appendChild(el('circle', inside ? {cx: x, cy: y, r: 4, fill: '#b784f5'}
+                                      : {cx: x, cy: y, r: 4, fill: 'none', stroke: '#b784f5', 'stroke-width': 2}));
+  svg.appendChild(el('text', {x: x + 7, y: y - 6, fill: '#cdb0f7', 'font-size': 11})).textContent = r.name;
 }
 
 // ---- which camera the tracker is steering with, shown in each camera's caption ----

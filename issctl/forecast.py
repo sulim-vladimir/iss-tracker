@@ -156,7 +156,10 @@ def forecast(sats, site, t0, minutes=60.0, field=None, radius_deg=6.5, mask=None
                         "mag": round(float(mag[jj]), 1), "alt": round(float(alt[k[jj]]), 1),
                         "az": round(float(az[k[jj]]), 1),
                         "sep": None if field is None else round(float(np.min(sep[k[run]])), 1),
-                        "range_km": round(float(rng[k[jj]]))})
+                        "range_km": round(float(rng[k[jj]])),
+                        # where it will be, for the sky chart: [az, alt, t] every step
+                        "path": [[round(float(az[i]), 1), round(float(alt[i]), 1), round(float(t[i]))]
+                                 for i in k[run]]})
     out.sort(key=lambda r: r["start"])
     return out
 

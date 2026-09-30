@@ -193,8 +193,8 @@ a button in the browser; the sections below explain them.
    main camera does not see it, and **calibrate main on star** - see [Main camera](#main-camera).
 6. **Guide boresight.** With the star in the middle of the main image, press **set boresight** on
    the guide and click the star: the click snaps to the nearest bright spot.
-7. **Track.** **Track next pass** for the ISS or any catalogued satellite (or **track** on a
-   **Coming up** row), or **Follow what I click** under the guide image (servo) for anything you
+7. **Track.** **Track next pass** for the ISS or any catalogued satellite (or pick a
+   **Coming up** row and press **track selected**), or **Follow what I click** under the guide image (servo) for anything you
    can see. Keep the page open: it carries the
    [emergency stop](#emergency-stop). Recording goes to `captures/*.ser`, the control log to
    `logs/track-*.csv` or `logs/servo-*.csv`.
@@ -329,7 +329,7 @@ pass through the pointing model and the sky mask, slews to the start `lead_s` ea
 prediction, correcting timing and cross-track error from the cameras. It works for **any satellite**:
 leave the box next to the button empty for the ISS, or type a name or NORAD number (`42065`,
 `NOSS 3-8 (B)`) - it is looked up in the same catalogues as the naming, classified ones included.
-Each **Coming up** row has a **track** button for exactly that pass. From the command line:
+Pick a pass in **Coming up** and press **track selected** to track exactly that one. From the command line:
 `./issctl.sh passes --sat 42065`, `./issctl.sh track --sat 42065`. In simulation, pass mode on
 NOSS 3-8 (B) kept the main camera in control 96% of the run at a median 10".
 
@@ -387,8 +387,9 @@ Only satellites that are sunlit while the sky here is dark (sun 6 deg below the 
 listed, with a countdown, the estimated magnitude, where it will be and its range. The brightness
 comes from the standard magnitude, the range and the phase angle - good to about a magnitude, and a
 tumbling rocket body does what it likes. The best hours are the first two after dusk and before dawn;
-around midnight most low satellites are in Earth's shadow. **track** on a row plans and tracks that
-pass in pass mode.
+around midnight most low satellites are in Earth's shadow. Click a row to pick it: its path is drawn
+on the sky chart in violet, with a dot where it is now (a hollow circle where it will come in).
+**track selected** at the top of the list plans and tracks that pass in pass mode.
 
 ## Browser control panel
 

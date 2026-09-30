@@ -74,6 +74,6 @@ body{background:#2f3439;color:#e8e8e8;font:14px/1.4 system-ui,sans-serif;margin:
   .panel.slew{order:2}
   .panel.cam-main{order:3}
  }
- #coming .row{display:flex;align-items:flex-start;gap:4px;margin:3px 0}
- #coming .row button.small{margin-left:0;flex:0 0 auto}
- #coming .row span{white-space:pre}
+ #coming .row{white-space:pre;margin:2px 0;padding:2px 4px;border-radius:4px;cursor:pointer}
+ #coming .row:hover{background:#454c53}
+ #coming .row.sel{background:#4a3d63;outline:1px solid #b784f5}

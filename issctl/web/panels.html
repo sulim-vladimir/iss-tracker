@@ -148,6 +148,8 @@
   onclick="mnt('forecast',{mode:'field'})">through the guide field</button>
   <button title="the brightest passes anywhere above min_altitude and inside the sky openings, in the next hour"
   onclick="mnt('forecast',{mode:'sky'})">anywhere I can see</button></div>
+ <div class="ctl"><button id="comingtrack" disabled title="plan and track the pass picked below, in pass mode - click a row to pick it and see its path on the sky chart"
+  onclick="trackComing()">track selected</button><span id="coming-head" class="hint"></span></div>
  <div class="info" id="coming"></div></div>
 
 <!-- @sky -->

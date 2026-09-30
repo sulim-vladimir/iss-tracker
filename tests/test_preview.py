@@ -128,6 +128,7 @@ def test_every_function_the_page_calls_is_defined():
     # code only: text in string literals ("standby (handoff ...") is not a call
     code = re.sub(r"'(?:\\.|[^'\\\n])*'|\"(?:\\.|[^\"\\\n])*\"|`(?:\\.|[^`\\])*`", "''",
                   js + "\n" + handlers)
+    code = re.sub(r"//[^\n]*|/\*.*?\*/", "", code, flags=re.S)       # and not in comments
     defined = set(re.findall(r"\bfunction\s+([A-Za-z_]\w*)", js))
     defined |= set(re.findall(r"\b(?:const|let|var)\s+([A-Za-z_]\w*)\s*=\s*(?:\([^)]*\)|[A-Za-z_]\w*)\s*=>", js))
     builtins = {"if", "for", "while", "switch", "return", "catch", "typeof", "function", "Number",
