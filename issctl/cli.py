@@ -726,11 +726,18 @@ def cmd_console(args, cfg):
             say("no main camera")
             return
         radius = float(cfg["cameras"]["main"].get("search_radius_deg", 0.5))
-        hit = Search(mount, cams["main"], track_rate=sidereal() if ui["tracking"] else None,
-                     log=say, abort=aborted, radius_deg=radius,
-                     slack_deg=state.get("backlash_deg")).run()
+        ui["spiral"] = True
+        try:
+            hit = Search(mount, cams["main"], track_rate=sidereal() if ui["tracking"] else None,
+                         log=say, abort=aborted, radius_deg=radius,
+                         slack_deg=state.get("backlash_deg"), auto_stop=False,
+                         dwell_s=float(cfg["cameras"]["main"].get("search_dwell_s", 1.5))).run()
+        finally:
+            ui["spiral"] = False
         if hit is not None:
-            say("star in the main camera. Next: 'calibrate main on star'")
+            say(f"spiral search: stopped at stop {hit['stop']} "
+                f"({hit['offset_arcmin'][0]:+.1f}' {hit['offset_arcmin'][1]:+.1f}'). "
+                f"If the star is in main: 'calibrate main on star'")
 
     def do_main_on_star():
         """The main camera's matrix from moving the star it sees - its own pixels, no guide."""
@@ -1476,6 +1483,7 @@ def cmd_console(args, cfg):
                 "busy": ui["busy"], "msg": ui["msg"], "jog": ui["jog"].tolist(), "cal": cal,
                 "sat_label": live.label if state.get("identify_on", True) else "",
                 "identify_on": state.get("identify_on", True),
+                "spiral": bool(ui.get("spiral")),
                 "main_steers": bool(state.get("main_steers", cfg["tracking"].get("main_steers", False))),
                 "forecast": ui.get("forecast"), "now": clock.now(),
                 "rates": [round(float(r), 4) for r in mount.rate_cmd],

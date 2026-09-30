@@ -37,6 +37,12 @@ function applyMount(m) {
   // working, so this panel carries only what has nowhere else to go: what just happened.
   document.getElementById('mount-msg').textContent = m.msg || '\u2014';
   showComing(m.forecast, m.now);
+  const spb = document.getElementById('spiralbtn');
+  if (spb) {
+    spb.dataset.running = m.spiral ? '1' : '0';
+    spb.textContent = m.spiral ? 'Stop here' : 'Spiral search in main';
+    spb.className = m.spiral ? 'on' : '';
+  }
   const sb2 = document.getElementById('steerbtn');
   if (sb2) {
     sb2.dataset.on = m.main_steers ? '1' : '0';

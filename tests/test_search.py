@@ -128,3 +128,28 @@ def test_main_calibration_refuses_nonsense_axes(cfg, monkeypatch):
                                    frames=1)
     finally:
         cam.stop()
+
+
+def test_manual_spiral_stays_where_you_stop_it(cfg):
+    """On the rig the detector stopped on the wrong star and walked past the bright one; now a
+    person watches and presses Stop, and the mount stays at that stop."""
+    from issctl.search import _axes_offset, spiral_offsets
+
+    mount, world, cam = _rig(cfg, offset=(3.0, 3.0))       # nothing to find: only you decide
+    start = mount.position().copy()
+    stops = []
+
+    def log(msg):
+        if "press Stop here" in msg:
+            stops.append(msg)
+
+    s = Search(mount, cam, log=log, abort=lambda: len(stops) >= 4, settle_s=0.0, slew_rate=3.0,
+               auto_stop=False, dwell_s=0.2)
+    try:
+        hit = s.run()
+    finally:
+        cam.stop()
+    assert hit is not None and hit["stop"] == 4
+    u, v = list(spiral_offsets(s.step, s.radius))[3]
+    expected = start + _axes_offset(u, v, start[1])
+    assert np.allclose(mount.position(), expected, atol=0.01)       # there, not back at the start

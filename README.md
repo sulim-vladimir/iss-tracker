@@ -276,11 +276,13 @@ alignment** forgets the model - only after the tripod itself moved. The model is
 With the Barlow the main camera sees only 12.9' x 7.3' - about 9 x 16 guide pixels - so getting a
 star into it and measuring it needs its own tools.
 
-**spiral search in main** walks a square spiral round the current pointing, one main field per step
-(4.6'), out to `search_radius_deg` (30'), and stops when the main camera sees a star. Every stop is
-approached from the same side, so the ~10' of Dec backlash cannot leave holes, and a detection only
-counts once it moves with the mount: a small Dec nudge must carry it across the frame. Hot pixels and
-reflections stay put and are ignored for the rest of the search.
+**Spiral search in main** walks a square spiral round the current pointing, one main field per step
+(4.6'), out to `search_radius_deg` (30'), pausing `search_dwell_s` (1.5 s) at each stop. **You decide
+when it has found the star**: the button turns into **Stop here** while it runs - press it when the
+bright star is in the main image and the mount stays at that stop. (It used to stop by itself on
+the first thing main detected; on the rig that was the wrong star.) Every stop is approached from
+the same side, so the ~10' of Dec backlash cannot leave holes; left alone, it covers the whole
+square and returns to the start.
 
 **calibrate main on star** measures the main camera's matrix in its own pixels: each axis goes to
 -1.8', 0 and +1.8' about the start, always arriving from the same side, and a line through the three

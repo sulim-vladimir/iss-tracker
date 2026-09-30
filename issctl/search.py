@@ -77,7 +77,8 @@ def _find(cam, frame, ignore):
 
 class Search:
     def __init__(self, mount, cam, track_rate=None, log=print, abort=None, radius_deg=0.5,
-                 step_deg=None, slack_deg=None, slew_rate=0.5, settle_s=0.3):
+                 step_deg=None, slack_deg=None, slew_rate=0.5, settle_s=0.3, auto_stop=True,
+                 dwell_s=1.5):
         self.mount, self.cam, self.log = mount, cam, log
         self.abort = abort or (lambda: False)
         self.track_rate = track_rate
@@ -87,6 +88,10 @@ class Search:
         self.approach = np.maximum(np.broadcast_to(np.asarray(slack, dtype=float), (2,)), 0.02)
         self.slew_rate, self.settle_s = slew_rate, settle_s
         self.static = []       # blobs that did not move with the mount
+        # auto_stop=False: never decide by itself - pause dwell_s at each stop for a person to
+        # look, and take "Stop" as "here". On the rig the detector stopped on the wrong star and
+        # walked past the bright one; a person picks the right one at a glance.
+        self.auto_stop, self.dwell_s = auto_stop, dwell_s
 
     def _go(self, anchor, d):
         self.mount.move_to(anchor(d), track_rate=self.track_rate, abort=self.abort,
@@ -127,12 +132,29 @@ class Search:
         offsets = list(spiral_offsets(self.step, self.radius))
         self.log(f"spiral search in {self.cam.name}: {len(offsets)} stops of "
                  f"{self.step * 60:.1f}', out to {self.radius * 60:.0f}'")
+        here = None
         for k, (u, v) in enumerate(offsets):
             if self.abort():
+                if not self.auto_stop and here is not None:
+                    self.log(f"spiral search: stopped by you at stop {here['stop']}/{len(offsets)}, "
+                             f"{here['offset_arcmin'][0]:+.1f}' {here['offset_arcmin'][1]:+.1f}' "
+                             f"from the start - the mount stays here")
+                    return here
                 self.log("spiral search aborted - the mount stays where it is")
                 return None
             d = _axes_offset(u, v, axis2)
             self._go(anchor, d)
+            if not self.auto_stop:
+                if self.abort():
+                    continue            # stopped during the move: report the last full stop
+                here = {"stop": k + 1, "offset_arcmin": [u * 60, v * 60],
+                        "axes_offset": d.tolist(), "px": None}
+                self.log(f"spiral search: stop {k + 1}/{len(offsets)}, {u * 60:+.1f}' {v * 60:+.1f}' "
+                         f"- press Stop here when the star is in main")
+                t_end = time.monotonic() + self.dwell_s
+                while time.monotonic() < t_end and not self.abort():
+                    time.sleep(0.05)
+                continue
             px = self._look()
             if px is None:
                 if k % 10 == 9:

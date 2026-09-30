@@ -110,8 +110,8 @@
   onclick="mnt('align_add',{})">add star</button>
   <button title="with a bright star in the main camera: the solve says which star it is and where it sits in the guide, so the green cross goes exactly there. No parallax - the stars are at infinity"
   onclick="mnt('star_boresight',{})">boresight on star</button>
-  <button title="the star is in the guide but not in the main camera: walk a spiral round here, one main field per step, until main sees it (30' by default; Stop cancels)"
-  onclick="mnt('spiral',{})">spiral search in main</button>
+  <button id="spiralbtn" title="the star is in the guide but not in the main camera: walk a spiral round here, one main field per step (30' by default), pausing at each stop. Press Stop here when the star is in main - the mount stays there"
+  onclick="mnt(this.dataset.running === '1' ? 'stop' : 'spiral', {})">Spiral search in main</button>
   <button title="with a star anywhere in the main camera: move each axis 1.8' either way and measure the main matrix in its own pixels (no guide involved), then centre the star. Takes up the Dec slack first"
   onclick="mnt('maincal',{})">calibrate main on star</button>
   <button title="forget the star alignment - only after the tripod itself has moved"
