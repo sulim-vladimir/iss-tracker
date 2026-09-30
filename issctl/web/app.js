@@ -37,6 +37,12 @@ function applyMount(m) {
   // working, so this panel carries only what has nowhere else to go: what just happened.
   document.getElementById('mount-msg').textContent = m.msg || '\u2014';
   showComing(m.forecast, m.now);
+  const sb2 = document.getElementById('steerbtn');
+  if (sb2) {
+    sb2.dataset.on = m.main_steers ? '1' : '0';
+    sb2.textContent = 'Main steers: ' + (m.main_steers ? 'ON' : 'off');
+    sb2.className = (m.main_steers ? 'on ' : '') + 'right';
+  }
   const ib = document.getElementById('identbtn');
   if (ib) { const on = m.identify_on !== false; ib.textContent = on ? 'naming ON' : 'naming off'; ib.className = on ? 'on' : ''; }
   const sb = document.getElementById('siderealbtn');

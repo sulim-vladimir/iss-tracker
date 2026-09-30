@@ -1060,7 +1060,7 @@ def cmd_console(args, cfg):
             else:
                 mount.stop()
             return
-        if ui["mode"] == "track":
+        if ui["mode"] == "track" and action != "main_steers":
             ui["msg"] = "tracking a pass - stop it first"
             return
         if ui["busy"]:
@@ -1095,6 +1095,17 @@ def cmd_console(args, cfg):
             threading.Thread(target=do_forecast, args=(mode,), daemon=True).start()
         elif action == "identify":
             identify_later(None)
+        elif action == "main_steers":
+            state["main_steers"] = params.get("on") not in (None, "0", "false")
+            persist()
+            tr = session["tracker"]
+            if tr is not None:
+                tr.main_steers = state["main_steers"]
+                if not tr.main_steers:
+                    tr.main_streak = 0
+            say("main camera " + ("may take over steering when it has the target steady"
+                                  if state["main_steers"] else
+                                  "does not steer: guide only (main still shows and records)"))
         elif action == "identify_on":
             state["identify_on"] = params.get("on") not in (None, "0", "false")
             persist()
@@ -1465,6 +1476,7 @@ def cmd_console(args, cfg):
                 "busy": ui["busy"], "msg": ui["msg"], "jog": ui["jog"].tolist(), "cal": cal,
                 "sat_label": live.label if state.get("identify_on", True) else "",
                 "identify_on": state.get("identify_on", True),
+                "main_steers": bool(state.get("main_steers", cfg["tracking"].get("main_steers", False))),
                 "forecast": ui.get("forecast"), "now": clock.now(),
                 "rates": [round(float(r), 4) for r in mount.rate_cmd],
                 "track": tracking_note()}

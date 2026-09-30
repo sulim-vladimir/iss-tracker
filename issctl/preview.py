@@ -137,6 +137,7 @@ class Preview:
                    bore=f["bore"].replace("NAME", n) if (n != "main" and can_move) else "",
                    servo=f["servo"] if (n == "guide" and can_move) else "",
                    bright=f["bright"] if (n == "guide" and can_move) else "",
+                   steer=f["steer"] if (n == "main" and can_move) else "",
                    centre=(f["centre"].replace("EXTRA", "" if n == "main" else f["in_frame"])
                            .replace("NAME", n)
                            .replace("LABEL", "centre it" if n == "main" else "send to main")

@@ -150,7 +150,7 @@ def test_main_only_confirms_what_the_guide_has(cfg):
         c["axis2_cal"] = float(START[1])
     main = _Cam()
     main.width, main.height = 1936, 1096
-    t = Tracker(cfg, {"cameras": {"guide": gcal, "main": mcal}}, mount,
+    t = Tracker(cfg, {"cameras": {"guide": gcal, "main": mcal}, "main_steers": True}, mount,
                 {"guide": _Cam(), "main": main}, clock, _Pass(clock.now()))
     b = gcal["boresight"]
     feed(t, clock, lambda k: (b[0], b[1]), 2.0)                     # guide locks on the target
@@ -238,3 +238,65 @@ def test_it_waits_where_the_satellite_comes_into_sunlight(cfg):
     t = Tracker(cfg, {"cameras": {}}, mount, {}, clock, traj)
     meet = t._intercept(now)
     assert meet >= lights and meet < lights + 2.0
+
+
+def test_main_noise_wandering_about_never_takes_over(cfg):
+    """On the rig, main's 'detections' jumped (66,161) -> (1294,1080) -> (763,17) -> ... - noise
+    in a 10 ms frame with the satellite not in view - took over, and drove the mount off at
+    1 deg/s in Dec. A handoff now needs a steady blob near the centre, and main in charge may
+    not jump."""
+    clock = Clock(speed=10.0)
+    mount = SimMount(cfg, {}, clock, start=START)
+    mount.query()
+    gcal = ideal_calibration(cfg["cameras"]["guide"], rotation_deg=20.0, dec_cal=50.0)
+    mcal = ideal_calibration(cfg["cameras"]["main"], rotation_deg=-60.0, dec_cal=50.0)
+    for c in (gcal, mcal):
+        c["axis2_cal"] = float(START[1])
+    main = _Cam()
+    main.width, main.height = 1936, 1096
+    t = Tracker(cfg, {"cameras": {"guide": gcal, "main": mcal}, "main_steers": True}, mount,
+                {"guide": _Cam(), "main": main}, clock, _Pass(clock.now()))
+    b = gcal["boresight"]
+    feed(t, clock, lambda k: (b[0], b[1]), 2.0)
+    assert t.source == "guide"
+    t.step()
+    assert main.gate is not None and main.gate[2] < 300            # main looks near its centre
+
+    c = np.array(mcal["boresight"])
+    rng = np.random.default_rng(0)
+    for _ in range(12):                                              # noise, wandering about
+        x, y = c + rng.uniform(-200, 200, 2)
+        t._vision("main", Detection(x, y, 300.0, 25, clock.now()))
+        clock.sleep(0.1)
+    assert t.source == "guide"
+
+    for k in range(3):                                               # the target, steady
+        t._vision("main", Detection(c[0] + 10 + k, c[1] - 5, 900.0, 40, clock.now()))
+        clock.sleep(0.1)
+    assert t.source == "main"
+    before = t.cross.copy()
+    t._vision("main", Detection(c[0] + 180, c[1] + 150, 900.0, 40, clock.now()))   # a jump
+    assert np.allclose(t.cross, before)
+
+
+def test_by_default_main_does_not_steer(cfg):
+    """Guide only unless switched on: main watches and records."""
+    clock = Clock(speed=10.0)
+    mount = SimMount(cfg, {}, clock, start=START)
+    mount.query()
+    gcal = ideal_calibration(cfg["cameras"]["guide"], rotation_deg=20.0, dec_cal=50.0)
+    mcal = ideal_calibration(cfg["cameras"]["main"], rotation_deg=-60.0, dec_cal=50.0)
+    for c in (gcal, mcal):
+        c["axis2_cal"] = float(START[1])
+    main = _Cam()
+    main.width, main.height = 1936, 1096
+    t = Tracker(cfg, {"cameras": {"guide": gcal, "main": mcal}}, mount,
+                {"guide": _Cam(), "main": main}, clock, _Pass(clock.now()))
+    assert not t.main_steers
+    b = gcal["boresight"]
+    feed(t, clock, lambda k: (b[0], b[1]), 2.0)
+    c = mcal["boresight"]
+    for k in range(6):                                  # a perfect, steady target in main
+        t._vision("main", Detection(c[0] + 3, c[1] - 2, 900.0, 40, clock.now()))
+        clock.sleep(0.1)
+    assert t.source == "guide" and t.main_streak == 0

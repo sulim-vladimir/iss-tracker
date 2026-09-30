@@ -10,7 +10,7 @@
  <label style="width:auto;margin-left:10px">Gain</label>
  <button onclick="api('/api/gain',{cam:'{{name}}',delta:-25})">-</button>
  <input id="gain-{{name}}" onchange="api('/api/gain',{cam:'{{name}}',value:this.value})">
- <button onclick="api('/api/gain',{cam:'{{name}}',delta:25})">+</button>{{servo}}</div>
+ <button onclick="api('/api/gain',{cam:'{{name}}',delta:25})">+</button>{{servo}}{{steer}}</div>
 <div class="ctl"><label>Target</label><span id="sel-{{name}}"></span></div>
 <div class="ctl btns">
  <button onclick="api('/api/select',{cam:'{{name}}',clear:1})">Auto</button>{{bore}}{{bright}}{{centre}}</div>
@@ -30,6 +30,10 @@
 <!-- @servo -->
  <button id="servobtn" class="right" title="servo mode: press this, then click the object in the guide image - a satellite, the ISS, a plane - and the mount follows it, with no orbit and no alignment. A later click in the image moves the lock to what you clicked. Shorten the exposure first: 8 ms for the ISS, 50-200 ms for fainter satellites. Stops by itself after servo_give_up_s with nothing detected"
  onclick="MODE === 'track' ? mnt('untrack', {}) : armFollow()">Follow</button>
+
+<!-- @steer -->
+ <button id="steerbtn" class="right" title="may the main camera take over steering from the guide once it has the target steady? Off: guide only - main still shows and records"
+ onclick="mnt('main_steers',{on: this.dataset.on === '1' ? 0 : 1})">Main steers: off</button>
 
 <!-- @bright -->
  <button id="brightbtn" title="press this, then click a star or a satellite in the guide image: a plate solve of a fresh frame gives its catalogue magnitude, and its brightness measured against the stars around it - which works for satellites too. Needs a frame that solves (0.5-2 s exposure, stars held still)"

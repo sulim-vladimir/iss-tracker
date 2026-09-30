@@ -80,6 +80,10 @@ class Tracker:
                  name="ISS"):
         self.name = name          # what is being followed, for the messages
         self.state = state        # the star alignment, to turn axis angles into alt/az
+        # Whether the main camera may take over steering. Off by default: the first good real
+        # track was guide-only, and every mess since came from main taking over (a star, then
+        # noise). Main still shows and records; it just does not steer until switched on.
+        self.main_steers = bool((state or {}).get("main_steers", cfg["tracking"].get("main_steers", False)))
         self.cfg, self.mount, self.cams, self.clock, self.traj, self.log = cfg, mount, cameras, clock, traj, log
         m, tr = cfg["mount"], cfg["tracking"]
         self.tr = tr
@@ -127,6 +131,11 @@ class Tracker:
         self.acquire_still_px = tr.get("acquire_still_px", 6.0)
         self.acquire_s = (tr.get("acquire_min_s", 1.0), tr.get("acquire_max_s", 5.0))
         self.candidates = {n: [] for n in cameras}
+        # Main camera: where its last accepted/candidate detection was, and how far the next may
+        # be from it - see _vision. Noise in a 10 ms main frame took over the loop otherwise.
+        self.main_last_px = None
+        self.main_still_px = tr.get("main_still_px", 40.0)
+        self.main_step_px = tr.get("main_step_px", 80.0)
         # Pass mode: until this time the reference holds still at the pass's position then, so
         # the mount waits AHEAD of the satellite instead of chasing where it is (see _intercept).
         self.hold_until = None
@@ -222,9 +231,9 @@ class Tracker:
         return min(self.tr["max_offset_jump_arcmin"] + extra, self.tr["max_reacquire_arcmin"])
 
     def _main_allowance(self, lost_for):
-        """How far a main detection may sit from the estimate: a few arcmin, opening slowly while
-        nothing has been seen, and never to the whole main field."""
-        base = self.tr.get("main_agree_arcmin", 3.0)
+        """How far a main detection may sit from the estimate: a little more than the guide can
+        place it, opening slowly while nothing has been seen, and never to the whole main field."""
+        base = self.tr.get("main_agree_arcmin", 1.5)
         return min(base + 0.5 * max(0.0, lost_for), 3 * base)
 
     def _search_gate(self, name, now):
@@ -251,6 +260,8 @@ class Tracker:
         cal = self.cal.get(name)
         if cal is None or not self.visible:
             return  # behind a building or in shadow: anything we detect is not the ISS
+        if name == "main" and not self.main_steers:
+            return                  # guide only: main watches and records, it does not steer
         self.last_seen[name] = det.t
         if name != "main" and self.main_streak >= self.tr["main_handoff_frames"]:
             # Main camera is in charge; keep the guide gate on the boresight (where the ISS must
@@ -272,10 +283,21 @@ class Tracker:
             # Main only confirms what the guide already has. Its whole field is 7', so the
             # general jump allowance (25') let ANY star in it take over after three frames - and
             # on the rig, after a guide lock, main held the mount on a star for half a minute.
-            if not np.isfinite(self.last_good) or jump > self._main_allowance(det.t - self.last_good):
-                self.main_streak = 0
+            # Then noise in a 10 ms frame, wandering hundreds of px from frame to frame, took over
+            # and drove the mount off: so the handoff also needs a STEADY blob, and once main is
+            # in charge it may not jump.
+            px = np.array([det.x, det.y])
+            moved = np.inf if self.main_last_px is None else float(np.hypot(*(px - self.main_last_px)))
+            in_charge = self.main_streak >= self.tr["main_handoff_frames"]
+            if not np.isfinite(self.last_good) or jump > self._main_allowance(det.t - self.last_good) \
+                    or (in_charge and moved > self.main_step_px):
+                if not in_charge:
+                    self.main_streak, self.main_last_px = 0, None
                 self.rejected += 1
                 return
+            if not in_charge and moved > self.main_still_px:
+                self.main_streak = 0                 # a new candidate: start counting again
+            self.main_last_px = px
             self.main_streak += 1
             if self.main_streak < self.tr["main_handoff_frames"]:
                 return
@@ -360,6 +382,7 @@ class Tracker:
     def _check_timeouts(self, now):
         timeout = self.tr["lost_timeout_s"]
         if "main" in self.cams and now - self.last_seen["main"] > timeout and self.main_streak:
+            self.main_last_px = None
             if self.main_streak >= self.tr["main_handoff_frames"]:
                 self.log("main camera lost target, back to guide")
             self.main_streak = 0
@@ -440,6 +463,13 @@ class Tracker:
             if self.on_visibility:
                 self.on_visibility(visible, reason)
         self.lit, self.open_sky, self.visible = lit, open_sky, visible
+        main, mcal = self.cams.get("main"), self.cal.get("main")
+        if main is not None and mcal is not None and not main.manual and self.main_steers:
+            # look only where the target must be: the whole frame's brightest blob, when the
+            # target is not in view, is noise at a main exposure
+            r = self._main_allowance(now - self.last_good if np.isfinite(self.last_good) else 0.0)
+            main.gate = (mcal["boresight"][0], mcal["boresight"][1],
+                         min(r / 60.0 * cal_px_per_deg(mcal), 0.5 * max(main.width, main.height)))
         for name, cam in self.cams.items():
             _, det, seq = cam.latest()
             if seq != self.seq[name]:
