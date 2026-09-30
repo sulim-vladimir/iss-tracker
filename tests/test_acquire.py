@@ -133,3 +133,71 @@ def test_a_hand_pick_and_servo_mode_are_not_held_back(cfg):
     servo.step()
     servo._vision("guide", Detection(700.0, 500.0, 500.0, 20, clock.now()))
     assert np.isfinite(servo.last_good)
+
+
+def test_main_only_confirms_what_the_guide_has(cfg):
+    """After a guide lock, main held the mount on a star for half a minute on the rig: any blob
+    in its 7' field passed the 25' jump check. Now it must agree with the estimate to a few
+    arcmin - a star elsewhere in the main field never takes over, the target itself does."""
+    from issctl.calib import axes_offset_from_pixel, jacobian
+
+    clock = Clock(speed=10.0)
+    mount = SimMount(cfg, {}, clock, start=START)
+    mount.query()
+    gcal = ideal_calibration(cfg["cameras"]["guide"], rotation_deg=20.0, dec_cal=50.0)
+    mcal = ideal_calibration(cfg["cameras"]["main"], rotation_deg=-60.0, dec_cal=50.0)
+    for c in (gcal, mcal):
+        c["axis2_cal"] = float(START[1])
+    main = _Cam()
+    main.width, main.height = 1936, 1096
+    t = Tracker(cfg, {"cameras": {"guide": gcal, "main": mcal}}, mount,
+                {"guide": _Cam(), "main": main}, clock, _Pass(clock.now()))
+    b = gcal["boresight"]
+    feed(t, clock, lambda k: (b[0], b[1]), 2.0)                     # guide locks on the target
+    assert t.source == "guide"
+
+    def main_px(arcmin):                  # where something `arcmin` from the target shows in main
+        axis2 = mount.position()[1]
+        return np.array(mcal["boresight"]) - jacobian(mcal, axis2) @ np.array([0.0, arcmin / 60.0])
+
+    star = main_px(5.0)
+    for _ in range(6):
+        t._vision("main", Detection(star[0], star[1], 900.0, 30, clock.now()))
+        clock.sleep(0.1)
+    assert t.source == "guide" and t.main_streak == 0
+
+    target = main_px(1.0)
+    for _ in range(3):
+        t._vision("main", Detection(target[0], target[1], 900.0, 30, clock.now()))
+        clock.sleep(0.1)
+    assert t.source == "main"
+
+
+class _Moving(_Pass):
+    """A satellite 20 deg from the mount, running away along axis1 at 0.5 deg/s."""
+
+    def at(self, tq):
+        return START + np.array([20.0 + 0.5 * (tq - self.t0), 0.0]), np.array([0.5, 0.0])
+
+
+def test_a_pass_already_up_is_met_ahead_not_chased(cfg):
+    """Tracking a satellite that was already up: the mount aimed at where it was NOW, arrived
+    late and trailed it for the whole pass. It must wait where it can get to first."""
+    clock = Clock(speed=10.0)
+    mount = SimMount(cfg, {}, clock, start=START)
+    mount.query()
+    traj = _Moving(clock.now() - 60.0)          # started a minute ago
+    traj.t0 = clock.now()
+    t = Tracker(cfg, {"cameras": {}}, mount, {}, clock, traj)
+    now = clock.now()
+    meet = t._intercept(now)
+    p, _ = traj.at(meet)
+    assert meet > now and t._slew_time(mount.position(), p) + 3.0 <= meet - now + 1.0
+    t.hold_until = meet
+    ref, vel = t.target(now + 1.0)
+    assert np.allclose(ref, p) and np.allclose(vel, 0.0)      # waiting there, still
+    ref, vel = t.target(meet + 1.0)
+    assert np.allclose(vel, [0.5, 0.0])                        # then following at its rate
+    # a pass that has not started yet is simply met at its start
+    later = _Pass(clock.now() + 600.0)
+    assert Tracker(cfg, {"cameras": {}}, mount, {}, clock, later)._intercept(now) == later.t_start

@@ -126,6 +126,9 @@ class Tracker:
         self.acquire_still_px = tr.get("acquire_still_px", 6.0)
         self.acquire_s = (tr.get("acquire_min_s", 1.0), tr.get("acquire_max_s", 5.0))
         self.candidates = {n: [] for n in cameras}
+        # Pass mode: until this time the reference holds still at the pass's position then, so
+        # the mount waits AHEAD of the satellite instead of chasing where it is (see _intercept).
+        self.hold_until = None
         self.last_px = {}
         self.stop_requested = False
         self.on_visibility = None
@@ -176,8 +179,32 @@ class Tracker:
         return self.cross + self.cross_rate * (t - self.t_update)
 
     def target(self, t):
+        if self.hold_until is not None and t < self.hold_until:
+            p, _ = self.traj.at(self.hold_until + self.time_offset)
+            return p + self.cross_at(t), np.zeros(2)
         p, v = self.traj.at(t + self.time_offset)
         return p + self.cross_at(t), v + self.cross_rate
+
+    def _slew_time(self, frm, to):
+        """Seconds to move between two poses: accelerate, cruise, decelerate, slowest axis."""
+        d = np.abs(geo.wrap180(np.asarray(to, dtype=float) - np.asarray(frm, dtype=float)))
+        vmax = np.asarray(self.mount.max_rate, dtype=float) * 0.8
+        acc = max(float(self.mount.max_accel), 1e-3)
+        t = np.where(d > vmax ** 2 / acc, d / vmax + vmax / acc, 2 * np.sqrt(d / acc))
+        return float(np.max(t))
+
+    def _intercept(self, now, margin=3.0):
+        """When to start following: the first moment of the pass the mount can reach ahead of
+        the satellite. Aiming at where it is NOW (a pass already up) had the mount arrive late
+        every time and trail it for the whole pass - it chased instead of waiting."""
+        here = self.mount.position()
+        t = max(now, self.traj.t_start)
+        while t < self.traj.t_end:
+            p, _ = self.traj.at(t)
+            if self._slew_time(here, p) + margin <= t - now:
+                return t
+            t += 1.0
+        return self.traj.t_start
 
     # ---- vision ----
     def _jump_allowance(self, lost_for):
@@ -185,6 +212,12 @@ class Tracker:
         because the prediction drifts, but never far enough to let a random star take over."""
         extra = self.growth * max(0.0, lost_for - self.tr["lost_timeout_s"])
         return min(self.tr["max_offset_jump_arcmin"] + extra, self.tr["max_reacquire_arcmin"])
+
+    def _main_allowance(self, lost_for):
+        """How far a main detection may sit from the estimate: a few arcmin, opening slowly while
+        nothing has been seen, and never to the whole main field."""
+        base = self.tr.get("main_agree_arcmin", 3.0)
+        return min(base + 0.5 * max(0.0, lost_for), 3 * base)
 
     def _search_gate(self, name, now):
         """Restrict the search to where the ISS can plausibly be, instead of the whole frame."""
@@ -211,11 +244,7 @@ class Tracker:
         if cal is None or not self.visible:
             return  # behind a building or in shadow: anything we detect is not the ISS
         self.last_seen[name] = det.t
-        if name == "main":
-            self.main_streak += 1
-            if self.main_streak < self.tr["main_handoff_frames"]:
-                return
-        elif self.main_streak >= self.tr["main_handoff_frames"]:
+        if name != "main" and self.main_streak >= self.tr["main_handoff_frames"]:
             # Main camera is in charge; keep the guide gate on the boresight (where the ISS must
             # be) so a handback starts from the right place instead of a stale position.
             self._search_gate(name, det.t)
@@ -223,9 +252,6 @@ class Tracker:
         meas = self.mount.position_at(det.t)
         if meas is None:
             return
-        self.last_det[name] = det.t
-        self.source = name
-        self.last_px[name] = (det.x, det.y)
 
         iss = meas + axes_offset_from_pixel(cal, meas[1], (det.x, det.y))
         p, v = self.traj.at(det.t + self.time_offset)
@@ -234,6 +260,17 @@ class Tracker:
 
         # A detection implying a big jump is another object (star, hot pixel, another satellite).
         jump = float(np.hypot(*(o * geo.sky_metric(meas[1])))) * 60
+        if name == "main" and not self.force_accept:
+            # Main only confirms what the guide already has. Its whole field is 7', so the
+            # general jump allowance (25') let ANY star in it take over after three frames - and
+            # on the rig, after a guide lock, main held the mount on a star for half a minute.
+            if not np.isfinite(self.last_good) or jump > self._main_allowance(det.t - self.last_good):
+                self.main_streak = 0
+                self.rejected += 1
+                return
+            self.main_streak += 1
+            if self.main_streak < self.tr["main_handoff_frames"]:
+                return
         if not self.force_accept and not self.servo and not np.isfinite(self.last_good) \
                 and not self._acquire(name, det, meas, p, v, jump):
             return
@@ -242,6 +279,11 @@ class Tracker:
         elif np.isfinite(self.last_good) and jump > self._jump_allowance(det.t - self.last_good):
             self.rejected += 1
             return
+        # Only now is this camera driving the loop - marking it earlier made the captions and the
+        # log say "main" while every main detection was being thrown away.
+        self.last_det[name] = det.t
+        self.source = name
+        self.last_px[name] = (det.x, det.y)
         first_fix = not np.isfinite(self.last_good)
         self.last_good = det.t
 
@@ -285,7 +327,7 @@ class Tracker:
           is nearly still while stars drift by at the satellite's own rate. It must hold within
           acquire_still_px for as long as a star would take to move three times that far."""
         cand = self.candidates[name]
-        if det.t < self.traj.t_start or jump > self.acquire_radius:
+        if det.t < max(self.traj.t_start, self.hold_until or -np.inf) or jump > self.acquire_radius:
             cand.clear()
             return False
         settle = geo.sky_metric(meas[1]) * (p + self.cross_at(det.t) - meas)
@@ -408,8 +450,8 @@ class Tracker:
         recordable = bool(in_window and self.visible and locked)
         if recordable != self.recordable:
             self.recordable = recordable
-            self.log(f"recording {'armed' if recordable else 'held (target not trackable)'}")
-            if self.on_record:
+            if self.on_record:        # only when a recorder follows it: the console records by hand
+                self.log(f"recording {'armed' if recordable else 'held (target not trackable)'}")
                 self.on_record(recordable)
 
         t_meas, meas = self.mount.last
@@ -462,6 +504,16 @@ class Tracker:
                     self.mount.query()
                     self.clock.sleep(0.5)
                     continue
+                if not self.servo and self.hold_until is None:
+                    self.hold_until = self._intercept(now)
+                    if self.hold_until > max(now, traj.t_start) + 1.0:
+                        if getattr(traj, "az", None) is not None:
+                            alt = float(np.interp(self.hold_until, traj.t, traj.alt))
+                            az = float(np.interp(self.hold_until, traj.t, np.unwrap(traj.az, period=360))) % 360
+                        else:
+                            alt, az = self.altaz(traj.at(self.hold_until)[0])
+                        self.log(f"{self.name} is already up: waiting ahead of it at alt {alt:.0f} "
+                                 f"az {az:.0f}, following from {self.hold_until - now:.0f} s")
                 if not started and now >= traj.t_start - 5.0:
                     started = True
                     if on_start:

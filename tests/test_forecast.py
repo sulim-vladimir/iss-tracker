@@ -86,3 +86,23 @@ def test_a_pass_already_in_progress_is_found(site):
         p = pr.find_passes(sat, site, mid, 24)[0]
         assert p["rise"] == pytest.approx(mid) and p["set"] == pytest.approx(first["set"], abs=1)
         assert p["rise"] <= p["culm"] <= p["set"]
+
+
+def test_the_chart_draws_the_planned_pass_where_it_really_is(site):
+    """The plan is kept as axis angles; drawn back through an ideal mount, a tripod 3.7 deg off
+    the pole put the pass degrees away from the same satellite's Coming-up path."""
+    from issctl.cli import sky_payload
+    from issctl.config import load_config
+    from issctl.mask import SkyMask
+    from issctl.sim import misalignment
+
+    cfg = load_config()
+    sat = idf.build(idf.load_tles([DATA / "sample.tle"]))[1][2]
+    p = pr.find_passes(sat, site, 1790640000.0, 24)[0]
+    model = misalignment(site.lat, (3.0, -2.0), 20.0)
+    traj, _ = pr.plan_pass(sat, site, cfg["mount"], p["rise"], p["set"], model=model)
+    track = sky_payload(cfg, SkyMask(), traj, site)["track"]
+    t0 = traj.t_start
+    for az, alt, lit, open_, dt in track[::40]:
+        true_alt, true_az = pr.sat_hadec(sat, site, t0 + dt)[2:]
+        assert abs(alt - true_alt) < 0.05 and abs((az - true_az + 180) % 360 - 180) < 0.1

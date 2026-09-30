@@ -122,6 +122,8 @@ class SerWriter:
             self.frames += 1
 
     def close(self):
+        if self._f.closed:
+            return          # closed already: a second stop used to crash on the closed file
         self.active = False
         self._q.put(None)
         self._thread.join()

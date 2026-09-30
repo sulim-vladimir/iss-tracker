@@ -10,10 +10,10 @@
  <label style="width:auto;margin-left:10px">Gain</label>
  <button onclick="api('/api/gain',{cam:'{{name}}',delta:-25})">-</button>
  <input id="gain-{{name}}" onchange="api('/api/gain',{cam:'{{name}}',value:this.value})">
- <button onclick="api('/api/gain',{cam:'{{name}}',delta:25})">+</button></div>
+ <button onclick="api('/api/gain',{cam:'{{name}}',delta:25})">+</button>{{servo}}</div>
 <div class="ctl"><label>Target</label><span id="sel-{{name}}"></span></div>
 <div class="ctl btns">
- <button onclick="api('/api/select',{cam:'{{name}}',clear:1})">Auto</button>{{bore}}{{centre}}{{servo}}</div>
+ <button onclick="api('/api/select',{cam:'{{name}}',clear:1})">Auto</button>{{bore}}{{centre}}</div>
 <div class="info" id="info-{{name}}"></div>
 {{extra}}</div>
 
@@ -28,8 +28,8 @@
  onclick="api('/api/corners',{cam:'NAME',on: this.className!=='on' ? 1 : 0})">show corners</button>
 
 <!-- @servo -->
- <button id="servobtn" title="servo mode: follow whatever you click in this image - a satellite, the ISS, a plane - with no orbit and no alignment. Either order works: click the object then press this, or press this then click it (a click always restarts the lock on what you clicked). Shorten the exposure first: 8 ms for the ISS, 50-200 ms for fainter satellites. Stops by itself after servo_give_up_s with nothing detected"
- onclick="mnt(MODE==='track' ? 'untrack' : 'servo', {})">Follow</button>
+ <button id="servobtn" class="right" title="servo mode: press this, then click the object in the guide image - a satellite, the ISS, a plane - and the mount follows it, with no orbit and no alignment. A later click in the image moves the lock to what you clicked. Shorten the exposure first: 8 ms for the ISS, 50-200 ms for fainter satellites. Stops by itself after servo_give_up_s with nothing detected"
+ onclick="MODE === 'track' ? mnt('untrack', {}) : armFollow()">Follow</button>
 
 <!-- @bore -->
  <button id="bore-NAME" title="move the green cross: press this, then click the object sitting in the MIDDLE of the main image - the click snaps to the brightest spot nearby. That is what the boresight means. Only trust it on something a kilometre away or more, or the parallax between the two cameras is wider than the main field"
@@ -67,12 +67,7 @@
  <div class="ctl">
   <button id="siderealbtn" title="follow the stars at sidereal rate"
   onclick="mnt('track',{on: this.className === 'on' ? 0 : 1})">sidereal off</button></div>
- <div class="ctl">
-  <button id="trackbtn" title="plan and track the next usable pass of the satellite named on the right - the ISS if it is blank"
-  onclick="mnt(MODE==='track' ? 'untrack' : 'track',
-    {sat: document.getElementById('trackname').value, pass: document.getElementById('passidx').value})">Track next pass</button>
-  <input id="trackname" placeholder="ISS" style="width:96px" title="satellite name or NORAD number (e.g. 42065, NOSS 3-8 (B)) - blank for the ISS">
-  <input id="passidx" placeholder="next" style="width:40px" title="pass index from 'issctl passes', or blank for the next usable one"></div>
+
  <div class="ctl">
   <button title="name the satellite the last session followed, from its log and the satellite catalogues (public and amateur-observed classified ones). Also runs by itself when a session ends"
   onclick="mnt('identify',{})">what was that?</button>
@@ -144,14 +139,17 @@
 <div class="panel box grow coming"><h2>Coming up</h2>
  <div class="ctl">
   <button title="bright satellites that will cross the guide field in the next hour - fixed on the stars if sidereal tracking is on"
-  onclick="mnt('forecast',{mode:'field'})">through the guide field</button>
+  onclick="mnt('forecast',{mode:'field'})">Through the guide field</button>
   <button title="the brightest passes anywhere above min_altitude and inside the sky openings, in the next hour"
-  onclick="mnt('forecast',{mode:'sky'})">anywhere I can see</button></div>
- <div class="ctl"><button id="comingtrack" disabled title="plan and track the pass picked below, in pass mode - click a row to pick it and see its path on the sky chart"
-  onclick="trackComing()">track selected</button><span id="coming-head" class="hint"></span></div>
+  onclick="mnt('forecast',{mode:'sky'})">Anywhere</button>
+  <button id="comingtrack" disabled title="plan and track the pass picked below, in pass mode - click a row to pick it and see its path on the sky chart"
+  onclick="trackComing()">Track selected</button></div>
+ <div class="hint" id="coming-head"></div>
  <div class="info" id="coming"></div></div>
 
 <!-- @sky -->
 <div class="panel sky">
-<svg id="sky" viewBox="0 0 330 330"></svg>
+<svg id="sky" viewBox="0 0 330 330" onclick="pickSky(event)"></svg>
+<div class="ctl"><button id="skygoto" disabled title="click a point on the chart first; the mount slews there and holds that altitude and azimuth still (sidereal off) - a place to wait for a satellite"
+ onclick="gotoSky()">Go to point</button></div>
 <div class="info" id="sky-info"></div></div>

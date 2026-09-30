@@ -4,27 +4,23 @@ async function api(path, params) {
 }
 function tgt() { return document.getElementById('target').value; }
 function mnt(action, params) { return api('/api/mount', Object.assign({action}, params)); }
-let MODE = 'console', MOTORS = true;
+let MODE = 'console', MOTORS = true, PASS_MODE = false;
 function applyMount(m) {
   MODE = m.mode || 'console';
   MOTORS = m.motors !== false;
   const mb = document.getElementById('motorbtn');
   if (mb) { mb.textContent = MOTORS ? 'motors off' : 'motors ON'; mb.className = MOTORS ? '' : 'on'; }
-  const tb = document.getElementById('trackbtn');
   const servo = MODE === 'track' && m.session === 'servo';
-  if (tb) {
-    tb.textContent = MODE === 'track' && !servo ? 'Stop tracking' : 'Track next pass';
-    tb.className = MODE === 'track' && !servo ? 'on' : '';
-    tb.disabled = servo;
-  }
+  PASS_MODE = MODE === 'track' && !servo;
   const vb = document.getElementById('servobtn');
   if (vb) {
-    vb.textContent = servo ? 'Stop following' : 'Follow';
-    vb.className = servo ? 'on' : '';
+    if (servo) FOLLOW_ARMED = false;
+    vb.textContent = servo ? 'Stop following' : (FOLLOW_ARMED ? 'Click the object' : 'Follow');
+    vb.className = (servo || FOLLOW_ARMED ? 'on ' : '') + 'right';
     vb.disabled = MODE === 'track' && !servo;
   }
-  for (const id of ['speedsel', 'framesel', 'target', 'passidx', 'trackname'])
-    { const e = document.getElementById(id); if (e) e.disabled = (MODE === 'track' && id !== 'passidx'); }
+  for (const id of ['speedsel', 'framesel', 'target'])
+    { const e = document.getElementById(id); if (e) e.disabled = MODE === 'track'; }
   const sel = document.getElementById('speedsel');
   if (sel && !sel.options.length)
     m.speeds.forEach((v, i) => sel.add(new Option(v, i)));
@@ -122,8 +118,21 @@ function apply(s) {
 }
 // ---- sky chart: zenith at the centre, horizon at the rim, north up, east right ----
 const CX = 165, CY = 165, R = 140;
-let SKY = null, LAST_STATE = null;
+let SKY = null, LAST_STATE = null, SKY_PICK = null;   // SKY_PICK: [az, alt] clicked on the chart
 const SVGNS = 'http://www.w3.org/2000/svg';
+function pickSky(ev) {     // a click on the chart: the alt/az under it, for "Go to point"
+  const svg = document.getElementById('sky'), box = svg.getBoundingClientRect();
+  const x = (ev.clientX - box.left) * 330 / box.width - CX, y = (ev.clientY - box.top) * 330 / box.height - CY;
+  const alt = 90 - Math.hypot(x, y) / R * 90;
+  if (alt < 0) return;
+  SKY_PICK = [(Math.atan2(x, -y) * 180 / Math.PI + 360) % 360, alt];
+  const b = document.getElementById('skygoto');
+  if (b) b.disabled = MODE === 'track';
+  if (LAST_STATE) drawSky(LAST_STATE);
+}
+function gotoSky() {
+  if (SKY_PICK) mnt('goto_altaz', {az: SKY_PICK[0].toFixed(2), alt: SKY_PICK[1].toFixed(2)});
+}
 function pos(az, alt) {
   const r = (90 - Math.max(alt, 0)) / 90 * R, a = az * Math.PI / 180;
   return [CX + r * Math.sin(a), CY - r * Math.cos(a)];
@@ -171,6 +180,12 @@ function drawSky(s) {
       stroke: !open ? '#c0504d' : (lit > 0.5 ? '#3fb9d6' : '#6b7580')}));
   }
   drawComing(svg, (s.mount && s.mount.now) || Date.now() / 1000);
+  if (SKY_PICK) {            // the picked point: a yellow cross
+    const [x, y] = pos(SKY_PICK[0], SKY_PICK[1]);
+    for (const [dx, dy] of [[7, 0], [0, 7]])
+      svg.appendChild(el('line', {x1: x - dx, y1: y - dy, x2: x + dx, y2: y + dy,
+        stroke: '#ffd24a', 'stroke-width': 2}));
+  }
   if (s.pointing) {  // where the mount looks
     const [x, y] = pos(s.pointing[1], s.pointing[0]);
     svg.appendChild(el('circle', {cx: x, cy: y, r: 6, fill: 'none', stroke: '#ffd24a',
@@ -185,8 +200,14 @@ function drawSky(s) {
   // az under alt, with the labels padded to the same width so the numbers line up
   const fmt = (p, name) => p ? `${name} alt ${n5(p[0])}°\n${' '.repeat(name.length)} az  ${n5(p[1])}°` : '';
   document.getElementById('sky-info').textContent =
-    [passLine(s.pass), fmt(s.pointing, 'mount'),
+    [passLine(s.pass), fmt(s.pointing, 'mount'), rateLine(s.mount && s.mount.rates),
+     SKY_PICK ? fmt([SKY_PICK[1], SKY_PICK[0]], 'point') : '',
      fmt(s.target, ((s.pass && s.pass.name) || 'ISS').slice(0, 12))].filter(Boolean).join('\n');
+}
+function rateLine(r) {       // what the mount is being driven at right now, per axis
+  if (!r) return '';
+  const f = v => (v >= 0 ? '+' : '') + v.toFixed(4);
+  return `rates axis1 ${f(r[0])}°/s\n      axis2 ${f(r[1])}°/s`;
 }
 function clock(seconds) {
   const s = Math.max(0, Math.round(seconds));
@@ -211,7 +232,13 @@ setInterval(async () => apply(await (await fetch('/api/state')).json()), 1000);
 
 
 // ---- clicking an image: normally picks a target, but "set boresight" claims the next click ----
-let ARMED = null;
+let ARMED = null, FOLLOW_ARMED = false;
+function armFollow() {        // "Follow" claims the next click in the guide image, like the boresight
+  FOLLOW_ARMED = !FOLLOW_ARMED;
+  if (FOLLOW_ARMED && ARMED) armBoresight(ARMED);
+  const b = document.getElementById('servobtn');
+  if (b) { b.textContent = FOLLOW_ARMED ? 'Click the object' : 'Follow'; b.className = FOLLOW_ARMED ? 'on right' : 'right'; }
+}
 function armBoresight(name) {
   ARMED = ARMED === name ? null : name;
   for (const n of CAMS) {
@@ -222,6 +249,7 @@ function armBoresight(name) {
 function imgClick(name, event, img) {
   const fx = event.offsetX / img.clientWidth, fy = event.offsetY / img.clientHeight;
   if (ARMED === name) { const n = name; armBoresight(name); return mnt('boresight', {cam: n, fx, fy}); }
+  if (FOLLOW_ARMED && name === 'guide') { armFollow(); return mnt('servo', {fx, fy}); }
   return api('/api/select', {cam: name, fx, fy});
 }
 
@@ -278,8 +306,8 @@ function showComing(f, now) {
     }
   }
   const head = document.getElementById('coming-head');
-  if (head) head.textContent = (f.busy ? ' (updating) ' : ' ') + `${f.where}, worked out ${hm(f.at)}`
-    + (rows.length ? '' : ' - nothing bright in the next hour');
+  if (head) head.textContent = `${f.where} · next ${f.minutes || 60} min · updated ${hm(f.at).slice(0, 5)}`
+    + (f.busy ? ' (updating...)' : '') + (rows.length ? '' : ' · nothing bright');
   box.querySelectorAll('.row').forEach((el, i) => {
     const r = rows[i];
     const when = r.start > now ? 'in ' + clock(r.start - now) : 'NOW, ' + clock(r.end - now) + ' left';
@@ -290,14 +318,19 @@ function showComing(f, now) {
   });
   markComing(box);
 }
-function trackComing() {
+function trackComing() {           // "track selected", or "Stop tracking" while a pass runs
+  if (PASS_MODE) return mnt('untrack', {});
   const r = comingSelected();
   if (r) mnt('track', {sat: r.id, at: r.peak});
 }
 function markComing(box) {
   box.querySelectorAll('.row').forEach(el => el.classList.toggle('sel', el.dataset.key === COMING_SEL));
   const b = document.getElementById('comingtrack');
-  if (b) b.disabled = !comingSelected() || MODE === 'track';
+  if (b) {
+    b.textContent = PASS_MODE ? 'Stop tracking' : 'Track selected';
+    b.className = PASS_MODE ? 'on' : '';
+    b.disabled = PASS_MODE ? false : (!comingSelected() || MODE === 'track');
+  }
 }
 // the picked pass on the sky chart: its path in violet, and where it is now (or where it comes in)
 function drawComing(svg, now) {

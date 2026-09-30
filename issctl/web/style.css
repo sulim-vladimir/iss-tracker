@@ -48,7 +48,7 @@ body{background:#2f3439;color:#e8e8e8;font:14px/1.4 system-ui,sans-serif;margin:
  input{background:#262a2e;color:#e8e8e8;border:1px solid #5c656e;border-radius:4px;
         padding:4px;width:74px;font-size:14px}
  .rec{margin-top:8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
- #recbtn.on,#trackbtn.on{background:#a33;}
+ #recbtn.on,#comingtrack.on{background:#a33;}
  button.on{background:#3a6b46}
  #estop{background:#b32222;color:#fff;font-weight:600;font-size:11px;padding:6px 0;
          width:75%;display:block;margin:8px auto 2px}
@@ -77,3 +77,9 @@ body{background:#2f3439;color:#e8e8e8;font:14px/1.4 system-ui,sans-serif;margin:
  #coming .row{white-space:pre;margin:2px 0;padding:2px 4px;border-radius:4px;cursor:pointer}
  #coming .row:hover{background:#454c53}
  #coming .row.sel{background:#4a3d63;outline:1px solid #b784f5}
+ /* Every button and label starts with a capital, including the ones the script relabels
+    ("Stop tracking", "Click the spot") - one rule instead of fixing each string. */
+ button::first-letter,label::first-letter{text-transform:uppercase}
+ label{display:inline-block}
+ .ctl .right{margin-left:auto}
+ #coming-head{margin:4px 0 2px}

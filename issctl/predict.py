@@ -413,4 +413,7 @@ def plan_pass(sat, site, mount_cfg, rise, set_, dt=0.25, margin=30.0, model=None
     report, a1, a2 = best
     traj = Trajectory(t, a1, a2, alt, report["side"], report["track_start"], report["track_end"],
                       lit, open_sky.astype(float))
+    # the sky path it was planned from, for the chart: turning the axes back into alt/az
+    # needs the pointing model, and without it the drawn pass was degrees off the real one
+    traj.az, traj.model = az, model
     return traj, report

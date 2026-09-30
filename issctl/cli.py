@@ -138,10 +138,13 @@ def sky_payload(cfg, mask, traj=None, site=None):
            "min_alt": cfg["site"]["min_altitude"], "track": []}
     if traj is not None and site is not None:
         step = max(1, len(traj.t) // 400)
-        a1, a2 = traj.a1[::step], traj.a2[::step]
-        model = getattr(traj, "model", None)
-        ha, dec = geo.axes_to_hadec(a1, a2) if model is None else model.axes_to_hadec(a1, a2)
-        alt, az = geo.hadec_to_altaz(ha, dec, site.lat)
+        if getattr(traj, "az", None) is not None:
+            alt, az = traj.alt[::step], traj.az[::step]      # the sky path it was planned from
+        else:
+            a1, a2 = traj.a1[::step], traj.a2[::step]
+            model = getattr(traj, "model", None)
+            ha, dec = geo.axes_to_hadec(a1, a2) if model is None else model.axes_to_hadec(a1, a2)
+            alt, az = geo.hadec_to_altaz(ha, dec, site.lat)
         lit, open_sky = traj.lit[::step], traj.open_sky[::step]
         t = traj.t[::step]
         out["track"] = [[round(float(z), 2), round(float(a), 2), round(float(l), 2), int(o),
@@ -569,6 +572,30 @@ def cmd_console(args, cfg):
         ui["tracking"] = True
         say(f"at {name} (alt {alt:.1f}), {best['side']}, tracking on")
 
+    def goto_altaz(alt, az):
+        """Slew to a point picked on the sky chart and hold it there: an alt/az, not a star, so
+        sidereal tracking goes off - the place to wait for a satellite to come through."""
+        if alt < 0:
+            say(f"alt {alt:.1f}: below the horizon")
+            return
+        ui["tracking"] = False
+        for _ in range(2):  # the second pass corrects for the sky turning during the slew
+            ha, dec = geo.altaz_to_hadec(alt, az, site.lat)
+            best, options = geo.choose_pose(float(ha), float(dec), cfg["mount"],
+                                            current=mount.position(),
+                                            to_axes=align.hadec_to_axes_fn(state))
+            if best is None:
+                say(f"alt {alt:.0f} az {az:.0f} is not reachable: " + ", ".join(
+                    f"{o['side']} needs axis1 {o['axes'][0]:+.0f} axis2 {o['axes'][1]:+.0f}"
+                    for o in options))
+                return
+            mount.move_to(best["axes"], abort=aborted, approach=state.get("backlash_deg"))
+            if aborted():
+                say("goto aborted")
+                return
+        say(f"at alt {alt:.1f} az {az:.1f} ({geo.compass(az)}), holding still - sidereal off"
+            + ("" if alt >= site.min_altitude else f" (below min_altitude {site.min_altitude:g})"))
+
     def do_sync(name):
         ha, dec, alt, _ = pr.target_hadec(name, site, clock.now())
         d = align.sync_to(state, mount, ha, dec)
@@ -974,7 +1001,11 @@ def cmd_console(args, cfg):
             # a slew to where it begins.
             return start_tracking(params.get("pass"), params.get("sat"), params.get("at"))
         if action == "servo":
-            return start_servo()
+            pick = None
+            if params.get("fx") is not None and "guide" in cams:
+                g = cams["guide"]
+                pick = (float(params["fx"]) * g.width, float(params["fy"]) * g.height)
+            return start_servo(pick)
         if action == "untrack":
             return stop_tracking()
         if action == "stop":
@@ -1000,7 +1031,7 @@ def cmd_console(args, cfg):
         if aborted() and action not in ("stop", "frame", "speed"):
             ui["abort"].clear()  # any deliberate command clears the latched stop
         if action in ("jog", "goto", "track", "calibrate", "centre", "starcal",
-                      "solve_centre", "gohome", "spiral", "maincal") and not ui["motors"]:
+                      "solve_centre", "gohome", "spiral", "maincal", "goto_altaz") and not ui["motors"]:
             mount.enable(True)
             ui["motors"] = True
         if action == "jog":
@@ -1033,6 +1064,10 @@ def cmd_console(args, cfg):
             say("satellite naming " + ("on: live in the guide caption, and after each session"
                                        if state["identify_on"] else
                                        "off ('what was that?' still works when pressed)"))
+        elif action == "goto_altaz":
+            ui["jog"][:] = 0
+            alt, az = float(params.get("alt", -90)), float(params.get("az", 0)) % 360.0
+            in_background(lambda: goto_altaz(alt, az))
         elif action == "spiral":
             ui["jog"][:] = 0
             in_background(do_spiral)
@@ -1160,17 +1195,17 @@ def cmd_console(args, cfg):
                 items = forecaster.run(now, minutes=minutes, max_mag=float(
                     cfg.get("forecast", {}).get("field_max_mag", 7.5)),
                     field=field_track(site, alt, az, now, times, follow))
-                where = (f"the guide field (alt {alt:.0f} az {az:.0f}, "
+                where = (f"Through the guide field (alt {alt:.0f}° az {az:.0f}°, "
                          f"{'following the stars' if follow else 'fixed'})")
             else:
                 items = forecaster.run(now, minutes=minutes, mask=SkyMask.from_config(cfg),
                                        min_alt=cfg["site"]["min_altitude"], max_mag=float(
                                            cfg.get("forecast", {}).get("sky_max_mag", 6.0)))
-                where = "the sky you can see"
+                where = f"Anywhere above {cfg['site']['min_altitude']:g}°"
             ui["forecast"] = {"mode": mode, "at": now, "where": where, "items": items,
-                              "busy": False}
-            say(f"coming up: {len(items)} bright pass{'es' * (len(items) != 1)} through {where} "
-                f"in the next {minutes:.0f} min")
+                              "minutes": minutes, "busy": False}
+            say(f"coming up: {len(items)} bright pass{'es' * (len(items) != 1)} - {where}, "
+                f"next {minutes:.0f} min")
         except Exception as e:
             ui["forecast"] = dict(ui.get("forecast") or {}, busy=False)
             say(f"coming up: {e}")
@@ -1209,18 +1244,17 @@ def cmd_console(args, cfg):
         ui["mode"] = "track"
         ui["jog"][:] = 0
         ui["tracking"] = False
-        if main_cfg.get("record") and recorder.available:
-            recorder.set_enabled(True)  # armed only; the gate below decides when to write
-        recorder.set_gate(False)
-        tracker.run(on_record=recorder.set_gate)
+        # Recording is yours: Start/Stop recording only. A session neither starts nor stops it,
+        # nor pauses it while the target is out of sight.
+        tracker.run()
         ui["msg"] = f"{label} stopped" if tracker.stop_requested else f"{label} finished"
 
-    def start_servo():
+    def start_servo(pick=None):
         """Follow whatever the cameras can see, with no orbit and no alignment.
 
         The mount is left exactly where it is pointing and the reference is frozen there, so
-        nothing moves until a detection arrives. Point at the ISS by hand first, then click it
-        in the guide image - that click is what starts the estimate.
+        nothing moves until a detection arrives. `pick` is the guide pixel clicked after pressing
+        Follow: the session starts locked on that object, not on the brightest blob in view.
         """
         if session["thread"] and session["thread"].is_alive():
             return
@@ -1243,7 +1277,11 @@ def cmd_console(args, cfg):
                 session["info"] = {"mode": "servo", "start": clock.now(), "end": None,
                                    "rise": None, "max_alt": None, "rise_at": "-",
                                    "starts_at": f"{datetime.datetime.now():%H:%M:%S}"}
-                say("servo mode: point at the target and click it in the guide image")
+                if pick is not None and "guide" in cams:
+                    tracker.select("guide", *pick)
+                    say(f"following the object at guide pixel ({pick[0]:.0f}, {pick[1]:.0f})")
+                else:
+                    say("servo mode: point at the target and click it in the guide image")
                 run_tracker(tracker, "servo")
             except Exception as e:
                 ui["msg"] = f"servo error: {e}"
@@ -1253,7 +1291,6 @@ def cmd_console(args, cfg):
                 done = session.pop("csv", None)
                 if done is not None and state.get("identify_on", True):
                     identify_later(done)
-                recorder.set_enabled(False)
                 recorder.set_gate(True)
                 try:
                     mount.stop()
@@ -1322,8 +1359,7 @@ def cmd_console(args, cfg):
                 done = session.pop("csv", None)
                 if done is not None and state.get("identify_on", True):
                     identify_later(done)
-                recorder.set_enabled(False)
-                recorder.set_gate(True)  # back to manual control in console mode
+                recorder.set_gate(True)
                 try:
                     mount.stop()
                 except Exception:
@@ -1386,6 +1422,7 @@ def cmd_console(args, cfg):
                 "sat_label": live.label if state.get("identify_on", True) else "",
                 "identify_on": state.get("identify_on", True),
                 "forecast": ui.get("forecast"), "now": clock.now(),
+                "rates": [round(float(r), 4) for r in mount.rate_cmd],
                 "track": tracking_note()}
 
     from .ser import RecordControl

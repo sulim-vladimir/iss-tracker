@@ -63,3 +63,13 @@ def test_ser_ignores_wrong_shape(tmp_path):
     writer(np.zeros((16, 16), np.uint8), T0)
     writer.close()
     assert read_ser(path)["count"] == 0
+
+
+def test_closing_twice_is_harmless(tmp_path):
+    """Stopping a recording that had already stopped crashed with 'write to closed file'."""
+    from issctl.ser import SerWriter
+
+    w = SerWriter(tmp_path / "x.ser", 64, 48)
+    w.close()
+    w.close()
+    assert (tmp_path / "x.ser").exists()

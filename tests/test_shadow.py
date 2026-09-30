@@ -87,6 +87,17 @@ def run_steps(tracker, mount, clock, n=4, dt=0.05):
         clock.sleep(dt)
 
 
+def hold(tracker, mount, cam, clock, state, offset, seconds=2.5):
+    """Show the target at the same offset from the pointing for a while, with the mount
+    following: what a real satellite looks like, and what a first lock now needs (a star
+    drifts through instead)."""
+    t_end = clock.now() + seconds
+    while clock.now() < t_end:
+        px = pixel_for_offset(state, mount.position()[1], offset)
+        cam.emit(px[0], px[1], clock.now())
+        run_steps(tracker, mount, clock, 4)
+
+
 def test_ignores_detections_in_shadow(rig):
     cfg, traj, clock, mount, cam, tracker, state = rig
     run_steps(tracker, mount, clock, 2)
@@ -112,12 +123,14 @@ def test_reacquires_after_shadow_exit(rig):
     mount.query()
     tracker.step()
     assert tracker.source == "predict"
-    assert cam.gate is None  # never locked yet, so search the whole frame
+    # never locked yet: search where it can be, a circle of the acquisition radius round the
+    # boresight - not the whole frame, where the brightest thing is a star
+    cal = state["cameras"]["guide"]
+    assert cam.gate[:2] == tuple(cal["boresight"])
+    assert cam.gate[2] == pytest.approx(tracker.acquire_radius / 60.0 * cal_px_per_deg(cal), rel=0.01)
 
-    offset = np.array([0.05, -0.04])
-    px = pixel_for_offset(state, mount.position()[1], offset)
-    cam.emit(px[0], px[1], clock.now())
-    run_steps(tracker, mount, clock, 2)
+    mount.mech = traj.at(clock.now())[0] - mount.index   # the slew has arrived
+    hold(tracker, mount, cam, clock, state, [0.05, -0.04])
 
     assert tracker.source == "guide"
     assert tracker.last_seen["guide"] == pytest.approx(clock.now(), abs=0.5)
@@ -129,9 +142,7 @@ def test_rejects_outlier_once_locked(rig):
     cfg, traj, clock, mount, cam, tracker, state = rig
     clock.t = DARK_UNTIL + 5.0
     mount.mech = traj.at(clock.now())[0] - mount.index   # mount already near the ISS, as when locked
-    px = pixel_for_offset(state, mount.position()[1], [0.02, 0.01])
-    cam.emit(px[0], px[1], clock.now())
-    run_steps(tracker, mount, clock, 2)
+    hold(tracker, mount, cam, clock, state, [0.02, 0.01])
     assert tracker.source == "guide"
     cross_locked = tracker.cross.copy()
 
@@ -148,9 +159,8 @@ def test_search_gate_bounded_after_a_lock(rig):
     """Once we have seen the ISS, a loss (cloud) searches a bounded circle, not the whole frame."""
     cfg, traj, clock, mount, cam, tracker, state = rig
     clock.t = DARK_UNTIL + 5.0
-    px = pixel_for_offset(state, mount.position()[1], [0.02, 0.01])
-    cam.emit(px[0], px[1], clock.now())
-    run_steps(tracker, mount, clock, 2)
+    mount.mech = traj.at(clock.now())[0] - mount.index
+    hold(tracker, mount, cam, clock, state, [0.02, 0.01])
     assert tracker.source == "guide"
 
     clock.t += 5.0  # nothing detected since: a cloud, say
