@@ -192,8 +192,34 @@ def hadec_to_radec(ha, dec, site, t_unix):
     return icrs.ra.deg, icrs.dec.deg
 
 
+def _named_coord(name):
+    """A deep-sky object (M31, NGC 7000, 'Orion Nebula') from OpenNGC, else CDS online; None if
+    neither knows it. An ambiguous common name raises ValueError listing the candidates."""
+    import astropy.units as u
+    from astropy.coordinates import SkyCoord
+
+    from . import deepsky
+    e = deepsky.lookup(name)
+    radec = (e["ra"], e["dec"]) if e else deepsky.resolve_online(name)
+    if radec is None:
+        return None
+    return SkyCoord(ra=radec[0] * u.deg, dec=radec[1] * u.deg, frame="icrs")
+
+
+def describe_target(name):
+    """One line on what a goto name resolved to, for the deep-sky catalogue; None otherwise."""
+    from . import deepsky
+    try:
+        e = deepsky.lookup(name)
+    except ValueError:
+        return None
+    return deepsky.describe(e) if e else None
+
+
 def target_hadec(name, site, t_unix):
-    """name: star from STARS, a body from BODIES, or 'RA_hours Dec_deg'. Returns ha, dec, alt, az."""
+    """name: star from STARS, a body from BODIES, a deep-sky object (deepsky.py: M31, NGC 7000,
+    'Andromeda Galaxy'), anything CDS knows when online, or 'RA_hours Dec_deg'.
+    Returns ha, dec, alt, az."""
     import astropy.units as u
     from astropy.coordinates import SkyCoord, get_body
 
@@ -220,12 +246,14 @@ def target_hadec(name, site, t_unix):
             try:                               # sexagesimal: 18:36:56 +38:47:01, or 18h36m56s ...
                 coord = SkyCoord(text, unit=(u.hourangle, u.deg), frame="icrs")
             except Exception:
-                import difflib
-                close = difflib.get_close_matches(key, list(STARS) + list(BODIES), n=3, cutoff=0.6)
-                raise ValueError(f"unknown target '{name}' - "
-                                 + (f"did you mean {' / '.join(close)}? " if close else "")
-                                 + f"try one of the {len(STARS)} named stars, a planet, 'RAh Dec', "
-                                 f"'18:36:56 +38:47:01' or 'altaz ALT AZ'")
+                coord = _named_coord(name)
+                if coord is None:
+                    import difflib
+                    close = difflib.get_close_matches(key, list(STARS) + list(BODIES), n=3, cutoff=0.6)
+                    raise ValueError(f"unknown target '{name}' - "
+                                     + (f"did you mean {' / '.join(close)}? " if close else "")
+                                     + f"try one of the {len(STARS)} named stars, a planet, M31, "
+                                     f"NGC 7000, 'RAh Dec', '18:36:56 +38:47:01' or 'altaz ALT AZ'")
         fn = lambda t, loc: coord
     alt, az = _astropy_altaz(fn, site, t_unix)
     ha, dec = geo.altaz_to_hadec(alt, az, site.lat)

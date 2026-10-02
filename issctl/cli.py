@@ -558,6 +558,9 @@ def cmd_console(args, cfg):
 
     def goto(name):
         first = True
+        what = None if name.strip().lower() in (*pr.STARS, *pr.BODIES) else pr.describe_target(name)
+        if what:
+            say(f"goto {what}")
         for _ in range(2):  # second pass corrects for sky motion during the slew
             ha, dec, alt, _ = pr.target_hadec(name, site, clock.now())
             cur = mount.position()
@@ -1516,7 +1519,7 @@ def cmd_console(args, cfg):
                 if name:
                     busy(lambda: do_sync(name))
             elif k == ord("g"):
-                name = prompt(scr, "goto (star/planet or 'RAh Dec'): ")
+                name = prompt(scr, "goto (star/planet, M31, NGC 7000 or 'RAh Dec'): ")
                 if name:
                     ui["jog"][:] = 0
                     busy(lambda: goto(name))

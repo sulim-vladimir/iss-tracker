@@ -79,6 +79,7 @@ TLE (Celestrak) --> Skyfield --> refracted alt/az --> HA/Dec --+
 | `issctl/control.py` | tracking controller (pass and servo mode) |
 | `issctl/identify.py` | Identify: name the satellite a session followed, live and afterwards |
 | `issctl/forecast.py` | "Coming up": bright satellites due through the guide field or the sky |
+| `issctl/deepsky.py` | goto by name: Messier, NGC, IC and common names (OpenNGC), CDS online |
 | `issctl/mask.py` | sky obstructions (balcony, window frame, buildings) |
 | `issctl/sim.py` | simulated sky for end-to-end testing |
 | `issctl/preview.py`, `web/` | browser control panel |
@@ -420,7 +421,9 @@ obstruction. Exposure and gain are remembered across restarts.
 axis1/axis2 directly; with `guide` or `main` selected, right moves the target right in that camera's
 picture and up moves it up, whatever the camera's rotation, through its matrix.
 
-**Target & tracking**: goto/sync by name (`vega`, `jupiter`, `moon`, or `18.6 38.8`), go home,
+**Target & tracking**: goto/sync by name (`vega`, `jupiter`, `moon`, or `18.6 38.8`), any Messier,
+NGC or IC object or its common name (`M31`, `NGC 7000`, `IC 434`, `Orion Nebula`, `whirlpool` -
+OpenNGC, downloaded once into `data/catalog/`), and anything else CDS knows while online (`HD 209458`), go home,
 **centre by solve** (put a named object on the guide boresight using the plate solve, not the
 counters), sidereal on/off, **Identify**, **naming on/off**, motors off. **Follow** sits at the right of
 the guide's exposure row: the guide is the only camera it follows from. **Go to point** under the
