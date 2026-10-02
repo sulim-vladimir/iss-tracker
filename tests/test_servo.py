@@ -208,6 +208,9 @@ class _SkyCam(_ClickCam):
             gate = self.gate_fn(t) or gate
         best = None
         for axes, flux in self.things:
+            flux = flux(t) if callable(flux) else flux
+            if flux <= 0:
+                continue                    # too faint in this frame
             px = self.pixel(axes, t)
             smear = np.hypot(*(self.pixel(axes, t + half) - self.pixel(axes, t - half)))
             inside = gate is None or np.hypot(*(px - gate[:2])) <= gate[2]
@@ -299,3 +302,45 @@ def test_one_missed_frame_at_a_long_exposure_is_not_a_loss(cfg):
     assert t.source == "guide" and not messages
     t._check_timeouts(clock.now() + 3.0)                # two: now it is lost
     assert t.source == "predict" and "target lost" in messages[0]
+
+
+def test_a_steady_track_ignores_a_jump_while_the_target_is_faint(cfg):
+    """Sentinel-6A on the rig, 2026-10-02: held to 0.5 px for 20 frames at a 1 s exposure, then
+    too faint for two frames - and a star 35 px away was taken as the target, because the gap
+    had opened the servo gate at 60'/s. Once the track is steady, the circle is a few px."""
+    from issctl.calib import axes_offset_from_pixel, ideal_calibration
+
+    clock = _StepClock()
+    mount = SimMount(cfg, {}, clock, start=HOME + [30.0, -40.0])
+    mount.query()
+    cal = ideal_calibration(cfg["cameras"]["guide"], rotation_deg=20.0, dec_cal=50.0)
+    t0, here = clock.now(), mount.position()
+    bs = np.asarray(cal["boresight"], dtype=float)
+    start = here + axes_offset_from_pixel(cal, here[1], bs + [20.0, 10.0])
+    rate = np.array([0.25, 0.12])
+    sat = lambda t: start + rate * (t - t0)
+    gap = (t0 + 40.0, t0 + 43.0)
+    # a star that sits 30 px from where the satellite will be, in the middle of the gap
+    tg = 0.5 * (gap[0] + gap[1])
+    star_at = sat(tg) + axes_offset_from_pixel(cal, sat(tg)[1], bs + [30.0, 0.0])
+    star = lambda t: star_at
+    faint = lambda t: 0.0 if gap[0] <= t <= gap[1] else 500.0
+    cam = _SkyCam(cal, mount, [(sat, faint), (star, 3000.0)])
+    cam.select(*(bs + [20.0, 10.0]))
+    t = Tracker(cfg, {"cameras": {"guide": cal}}, mount, {"guide": cam}, clock, FreeRun(),
+                log=lambda s: None)
+    t.select("guide", *cam.gate[:2])
+    next_frame, on_star = clock.now() + 1.0, 0
+    while clock.now() < t0 + 60.0:
+        if clock.now() >= next_frame:
+            cam.frame(clock.now())
+            next_frame += 1.0
+        t.step()
+        if t.last_px.get("guide") is not None and t.last_good > gap[0]:
+            px = np.array(t.last_px["guide"])
+            on_star += np.hypot(*(px - cam.pixel(star, t.last_good))) < 1.0
+        clock.sleep(t.dt)
+    assert t._steady_radius("guide", t.last_good) is not None      # it did reach a steady lock
+    assert on_star == 0
+    assert np.hypot(*(cam.pixel(sat, clock.now()) - bs)) < 10.0     # still on the satellite
+    assert clock.now() - t.last_good < 3.0

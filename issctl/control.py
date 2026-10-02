@@ -109,6 +109,16 @@ class Tracker:
         # servo centres it. Jumping the whole offset at full speed - 2.6 deg in under a second -
         # turned a 1 s exposure into a streak and lost the object every time on the rig.
         self.smear_px = tr.get("servo_smear_px", 20.0)
+        # Steady lock: once a picked target has held its predicted track for lock_frames frames,
+        # the search circle and the acceptance limit shrink to lock_k x its typical miss (never
+        # under lock_min_px) and grow only lock_growth_px_s while it is not seen. Sentinel-6A on
+        # the rig held 0.5 px for 20 frames, went faint for two, and a star 35 px away took over:
+        # the gap had opened the servo gate at the ISS's 60'/s.
+        self.lock_frames = int(tr.get("lock_frames", 5))
+        self.lock_k = tr.get("lock_k", 4.0)
+        self.lock_min_px = tr.get("lock_min_px", 6.0)
+        self.lock_growth = tr.get("lock_growth_px_s", 3.0)
+        self.lock = {n: {"n": 0, "miss": None, "held": 0} for n in cameras}
         self.reseed_deg = tr.get("servo_reseed_deg", 30.0)
         self.at_limit = [False, False]
         self.t0 = None
@@ -169,6 +179,7 @@ class Tracker:
         cam.select(x, y)
         self.force_accept = True
         self.main_streak = 0
+        self.lock[name] = {"n": 0, "miss": None, "held": 0}
         # A fresh start on the clicked object, not a correction blended into whatever was being
         # followed: that may have been a star, and half a jump plus a rate kick is a lurch.
         self.last_good = -np.inf
@@ -303,16 +314,33 @@ class Tracker:
         cam, cal = self.cams[name], self.cal.get(name)
         if cal is None or not cam.manual or not np.isfinite(self.last_good) or cam.gate is None:
             return None
-        meas = self.mount.position_at(t)
+        px = self._predict_px(name, t)
+        if px is None:
+            return None
+        steady = self._steady_radius(name, t)
+        if steady is not None:
+            return px[0], px[1], steady
+        lost = self._jump_allowance(t - self.last_good) / 60.0 * cal_px_per_deg(cal)
+        return px[0], px[1], max(float(cam.gate[2]), min(lost, 0.5 * max(cam.width, cam.height)))
+
+    def _predict_px(self, name, t):
+        """Where the estimate puts the target in this camera's frame taken at t."""
+        cal = self.cal.get(name)
+        meas = self.mount.position_at(t) if cal is not None else None
         if meas is None:
             return None
         d = self.target(t)[0] - meas
         d[0] = geo.wrap180(d[0])
         x, y = np.asarray(cal["boresight"], dtype=float) - jacobian(cal, meas[1]) @ d
-        if not (np.isfinite(x) and np.isfinite(y)):
+        return (float(x), float(y)) if np.isfinite(x) and np.isfinite(y) else None
+
+    def _steady_radius(self, name, t):
+        """Acceptance radius (px) while the target holds a steady track; None until it has."""
+        lk = self.lock.get(name)
+        if not lk or lk["n"] < self.lock_frames or lk["miss"] is None:
             return None
-        lost = self._jump_allowance(t - self.last_good) / 60.0 * cal_px_per_deg(cal)
-        return float(x), float(y), max(float(cam.gate[2]), min(lost, 0.5 * max(cam.width, cam.height)))
+        gap = max(0.0, t - self.last_good - self._frame_period(name))
+        return max(self.lock_min_px, self.lock_k * lk["miss"]) + self.lock_growth * gap
 
     def _vision(self, name, det):
         cal = self.cal.get(name)
@@ -362,10 +390,25 @@ class Tracker:
         if not self.force_accept and not self.servo and not np.isfinite(self.last_good) \
                 and not self._acquire(name, det, meas, p, v, jump):
             return
+        lk = self.lock.get(name)
+        steady_on = lk is not None and (self.servo or getattr(self.cams[name], "manual", False))
+        pred_px = self._predict_px(name, det.t) if steady_on and np.isfinite(self.last_good) else None
+        miss = None if pred_px is None else float(np.hypot(det.x - pred_px[0], det.y - pred_px[1]))
         if self.force_accept:
             self.force_accept = False  # user pointed at it, so believe it however far off it is
+            miss = None
+            if lk is not None:
+                lk.update(n=0, miss=None, held=0)
         elif np.isfinite(self.last_good) and jump > self._jump_allowance(det.t - self.last_good):
             self.rejected += 1
+            return
+        elif miss is not None and self._steady_radius(name, det.t) is not None \
+                and miss > self._steady_radius(name, det.t):
+            self.rejected += 1
+            if lk["held"] == 0:
+                self.log(f"{name}: ignored a jump of {miss:.0f} px off the steady track "
+                         f"(limit {self._steady_radius(name, det.t):.0f} px)")
+            lk["held"] += 1
             return
         # Only now is this camera driving the loop - marking it earlier made the captions and the
         # log say "main" while every main detection was being thrown away.
@@ -374,6 +417,13 @@ class Tracker:
         self.last_px[name] = (det.x, det.y)
         first_fix = not np.isfinite(self.last_good)
         self.last_good = det.t
+        if lk is not None:
+            if first_fix or miss is None:
+                lk.update(n=0, miss=None)
+            else:
+                lk["n"] += 1
+                lk["miss"] = miss if lk["miss"] is None else 0.7 * lk["miss"] + 0.3 * miss
+            lk["held"] = 0
 
         resid = o
         if not self.servo:
@@ -442,15 +492,18 @@ class Tracker:
         lost_timeout_s, or 2.5 frame intervals when its frames come further apart. At a 1 s
         guide exposure one skipped frame already passed 1.5 s, and every frame was reported
         "target lost, coasting" on the rig while the guide held the target on the boresight."""
-        base = self.tr["lost_timeout_s"]
+        return max(self.tr["lost_timeout_s"], min(2.5 * self._frame_period(name), 10.0))
+
+    def _frame_period(self, name):
+        """Seconds between this camera's frames: its exposure, or 1/fps when slower."""
         cam = self.cams.get(name)
         if cam is None:
-            return base
+            return 0.0
         period = getattr(cam, "exposure_ms", 0.0) / 1000.0
         fps = getattr(cam, "fps", 0.0) or 0.0
         if fps >= 0.2:                        # slower than that is a stall, not a frame rate
             period = max(period, 1.0 / fps)
-        return max(base, min(2.5 * period, 10.0))
+        return period
 
     def _check_timeouts(self, now):
         timeout = self._lost_timeout

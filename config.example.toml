@@ -147,6 +147,11 @@ servo_give_up_s = 20          # stop the run after this long with no detection a
 servo_smear_px = 20           # servo centring speed limit: the target may smear this far across the guide
                               # image in one exposure (20 px at 1 s on the guide = ~0.27 deg/s; at 8 ms no limit)
 servo_reseed_deg = 30         # re-anchor the frozen reference once the estimate walks this far
+lock_frames = 5               # steady lock: after this many frames on the predicted track a picked target
+lock_k = 4.0                  # ...is searched for only within lock_k x its typical miss,
+lock_min_px = 6               # ...never less than this (px of that camera),
+lock_growth_px_s = 3          # ...growing this fast while it is not seen - a faint gap no longer
+                              # lets a star 35 px away take over (Sentinel-6A, 2026-10-02)
 
 # ---- "Coming up": bright satellites due through the guide field or the visible sky -------
 [forecast]
@@ -156,8 +161,9 @@ sky_max_mag = 6.0             # ...and for "anywhere I can see" (the sky mask ab
 # Standard magnitudes for objects McCants' qs.mag does not rate (it has almost nothing launched
 # since ~2018): without one an object never appears in Coming up. Catalogue id = magnitude at
 # 1000 km and half phase. NOSS 3-8 (A)/(B): rated like the older NOSS 3 pairs (3.0); seen bright
-# on 2026-10-02.
-std_mags = { "42058" = 3.0, "42065" = 3.0 }
+# on 2026-10-02. SENTINEL-6A: an estimate from its smaller predecessors on the same orbit (Jason 1
+# 4.0, Jason 2 4.5); followed, faint, at 2300 km on 2026-10-02.
+std_mags = { "42058" = 3.0, "42065" = 3.0, "46984" = 4.0 }
 
 [preview]
 enabled = true
