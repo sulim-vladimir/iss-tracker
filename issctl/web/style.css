@@ -77,6 +77,7 @@ body{background:#2f3439;color:#e8e8e8;font:14px/1.4 system-ui,sans-serif;margin:
  #coming .row{white-space:pre;margin:2px 0;padding:2px 4px;border-radius:4px;cursor:pointer}
  #coming .row:hover{background:#454c53}
  #coming .row.sel{background:#4a3d63;outline:1px solid #b784f5}
+ #coming .row.seen{color:#7ee0b8}   /* observed before: the green of an identified path */
  /* Every button and label starts with a capital, including the ones the script relabels
     ("Stop tracking", "Click the spot") - one rule instead of fixing each string. */
  button::first-letter,label::first-letter{text-transform:uppercase}

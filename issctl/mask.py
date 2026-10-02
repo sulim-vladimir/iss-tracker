@@ -68,3 +68,29 @@ def segments(t, ok, min_length=2.0):
                 out.append((float(t[start]), float(t[i - 1])))
             start = None
     return out
+
+
+def frame_line(state, axes, p1, p2, lat, frame=(1280, 960), n=12):
+    """A window-frame edge clicked in the guide image, as [[az, alt], ...] on the sky.
+
+    Two clicks on the edge, with the mount at `axes`; each point along the image line is carried
+    through the guide matrix and the star alignment, as Identify does for a detection. A straight
+    edge is very nearly a great circle on the sky (within ~0.15 deg over the guide field - the
+    guide matrix is linear), so sampling along the image line draws it curved as it should be on
+    the chart, not as a chord between the two ends."""
+    from . import align
+    from . import geometry as geo
+    from .identify import object_axes
+
+    if not (state.get("alignment") or {}).get("model"):
+        raise ValueError("no star alignment yet - the counters say nothing about where the sky is")
+    if not (state.get("cameras") or {}).get("guide"):
+        raise ValueError("the guide camera is not calibrated")
+    p1, p2 = np.asarray(p1, dtype=float), np.asarray(p2, dtype=float)
+    out = []
+    for f in np.linspace(0.0, 1.0, n):
+        a = object_axes(state, axes, p1 + f * (p2 - p1), "guide", frame)
+        ha, dec = align.pointing_hadec(state, a)
+        alt, az = geo.hadec_to_altaz(ha, dec, lat)
+        out.append([round(float(az) % 360.0, 3), round(float(alt), 3)])
+    return out

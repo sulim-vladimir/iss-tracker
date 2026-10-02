@@ -210,3 +210,23 @@ def test_history_lists_sessions_with_what_they_were(tmp_path, tles, site):
     got = [r for r in idf.list_sessions(tmp_path) if r["file"] == old.name][0]["result"]
     assert got["best"] == "NOSS 3-8 (B)" and got["verdict"] == "sure"
     assert got["best_id"] == "42065"          # what "Add to Coming up" rates
+
+
+def test_observed_lists_what_sessions_were_identified_as(tmp_path, tles, site):
+    """Coming up marks satellites seen before. Results saved before the catalogue id was kept
+    have only the name, which is looked up in the catalogue."""
+    sat, ts, times = _visible(tles[1], site)
+    new = tmp_path / "servo-20261002-232008.csv"
+    _write_session(new, sat, ts, times, site)
+    t, v = idf.read_track(new, {}, FRAME)
+    idf.save_result(new, idf.identify(t, v, tles, site), "x")
+    old = tmp_path / "servo-20260929-232446.csv"
+    _write_session(old, sat, ts, times[:30], site)
+    idf._result_path(old).write_text('{"verdict": "sure", "best": "NOSS 3-8 (A)", "at": 5}')
+    miss = tmp_path / "servo-20260930-210000.csv"
+    _write_session(miss, sat, ts, times[:30], site)
+    idf._result_path(miss).write_text('{"verdict": null, "best": null, "at": 6}')
+    seen = idf.observed(tmp_path, tles)
+    assert set(seen) == {"42065", "42058"}
+    assert seen["42065"] == pytest.approx(times[0], abs=1.0)
+    assert set(idf.observed(tmp_path)) == {"42065"}        # without the catalogue: ids only

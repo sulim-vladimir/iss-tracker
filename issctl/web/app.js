@@ -36,7 +36,7 @@ function applyMount(m) {
   // Alt/az sits under the sky chart and the axis angles are not something you read while
   // working, so this panel carries only what has nowhere else to go: what just happened.
   document.getElementById('mount-msg').textContent = m.msg || '\u2014';
-  showComing(m.forecast, m.now);
+  showComing(m.forecast, m.now, m.observed);
   showHistory(m.history);
   const spb = document.getElementById('spiralbtn');
   if (spb) {
@@ -204,6 +204,7 @@ function drawSky(s) {
     svg.appendChild(el('line', {x1: x0, y1: y0, x2: x1, y2: y1, 'stroke-width': 2,
       stroke: !open ? '#c0504d' : (lit > 0.5 ? '#3fb9d6' : '#6b7580')}));
   }
+  drawFrame(svg, s);
   drawComing(svg, (s.mount && s.mount.now) || Date.now() / 1000);
   drawIdentified(svg, s);
   const tb = document.getElementById('skytrackid');
@@ -266,7 +267,17 @@ setInterval(async () => apply(await (await fetch('/api/state')).json()), 1000);
 
 
 // ---- clicking an image: normally picks a target, but "set boresight" claims the next click ----
-let ARMED = null, FOLLOW_ARMED = false, BRIGHT_ARMED = false;
+let ARMED = null, FOLLOW_ARMED = false, BRIGHT_ARMED = false, FRAME_ARMED = null;
+function armFrame() {         // "Frame line" claims the next TWO clicks in the guide image
+  FRAME_ARMED = FRAME_ARMED ? null : [];
+  frameButton();
+}
+function frameButton() {
+  const b = document.getElementById('framebtn');
+  if (!b) return;
+  b.textContent = !FRAME_ARMED ? 'Frame line' : FRAME_ARMED.length ? 'Click the other end' : 'Click one end';
+  b.className = FRAME_ARMED ? 'on' : '';
+}
 function armBright() {        // "Brightness" claims the next click in the guide image
   BRIGHT_ARMED = !BRIGHT_ARMED;
   const b = document.getElementById('brightbtn');
@@ -295,6 +306,12 @@ function imgClick(name, event, img) {
   if (ARMED === name) { const n = name; armBoresight(name); return mnt('boresight', {cam: n, fx, fy}); }
   if (FOLLOW_ARMED && name === 'guide') { armFollow(); return mnt('servo', {fx, fy}); }
   if (BRIGHT_ARMED && name === 'guide') { armBright(); return mnt('brightness', {fx, fy}); }
+  if (FRAME_ARMED && name === 'guide') {
+    if (!FRAME_ARMED.length) { FRAME_ARMED = [fx, fy]; return frameButton(); }
+    const [fx1, fy1] = FRAME_ARMED;
+    FRAME_ARMED = null; frameButton();
+    return mnt('frame_line', {fx1, fy1, fx2: fx, fy2: fy});
+  }
   return api('/api/select', {cam: name, fx, fy});
 }
 
@@ -324,7 +341,7 @@ function copyLog(btn) {
 let COMING = [], COMING_SEL = null;   // the rows on show, and the key of the one picked
 const comingKey = r => r.id + ':' + r.start;
 function comingSelected() { return COMING.find(r => comingKey(r) === COMING_SEL) || null; }
-function showComing(f, now) {
+function showComing(f, now, seen) {
   const box = document.getElementById('coming');
   if (!box) return;
   if (!f) { box.textContent = ''; COMING = []; markComing(box); return; }
@@ -353,13 +370,20 @@ function showComing(f, now) {
   const head = document.getElementById('coming-head');
   if (head) head.textContent = `${f.where} · next ${f.minutes || 60} min · updated ${hm(f.at).slice(0, 5)}`
     + (f.busy ? ' (updating...)' : '') + (rows.length ? '' : ' · nothing bright');
+  seen = seen || {};
   box.querySelectorAll('.row').forEach((el, i) => {
     const r = rows[i];
     const when = r.start > now ? 'in ' + clock(r.start - now) : 'NOW, ' + clock(r.end - now) + ' left';
     const where = f.mode === 'field' ? `${r.sep.toFixed(1)}° from centre`
                                      : `alt ${r.alt.toFixed(0)}° az ${r.az.toFixed(0)}°`;
+    // observed before (a History session was identified as it): another colour, and when
+    const last = seen[String(r.id).replace(/^0+/, '')];
+    const day = last ? new Date(last * 1000).toDateString().slice(4, 10) : '';
     el.textContent = `${hm(r.peak)}  ${when.padEnd(14)} mag ${r.mag.toFixed(1).padStart(4)}  ${r.name}\n`
-                   + `          ${where}, ${r.range_km} km`;
+                   + `          ${where}, ${r.range_km} km` + (last ? `, seen ${day}` : '');
+    el.classList.toggle('seen', !!last);
+    el.title = `${r.name} (catalogue ${r.id})` + (last ? ` - observed before, last on ${day}` : '')
+             + ' - click to show it on the sky chart';
   });
   markComing(box);
 }
@@ -381,6 +405,23 @@ function markComing(box) {
 function drawComing(svg, now) {
   const r = comingSelected();
   if (r) drawPath(svg, r.path, r.name, now, '#b784f5', '#cdb0f7');
+}
+// the window frame, as clicked in the guide image: orange lines, switchable
+function drawFrame(svg, s) {
+  const m = s.mount || {}, lines = m.frame_lines || [], shown = m.frame_shown !== false;
+  const fb = document.getElementById('skyframe');
+  if (fb) {
+    fb.textContent = 'Frame ' + (shown ? 'on' : 'off') + (lines.length ? ` (${lines.length})` : '');
+    fb.className = shown && lines.length ? 'on' : '';
+  }
+  const ub = document.getElementById('skyframeundo');
+  if (ub) ub.disabled = !lines.length;
+  if (!shown) return;
+  for (const pts of lines) {
+    const xy = pts.map(([az, alt]) => pos(az, alt).join(',')).join(' ');
+    svg.appendChild(el('polyline', {points: xy, fill: 'none', stroke: '#f0883e', 'stroke-width': 2,
+      'stroke-linecap': 'round'}));
+  }
 }
 // the object named live (a pick or a session's target): where it has been and where it goes
 function drawIdentified(svg, s) {

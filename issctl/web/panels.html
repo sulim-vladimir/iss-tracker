@@ -31,6 +31,8 @@
 <!-- @bright -->
  <button id="brightbtn" title="press this, then click a star or a satellite in the guide image: a plate solve of a fresh frame gives its catalogue magnitude, and its brightness measured against the stars around it - which works for satellites too. Needs a frame that solves (0.5-2 s exposure, stars held still)"
  onclick="armBright()">Brightness</button>
+ <button id="framebtn" title="draw a window-frame edge on the sky chart: press this, then click two points along the edge in the guide image. Each click is carried onto the sky through the guide calibration and the star alignment; the line is saved. For a long edge, add several lines from different pointings"
+ onclick="armFrame()">Frame line</button>
 
 <!-- @bore -->
  <button id="bore-NAME" title="move the green cross: press this, then click the object sitting in the MIDDLE of the main image - the click snaps to the brightest spot nearby. That is what the boresight means. Only trust it on something a kilometre away or more, or the parallax between the two cameras is wider than the main field"
@@ -150,5 +152,9 @@
 <svg id="sky" viewBox="0 0 330 330" onclick="pickSky(event)"></svg>
 <div class="ctl"><button id="skygoto" disabled title="click a point on the chart first; the mount slews there and holds that altitude and azimuth still (sidereal off) - a place to wait for a satellite"
  onclick="gotoSky()">Go to point</button>
- <button id="skytrackid" disabled onclick="mnt('track_identified',{})">Track it</button></div>
+ <button id="skytrackid" disabled onclick="mnt('track_identified',{})">Track it</button>
+ <button id="skyframe" title="show or hide the window-frame lines drawn with Frame line (guide panel)"
+ onclick="mnt('frame_shown',{on: (LAST_STATE && LAST_STATE.mount && LAST_STATE.mount.frame_shown === false) ? 1 : 0})">Frame on</button>
+ <button id="skyframeundo" disabled title="remove the last frame line"
+ onclick="if(confirm('Remove the last frame line?')) mnt('frame_undo',{})">Undo line</button></div>
 <div class="info" id="sky-info"></div></div>

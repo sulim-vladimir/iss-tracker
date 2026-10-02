@@ -1076,6 +1076,31 @@ def cmd_console(args, cfg):
             f = str(params.get("file") or "")
             if re.fullmatch(r"(servo|track)-\d{8}-\d{6}\.csv", f) and (ROOT / "logs" / f).with_suffix(".id.json").exists():
                 threading.Thread(target=lambda: _safely(rate_session, f), daemon=True).start()
+        elif action == "frame_line":
+            # a window-frame edge: two clicks in the guide image, saved as a line on the sky chart
+            from .mask import frame_line
+            g = cams["guide"]
+            try:
+                pts = [(float(params[f"fx{i}"]) * g.width, float(params[f"fy{i}"]) * g.height)
+                       for i in (1, 2)]
+                line = frame_line(state, mount.position(), *pts, site.lat, frame=(g.width, g.height))
+            except (KeyError, ValueError) as e:
+                say(f"frame line: {e}")
+            else:
+                state.setdefault("frame_lines", []).append({"pts": line, "at": time.time()})
+                state["frame_shown"] = True
+                persist()
+                (a0, h0), (a1, h1) = line[0], line[-1]
+                say(f"frame line {len(state['frame_lines'])} saved: az {a0:.1f} alt {h0:.1f} -> "
+                    f"az {a1:.1f} alt {h1:.1f}")
+        elif action == "frame_undo":
+            if state.get("frame_lines"):
+                state["frame_lines"].pop()
+                persist()
+                say(f"frame line removed, {len(state['frame_lines'])} left")
+        elif action == "frame_shown":
+            state["frame_shown"] = params.get("on") not in (None, "0", "false")
+            persist()
         elif action == "track_identified":
             threading.Thread(target=lambda: _safely(track_identified), daemon=True).start()
         elif action == "main_steers":
@@ -1219,6 +1244,9 @@ def cmd_console(args, cfg):
                 sid = (r.get("result") or {}).get("best_id")
                 r["rated"] = None if not sid else forecaster.rating(sid) is not None
             ui["history"] = rows
+            from . import identify as idf
+            tles = idf.load_tles(idf.refresh_catalogs(offline=True, log=lambda *_: None))
+            ui["observed"] = idf.observed(tles=tles)     # Coming up marks what was seen before
         except Exception as e:
             say(f"history: {e}")
 
@@ -1563,6 +1591,9 @@ def cmd_console(args, cfg):
                 "busy": ui["busy"], "msg": ui["msg"], "jog": ui["jog"].tolist(), "cal": cal,
                 "sat_label": live.label if state.get("identify_on", True) else "",
                 "identified": ui.get("identified") if state.get("identify_on", True) else None,
+                "frame_lines": [l["pts"] for l in state.get("frame_lines", [])],
+                "observed": ui.get("observed") or {},
+                "frame_shown": state.get("frame_shown", True),
                 "identify_on": state.get("identify_on", True),
                 "spiral": bool(ui.get("spiral")),
                 "history": ui.get("history"),
@@ -1700,6 +1731,11 @@ def cmd_console(args, cfg):
             scr.refresh()
             time.sleep(0.05)
 
+    def _terminate(signum, frame):
+        raise KeyboardInterrupt   # `kill` shuts down like Ctrl-C: state saved, cameras closed
+
+    import signal
+    signal.signal(signal.SIGTERM, _terminate)
     try:
         if args.web:
             threading.Thread(target=keepalive, daemon=True).start()

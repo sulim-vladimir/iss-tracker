@@ -156,6 +156,36 @@ def _first_last_t(path):
     return t0, max(0.0, t1 - t0)
 
 
+def observed(logs=None, tles=None):
+    """{catalogue id: unix time last seen} of every satellite a session was identified as, for
+    marking Coming up. Results saved before the id was kept have only the name: `tles` (the
+    catalogue) looks those up by exact name, and without it they are skipped."""
+    logs = Path(logs) if logs is not None else ROOT / "logs"
+    by_name = None
+    out = {}
+    for res in logs.glob("*.id.json"):
+        try:
+            r = json.loads(res.read_text())
+        except (OSError, ValueError):
+            continue
+        if r.get("verdict") not in ("sure", "probably") or not r.get("best"):
+            continue
+        sid = r.get("best_id")
+        if not sid and tles is not None:
+            if by_name is None:
+                by_name = {}
+                for name, i, _, _ in tles:
+                    by_name.setdefault(name.strip().lower(), i)
+            sid = by_name.get(r["best"].strip().lower())
+        if not sid:
+            continue
+        t0, _ = _first_last_t(res.with_name(res.name.replace(".id.json", ".csv")))
+        t = t0 if t0 is not None else float(r.get("at") or 0.0)
+        key = str(sid).lstrip("0")
+        out[key] = max(out.get(key, 0.0), t)
+    return out
+
+
 def list_sessions(logs=None, limit=20):
     """The latest real sessions (not simulations), newest first: file, kind (servo/track),
     start (unix), duration (s), name (what a pass tracked), result (a saved identification)."""
