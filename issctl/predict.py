@@ -66,7 +66,13 @@ def timescale():
 
 
 def unix_to_time(t):
-    return timescale().utc(1970, 1, 1, 0, 0, np.asarray(t, dtype=float))
+    """Unix seconds -> skyfield Time. Whole days go in the date and only the rest in the seconds:
+    utc(1970, 1, 1, 0, 0, t) counts t as SI seconds since 1970, which includes the 27 leap
+    seconds Unix time leaves out - every orbit position came out 27 s stale, and the mount
+    trailed the satellite by that much on the sky chart and on the rig."""
+    t = np.asarray(t, dtype=float)
+    days = np.floor(t / 86400.0)
+    return timescale().utc(1970, 1, 1 + days, 0, 0, t - days * 86400.0)
 
 
 def time_to_unix(t):

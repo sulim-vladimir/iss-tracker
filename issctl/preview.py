@@ -142,6 +142,7 @@ class Preview:
                       status_panel=f["status"] if can_move else "",
                       warnings_panel=f["warnings"] if can_move else "",
                       coming_panel=f["coming"] if can_move else "",
+                      history_panel=f["history"] if can_move else "",
                       log_panel=f["log"] if can_move else "",
                       messages_panel=f["messages"] if can_move else "",
                       cams=json.dumps(list(self.cams)))

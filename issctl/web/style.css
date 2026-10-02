@@ -83,3 +83,7 @@ body{background:#2f3439;color:#e8e8e8;font:14px/1.4 system-ui,sans-serif;margin:
  label{display:inline-block}
  .ctl .right{margin-left:auto}
  #coming-head{margin:4px 0 2px}
+ #history .row{white-space:pre;margin:2px 0;padding:2px 4px;border-radius:4px;cursor:pointer}
+ #history .row:hover{background:#454c53}
+ #history .row.sel{background:#4a3d63;outline:1px solid #b784f5}
+ #history{max-height:230px;overflow-y:auto}

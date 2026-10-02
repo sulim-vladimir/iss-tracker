@@ -37,6 +37,7 @@ function applyMount(m) {
   // working, so this panel carries only what has nowhere else to go: what just happened.
   document.getElementById('mount-msg').textContent = m.msg || '\u2014';
   showComing(m.forecast, m.now);
+  showHistory(m.history);
   const spb = document.getElementById('spiralbtn');
   if (spb) {
     spb.dataset.running = m.spiral ? '1' : '0';
@@ -401,4 +402,44 @@ function trackNote(name, t) {
   const why = {predict: 'coasting on prediction', shadow: 'in Earth shadow - coasting',
                blocked: 'behind an obstruction - coasting'}[t.source] || t.source;
   return '  \u00b7 ' + why;
+}
+
+// ---- history: the latest sessions, and Identify for any of them ----
+let HISTORY_PICK = null, HISTORY_ASKED = false;
+function showHistory(h) {
+  const box = document.getElementById('history');
+  if (!box) return;
+  if (!h) {
+    if (!HISTORY_ASKED) { HISTORY_ASKED = true; mnt('history', {}); }
+    return;
+  }
+  const key = h.map(r => r.file + (r.result ? r.result.at : '')).join(',');
+  if (box.dataset.key !== key) {
+    box.dataset.key = key;
+    box.replaceChildren();
+    for (const r of h) {
+      const line = document.createElement('div');
+      line.className = 'row';
+      line.dataset.file = r.file;
+      const when = new Date(r.start * 1000);
+      const day = when.toDateString().slice(4, 10), hm = when.toTimeString().slice(0, 5);
+      const what = r.kind === 'track' ? 'pass ' + (r.name || '') : 'follow';
+      const res = !r.result ? 'not identified yet'
+                : r.result.best ? (r.result.verdict === 'sure' ? r.result.best : 'probably ' + r.result.best)
+                : 'nothing matched';
+      line.textContent = `${day} ${hm}  ${what.padEnd(14)} ${String(Math.round(r.duration)).padStart(4)} s  ${res}`;
+      line.title = (r.result && r.result.text) || r.file;
+      line.onclick = () => { HISTORY_PICK = HISTORY_PICK === r.file ? null : r.file; markHistory(box); };
+      box.appendChild(line);
+    }
+  }
+  markHistory(box);
+}
+function markHistory(box) {
+  box.querySelectorAll('.row').forEach(el => el.classList.toggle('sel', el.dataset.file === HISTORY_PICK));
+  const b = document.getElementById('histwhat');
+  if (b) b.disabled = !HISTORY_PICK;
+}
+function identifyPicked() {
+  if (HISTORY_PICK) mnt('identify', {file: HISTORY_PICK});
 }

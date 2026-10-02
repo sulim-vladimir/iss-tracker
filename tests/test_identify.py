@@ -1,4 +1,4 @@
-"""What was that: naming the satellite a session followed, from its log and the catalogues."""
+"""Identify: naming the satellite a session followed, from its log and the catalogues."""
 
 import csv
 from pathlib import Path
@@ -85,7 +85,7 @@ def test_names_the_satellite_and_not_its_formation_partner(tmp_path, tles, site)
     matches = idf.identify(t, v, tles, site)
     assert matches[0]["name"] == "NOSS 3-8 (B)" and matches[0]["median_deg"] < 0.05
     assert matches[1]["name"] == "NOSS 3-8 (A)" and matches[1]["median_deg"] > 0.3
-    assert idf.describe(matches).startswith("what was that: NOSS 3-8 (B)")
+    assert idf.describe(matches).startswith("identify: NOSS 3-8 (B)")
 
 
 def test_the_object_pixel_is_carried_through_the_guide_matrix(tmp_path, tles, site, cfg):
@@ -183,3 +183,24 @@ def test_pass_at_picks_the_pass_up_at_that_time():
     rows = [({"rise": 100.0, "set": 700.0}, {}, "visible"), ({"rise": 6000.0, "set": 6500.0}, {}, "visible")]
     assert pass_at(rows, 400.0) is rows[0] and pass_at(rows, 6100.0) is rows[1]
     assert pass_at(rows, 3000.0) is None
+
+
+def test_history_lists_sessions_with_what_they_were(tmp_path, tles, site):
+    """The latest sessions, newest first, with the pass name and a saved identification;
+    simulation runs are left out."""
+    sat, ts, times = _visible(tles[1], site)
+    old = tmp_path / "servo-20260929-232446.csv"
+    _write_session(old, sat, ts, times, site)
+    new = tmp_path / "track-20261001-001841.csv"
+    _write_session(new, sat, ts, times[:40], site)
+    idf.write_session_state(new, {}, name="TERRA")
+    (tmp_path / "track-20261001-002000-sim.csv").write_text(old.read_text())
+    rows = idf.list_sessions(tmp_path)
+    assert [r["file"] for r in rows] == [new.name, old.name]
+    assert rows[0]["kind"] == "track" and rows[0]["name"] == "TERRA" and rows[0]["result"] is None
+    assert rows[1]["duration"] == pytest.approx(times[-1] - times[0], abs=0.01)
+    t, v = idf.read_track(old, {}, FRAME)
+    matches = idf.identify(t, v, tles, site)
+    idf.save_result(old, matches, idf.describe(matches))
+    got = [r for r in idf.list_sessions(tmp_path) if r["file"] == old.name][0]["result"]
+    assert got["best"] == "NOSS 3-8 (B)" and got["verdict"] == "sure"

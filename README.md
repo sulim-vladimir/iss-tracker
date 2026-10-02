@@ -77,7 +77,7 @@ TLE (Celestrak) --> Skyfield --> refracted alt/az --> HA/Dec --+
 | `issctl/calib.py` | camera <-> axis calibration on a point source, boresight |
 | `issctl/search.py` | spiral search for a star in the main camera; main calibration on that star |
 | `issctl/control.py` | tracking controller (pass and servo mode) |
-| `issctl/identify.py` | "what was that?": name the satellite a session followed, live and afterwards |
+| `issctl/identify.py` | Identify: name the satellite a session followed, live and afterwards |
 | `issctl/forecast.py` | "Coming up": bright satellites due through the guide field or the sky |
 | `issctl/mask.py` | sky obstructions (balcony, window frame, buildings) |
 | `issctl/sim.py` | simulated sky for end-to-end testing |
@@ -100,7 +100,7 @@ cp config.example.toml config.toml   # set site lat/lon/elevation - this file is
 into `data/astrometry/`; after that plate solving works offline.
 
 The satellite catalogues are downloaded into `data/catalog/` on first use and refreshed once a day
-(see [Satellites](#satellites-what-was-that-and-coming-up)). Both folders are gitignored.
+(see [Satellites](#satellites-identify-and-coming-up)). Both folders are gitignored.
 
 ### ZWO camera SDK (`libASICamera2.so`)
 
@@ -360,7 +360,7 @@ While tracking, each camera caption says whether the loop is steering with it
 (`TRACKING uses this camera`), standing by (on main with the handoff count, e.g.
 `standby (handoff 2/3 frames)`), or coasting on prediction.
 
-## Satellites: "what was that?" and "Coming up"
+## Satellites: Identify and Coming up
 
 Both use the same catalogues, kept in `data/catalog/` and refreshed at most once a day:
 
@@ -368,12 +368,14 @@ Both use the same catalogues, kept in `data/catalog/` and refreshed at most once
   bodies included);
 * **Mike McCants' classified orbits** (`classfd.tle`), observed by amateurs - the NOSS pairs and other
   military satellites are only there;
-* McCants' **standard magnitudes** (`qs.mag`), for brightness.
+* McCants' **standard magnitudes** (`qs.mag`), for brightness;
+* **bright.tle**: every other object `qs.mag` rates bright (standard mag 8 or brighter) and still in
+  orbit - dead satellites and rocket bodies, often the brightest things up there, which "active"
+  leaves out. CelesTrak has no group for them, so it is built from its by-launch-year queries,
+  about 60 requests and a few minutes, in the Coming-up thread. About 2,500 objects, against ~330
+  before it; no Space-Track account needed.
 
-The full catalogue - most old rocket bodies, often the brightest things up there - needs a Space-Track
-account and is not used, so the answers are only as complete as the lists above.
-
-**what was that?** names the satellite the last session followed. From the log it rebuilds the object's
+**Identify** names the satellite the last session followed. From the log it rebuilds the object's
 own sky track - the counters through the pointing model, plus where the object sat in the guide image
 through the guide matrix - and ranks every catalogued satellite by how closely it flew that path at
 the same moments. It answers with a name, "probably" a name, both members of a formation pair, or
@@ -420,7 +422,7 @@ picture and up moves it up, whatever the camera's rotation, through its matrix.
 
 **Target & tracking**: goto/sync by name (`vega`, `jupiter`, `moon`, or `18.6 38.8`), go home,
 **centre by solve** (put a named object on the guide boresight using the plate solve, not the
-counters), sidereal on/off, **what was that?**, **naming on/off**, motors off. **Follow** sits at the right of
+counters), sidereal on/off, **Identify**, **naming on/off**, motors off. **Follow** sits at the right of
 the guide's exposure row: the guide is the only camera it follows from. **Go to point** under the
 sky chart slews to a point clicked on the chart and holds it still.
 

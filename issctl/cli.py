@@ -1,6 +1,7 @@
 """issctl command line: passes, mount-test, console, track (real hardware or --sim)."""
 
 import argparse
+import re
 import collections
 import datetime
 import time
@@ -1054,7 +1055,13 @@ def cmd_console(args, cfg):
             mode = "field" if params.get("mode") == "field" else "sky"
             threading.Thread(target=do_forecast, args=(mode,), daemon=True).start()
         elif action == "identify":
-            identify_later(None)
+            f = str(params.get("file") or "")
+            if f and re.fullmatch(r"(servo|track)-\d{8}-\d{6}\.csv", f) and (ROOT / "logs" / f).exists():
+                identify_later(ROOT / "logs" / f)
+            else:
+                identify_later(None)
+        elif action == "history":
+            refresh_history()
         elif action == "main_steers":
             state["main_steers"] = params.get("on") not in (None, "0", "false")
             persist()
@@ -1071,7 +1078,7 @@ def cmd_console(args, cfg):
             persist()
             say("satellite naming " + ("on: live in the guide caption, and after each session"
                                        if state["identify_on"] else
-                                       "off ('what was that?' still works when pressed)"))
+                                       "off (Identify still works when pressed)"))
         elif action == "brightness":
             if solver is None or "guide" not in cams:
                 ui["msg"] = "no guide camera to solve"
@@ -1171,21 +1178,29 @@ def cmd_console(args, cfg):
         return dict(info, now=clock.now(), source=tr.source if tr else "idle")
 
     def identify_session(path=None):
-        """What was that? Runs beside everything else - it never touches the mount."""
+        """Identify: runs beside everything else - it never touches the mount."""
         from . import identify as idf
         path = path or idf.latest_session()
         if path is None:
-            say("what was that: no session log yet - follow something first")
+            say("identify: no session log yet - follow something first")
             return
         g = cfg["cameras"]["guide"]
         try:
-            say(f"what was that: comparing {Path(path).name} with the satellite catalogues...")
+            say(f"identify: comparing {Path(path).name} with the satellite catalogues...")
             _, text = idf.what_was_that(path, state, site, frame=(g["width"], g["height"]),
                                         log=say)
             for line in text.splitlines():
                 say(line.strip())
         except Exception as e:
-            say(f"what was that: {e}")
+            say(f"identify: {e}")
+        refresh_history()
+
+    def refresh_history():
+        from .identify import list_sessions
+        try:
+            ui["history"] = list_sessions()
+        except Exception as e:
+            say(f"history: {e}")
 
     from .forecast import Forecaster, field_track
     forecaster = Forecaster(site, log=say)
@@ -1301,6 +1316,8 @@ def cmd_console(args, cfg):
                 done = session.pop("csv", None)
                 if done is not None and state.get("identify_on", True):
                     identify_later(done)
+                elif done is not None:
+                    refresh_history()
                 recorder.set_gate(True)
                 try:
                     mount.stop()
@@ -1358,7 +1375,7 @@ def cmd_console(args, cfg):
                 tracker = Tracker(cfg, state, mount, cams, clock, traj,
                                   log=lambda s: ui.__setitem__("msg", s),
                                   log_path=logs / f"track-{stamp}.csv", name=name)
-                write_session_state(logs / f"track-{stamp}.csv", state)
+                write_session_state(logs / f"track-{stamp}.csv", state, name=name)
                 session["csv"] = logs / f"track-{stamp}.csv"
                 run_tracker(tracker, "tracking")
             except Exception as e:
@@ -1369,6 +1386,8 @@ def cmd_console(args, cfg):
                 done = session.pop("csv", None)
                 if done is not None and state.get("identify_on", True):
                     identify_later(done)
+                elif done is not None:
+                    refresh_history()
                 recorder.set_gate(True)
                 try:
                     mount.stop()
@@ -1432,6 +1451,7 @@ def cmd_console(args, cfg):
                 "sat_label": live.label if state.get("identify_on", True) else "",
                 "identify_on": state.get("identify_on", True),
                 "spiral": bool(ui.get("spiral")),
+                "history": ui.get("history"),
                 "main_steers": bool(state.get("main_steers", cfg["tracking"].get("main_steers", False))),
                 "forecast": ui.get("forecast"), "now": clock.now(),
                 "rates": [round(float(r), 4) for r in mount.rate_cmd],
@@ -1921,7 +1941,7 @@ def main(argv=None):
     p.add_argument("--clouds", type=int, default=0, help="simulate N unpredicted cloud gaps")
     p.add_argument("--cloud-seed", type=int, default=0)
 
-    p = sub.add_parser("identify", help="what was that? name the satellite a session followed")
+    p = sub.add_parser("identify", help="name the satellite a session followed")
     p.add_argument("csv", nargs="?", help="session log (default: the newest in logs/)")
     p.add_argument("--offline", action="store_true", help="use the catalogues already downloaded")
 

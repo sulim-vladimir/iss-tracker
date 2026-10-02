@@ -86,6 +86,19 @@ def test_sim_mount_move(cfg):
     assert np.all(np.abs(end - target) < 0.005)
 
 
+def test_unix_to_time_has_no_leap_second_offset():
+    # Unix time leaves leap seconds out; the old conversion counted them and every orbit
+    # position the tracker planned was 27 s stale - the mount trailed every satellite.
+    import datetime
+    for t in (time.time(), 1483228799.5, 1483228800.0):
+        want = datetime.datetime.fromtimestamp(t, tz=datetime.timezone.utc)
+        got = unix_to_time(t)
+        assert abs(got.utc_datetime().timestamp() - want.timestamp()) < 1e-3
+        assert abs(time_to_unix(got) - t) < 1e-3
+    arr = unix_to_time(1.79e9 + np.arange(0.0, 600.0, 0.25))
+    assert abs(time_to_unix(arr[-1]) - (1.79e9 + 599.75)) < 1e-3
+
+
 def test_illumination_geometry(cfg):
     sat = make_satellite(SIM_TLE)
     t0 = time_to_unix(sat.epoch)

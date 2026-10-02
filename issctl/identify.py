@@ -1,4 +1,4 @@
-"""What was that? Name the satellite a servo (or pass) session followed.
+"""Identify: name the satellite a servo (or pass) session followed.
 
 The session CSV has the mount counters and, whenever a camera saw the object, where in the image
 it was. Through the star alignment and the guide matrix that is the object's own sky track, and
@@ -8,6 +8,8 @@ moments is the answer.
 Two catalogues, because the interesting ones are often not in the public one:
 
 * CelesTrak "active" plus "visual" (the brightest objects, rocket bodies included);
+* bright.tle: every other object McCants rates bright and still in orbit - dead satellites and
+  rocket bodies, which "active" leaves out (forecast.refresh_bright builds it);
 * Mike McCants' amateur-observed orbits of classified satellites. The first real identification
   (2026-09-29) was NOSS 3-8 (B), which only this one has - the public catalogue's best was 6 deg
   off.
@@ -37,6 +39,9 @@ SOURCES = {
     "visual.tle": "https://celestrak.org/NORAD/elements/gp.php?GROUP=visual&FORMAT=tle",
     "classfd.tle": "https://www.mmccants.org/tles/classfd.zip",
 }
+# Built by forecast.refresh_bright, not downloaded here: it needs qs.mag to know what to fetch.
+# Read last, so the curated files above win when an object is in both.
+EXTRA = ("bright.tle",)
 MAX_AGE_H = 24.0
 SAMPLES = 24          # points along the track: plenty to tell a formation pair apart
 MATCH_DEG = 0.5       # median separation below which a match is called confident
@@ -64,15 +69,20 @@ def refresh_catalogs(directory=CATALOG_DIR, max_age_h=MAX_AGE_H, log=print, offl
         except Exception as e:
             log(f"catalogue {name}: could not update ({e})"
                 + (" - using the copy from before" if path.exists() else ""))
-    return [directory / n for n in SOURCES if (directory / n).exists()]
+    return [directory / n for n in (*SOURCES, *EXTRA) if (directory / n).exists()]
 
 
 def load_tles(paths):
     """(name, catalogue id, line1, line2), one per object: a later file never duplicates an id.
     Ids are kept as text - classified catalogues use letters in them."""
+    return parse_tles(Path(path).read_text(errors="replace") for path in paths)
+
+
+def parse_tles(texts):
+    """load_tles on text already in memory: one string, or several (earlier ones win)."""
     out, seen = [], set()
-    for path in paths:
-        lines = [ln.rstrip() for ln in Path(path).read_text(errors="replace").splitlines()]
+    for text in ([texts] if isinstance(texts, str) else texts):
+        lines = [ln.rstrip() for ln in text.splitlines()]
         for i in range(len(lines) - 1):
             l1, l2 = lines[i], lines[i + 1]
             if not (l1.startswith("1 ") and l2.startswith("2 ")):
@@ -107,11 +117,63 @@ def session_state(csv_path, state):
     return state, "no record of the alignment at the time - using the current one"
 
 
-def write_session_state(csv_path, state):
-    """Called at session start, so a later re-alignment cannot skew this session's answer."""
+def write_session_state(csv_path, state, name=None):
+    """Called at session start, so a later re-alignment cannot skew this session's answer.
+    `name`: what a pass session set out to track, for the history list."""
     keep = {"alignment": {"model": (state.get("alignment") or {}).get("model")},
-            "cameras": state.get("cameras", {})}
+            "cameras": state.get("cameras", {}), "name": name}
     Path(csv_path).with_suffix(".json").write_text(json.dumps(keep))
+
+
+def _result_path(csv_path):
+    return Path(csv_path).with_suffix(".id.json")
+
+
+def save_result(csv_path, matches, text):
+    """Keep what Identify said about a session, for the history list."""
+    kind = verdict(matches)
+    best = matches[0]["name"] if matches else None
+    _result_path(csv_path).write_text(json.dumps({
+        "text": text.splitlines()[0] if text else "", "verdict": kind,
+        "best": best if kind else None, "at": time.time()}))
+
+
+def _first_last_t(path):
+    """Start time and duration of a session log without reading all of it."""
+    with open(path, "rb") as f:
+        f.readline()
+        first = f.readline()
+        if not first:
+            return None, 0.0
+        f.seek(0, 2)
+        f.seek(max(0, f.tell() - 4096))
+        last = f.read().splitlines()[-1]
+    try:
+        t0, t1 = float(first.split(b",")[0]), float(last.split(b",")[0])
+    except ValueError:
+        return None, 0.0
+    return t0, max(0.0, t1 - t0)
+
+
+def list_sessions(logs=None, limit=20):
+    """The latest real sessions (not simulations), newest first: file, kind (servo/track),
+    start (unix), duration (s), name (what a pass tracked), result (a saved identification)."""
+    import re
+
+    logs = Path(logs) if logs is not None else ROOT / "logs"
+    runs = [p for p in list(logs.glob("servo-*.csv")) + list(logs.glob("track-*.csv"))
+            if re.fullmatch(r"(servo|track)-\d{8}-\d{6}\.csv", p.name)]
+    out = []
+    for p in sorted(runs, key=lambda p: p.name[6:], reverse=True)[:limit]:
+        t0, dur = _first_last_t(p)
+        if t0 is None:
+            continue
+        side, res = p.with_suffix(".json"), _result_path(p)
+        name = json.loads(side.read_text()).get("name") if side.exists() else None
+        result = json.loads(res.read_text()) if res.exists() else None
+        out.append({"file": p.name, "kind": p.name.split("-")[0], "start": t0,
+                    "duration": round(dur, 1), "name": name, "result": result})
+    return out
 
 
 def object_axes(state, axes, px, source, frame=(1280, 960)):
@@ -293,20 +355,20 @@ def _utc(x):
 def describe(matches, note=None):
     """One line for the console, then the runners-up."""
     if not matches:
-        return "what was that: no catalogue to compare with"
+        return "identify: no catalogue to compare with"
     best = matches[0]
     runner = matches[1]["median_deg"] if len(matches) > 1 else np.inf
     clear = runner > 2 * best["median_deg"]
     where = (f"{best['name']} (catalogue {best['id']}), {best['median_deg']:.2f} deg from the "
              f"track, {best['range_km']:.0f} km away")
     if best["median_deg"] < MATCH_DEG:
-        lines = [f"what was that: {where}"
+        lines = [f"identify: {where}"
                  + ("" if clear else " - but a close neighbour matches almost as well")]
     elif best["median_deg"] < LIKELY_DEG and clear:
-        lines = [f"what was that: probably {where} - a loose fit (few detections, or the "
+        lines = [f"identify: probably {where} - a loose fit (few detections, or the "
                  f"alignment is off)"]
     else:
-        lines = [f"what was that: nothing in the catalogues flew this path - the nearest, "
+        lines = [f"identify: nothing in the catalogues flew this path - the nearest, "
                  f"{best['name']}, stayed {best['median_deg']:.1f} deg away. An aircraft, or an "
                  f"object no catalogue here carries"]
     lines += [f"  {m['name']} ({m['id']}): {m['median_deg']:.2f} deg, max {m['max_deg']:.2f}, "
@@ -330,4 +392,9 @@ def what_was_that(csv_path, state, site, frame=(1280, 960), log=print, offline=F
     if not tles:
         raise RuntimeError("no satellite catalogue - connect to the internet once")
     matches = identify(t, v, tles, site)
-    return matches, describe(matches, note)
+    text = describe(matches, note)
+    try:
+        save_result(csv_path, matches, text)
+    except OSError:
+        pass
+    return matches, text

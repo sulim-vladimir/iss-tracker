@@ -5,8 +5,9 @@ is dark, and its brightness is estimated from McCants' standard magnitudes (qs.m
 at 1000 km and half phase) with a diffusely reflecting sphere for the phase - good to a
 magnitude or so, and a tumbling rocket body does what it likes.
 
-What the public catalogues lack are most old rocket bodies, often the brightest things up there:
-the full catalogue needs a Space-Track account. The answer is only as complete as that.
+CelesTrak's "active" group has only working satellites, so on its own it missed nine in ten of the
+objects qs.mag rates bright - dead satellites and rocket bodies, often the brightest things up
+there. refresh_bright fills that in from CelesTrak's by-launch-year queries (no account needed).
 """
 
 import io
@@ -23,6 +24,9 @@ from . import predict as pr
 
 MAGS_URL = "https://www.mmccants.org/programs/qsmag.zip"
 MAGS_MAX_AGE_H = 24.0 * 7
+BRIGHT_URL = "https://celestrak.org/NORAD/elements/gp.php?INTDES={year}&FORMAT=tle"
+BRIGHT_MAX_AGE_H = 24.0
+BRIGHT_STD_MAG = 8.0       # the same cut as candidates(): nothing fainter is worth an orbit
 DARK_SUN_ALT = -6.0        # civil twilight: brighter than that, the guide sees sky, not satellites
 STEP_S = 10.0
 
@@ -52,6 +56,67 @@ def load_mags(path):
         except ValueError:
             continue
     return out
+
+
+def bright_wanted(mag_path, known, max_std_mag=BRIGHT_STD_MAG):
+    """{launch year: {catalogue ids}} of the qs.mag objects still in orbit, at least this bright,
+    that no catalogue in `known` (a set of ids) has an orbit for."""
+    out = {}
+    for line in Path(mag_path).read_text(errors="replace").splitlines():
+        sid = line[:5].strip().lstrip("0")
+        try:
+            mag, yy = float(line[33:37]), int(line[8:10])
+        except ValueError:
+            continue
+        if line[6:7] == "d" or mag > max_std_mag or sid in known:   # d: decayed
+            continue
+        out.setdefault(1900 + yy if yy >= 57 else 2000 + yy, set()).add(sid)
+    return out
+
+
+def _fetch(url):
+    req = urllib.request.Request(url, headers={"User-Agent": "issctl"})
+    return urllib.request.urlopen(req, timeout=60).read().decode("ascii", "replace")
+
+
+def refresh_bright(directory=idf.CATALOG_DIR, log=print, offline=False, fetch=_fetch, pause_s=0.5):
+    """bright.tle: orbits of every bright object in qs.mag that the other catalogues lack.
+
+    CelesTrak has no group for them, but it answers a launch year (INTDES=1995) with every object
+    from that year, so one request per year that has any - about 60 - covers them all. Run from
+    the forecast's own thread: a full refresh takes a few minutes. Objects whose year could not
+    be fetched keep their orbit from before."""
+    directory = Path(directory)
+    path, mags = directory / idf.EXTRA[0], directory / "qs.mag"
+    if offline or not mags.exists() or (
+            path.exists() and time.time() - path.stat().st_mtime < BRIGHT_MAX_AGE_H * 3600):
+        return path if path.exists() else None
+    known = {t[1].lstrip("0") for t in idf.load_tles(
+        [directory / n for n in idf.SOURCES if (directory / n).exists()])}
+    wanted = bright_wanted(mags, known)
+    keep = {t[1].lstrip("0"): t for t in idf.load_tles([path])} if path.exists() else {}
+    keep = {k: t for k, t in keep.items() if any(k in ids for ids in wanted.values())}
+    log(f"catalogue {path.name}: fetching orbits of {sum(map(len, wanted.values()))} bright "
+        f"objects, {len(wanted)} launch years - a few minutes")
+    got = failed = 0
+    for year in sorted(wanted):
+        try:
+            for t in idf.parse_tles(fetch(BRIGHT_URL.format(year=year))):
+                if t[1].lstrip("0") in wanted[year]:
+                    keep[t[1].lstrip("0")] = t
+            got += 1
+            failed = 0
+        except Exception as e:
+            failed += 1
+            if failed >= 3:           # offline, or CelesTrak refusing: stop asking
+                log(f"catalogue {path.name}: giving up after {year} ({e})")
+                break
+        time.sleep(pause_s)
+    if got:
+        directory.mkdir(parents=True, exist_ok=True)
+        path.write_text("".join(f"{n}\n{l1}\n{l2}\n" for n, _, l1, l2 in keep.values()))
+        log(f"catalogue {path.name}: {len(keep)} orbits from {got}/{len(wanted)} launch years")
+    return path if path.exists() else None
 
 
 def candidates(tles, mags, max_std_mag=8.0):
@@ -183,8 +248,11 @@ class Forecaster:
     def _ensure(self, offline=False):
         if self.sats is not None and time.time() - self.built_at < 12 * 3600:
             return
-        tles = idf.load_tles(idf.refresh_catalogs(self.catalog_dir, log=self.log, offline=offline))
+        idf.refresh_catalogs(self.catalog_dir, log=self.log, offline=offline)
         path = refresh_mags(self.catalog_dir, log=self.log, offline=offline)
+        if path is not None:   # after the others: it fetches only what they lack
+            refresh_bright(self.catalog_dir, log=self.log, offline=offline)
+        tles = idf.load_tles(idf.refresh_catalogs(self.catalog_dir, log=self.log, offline=True))
         if not tles or path is None:
             raise RuntimeError("no catalogue or magnitudes yet - connect to the internet once")
         self.sats = candidates(tles, load_mags(path))

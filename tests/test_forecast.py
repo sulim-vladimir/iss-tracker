@@ -106,3 +106,52 @@ def test_the_chart_draws_the_planned_pass_where_it_really_is(site):
     for az, alt, lit, open_, dt in track[::40]:
         true_alt, true_az = pr.sat_hadec(sat, site, t0 + dt)[2:]
         assert abs(alt - true_alt) < 0.05 and abs((az - true_az + 180) % 360 - 180) < 0.1
+
+
+def _mag_line(sid, flag, year, desig, name, mag):
+    """One qs.mag record, columns as McCants writes them."""
+    return f"{sid:05d} {flag} {year:02d} {desig:6s} {name:15s}{mag:4.1f}  1.0 0.0 0.0 .50"
+
+
+def test_bright_orbits_are_fetched_for_what_the_catalogues_lack(tmp_path, monkeypatch):
+    """qs.mag rates dead satellites and rocket bodies that CelesTrak's "active" group leaves out.
+    refresh_bright asks for each launch year that has one, keeps only those, never refetches
+    what a curated catalogue already has, and skips decayed and faint objects."""
+    lines = (DATA / "sample.tle").read_text().splitlines()
+    (tmp_path / "active.tle").write_text("\n".join(lines[6:9]) + "\n")       # the Starlink
+    (tmp_path / "qs.mag").write_text("\n".join([
+        "00001 d Desig...  Name.......... Mag.  Sz1 Sz2 Sz3 RCS Comments",
+        _mag_line(42058, " ", 17, "11A", "NOSS 3-8 (A)", 4.0),
+        _mag_line(42065, " ", 17, "11B", "NOSS 3-8 (B)", 9.5),     # too faint to bother
+        _mag_line(23688, "d", 95, "56A", "STS 73", -1.5),          # came down long ago
+        _mag_line(67006, " ", 25, "293D", "Starlink", 5.0),        # active.tle has it
+    ]) + "\n")
+    asked = []
+
+    def fetch(url):
+        asked.append(url)
+        return (DATA / "sample.tle").read_text()       # a year's reply: more than was asked for
+
+    monkeypatch.setattr(fc.time, "sleep", lambda s: None)
+    path = fc.refresh_bright(tmp_path, log=lambda *a: None, fetch=fetch)
+    assert asked == [fc.BRIGHT_URL.format(year=2017)]
+    assert [t[1] for t in idf.load_tles([path])] == ["42058"]
+    # the forecast, track and identify all read it, after the curated files
+    assert idf.refresh_catalogs(tmp_path, offline=True)[-1] == path
+    # fresh: nothing is asked again
+    assert fc.refresh_bright(tmp_path, log=lambda *a: None, fetch=fetch) == path and len(asked) == 1
+
+
+def test_bright_orbits_survive_a_failed_refresh(tmp_path, monkeypatch):
+    import os
+    lines = (DATA / "sample.tle").read_text().splitlines()
+    (tmp_path / "qs.mag").write_text(_mag_line(42058, " ", 17, "11A", "NOSS 3-8 (A)", 4.0) + "\n")
+    (tmp_path / "bright.tle").write_text("\n".join(lines[0:3]) + "\n")
+    os.utime(tmp_path / "bright.tle", (0, 0))                      # stale
+    monkeypatch.setattr(fc.time, "sleep", lambda s: None)
+
+    def offline(url):
+        raise OSError("no network")
+
+    path = fc.refresh_bright(tmp_path, log=lambda *a: None, fetch=offline)
+    assert [t[1] for t in idf.load_tles([path])] == ["42058"]

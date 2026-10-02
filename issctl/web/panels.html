@@ -71,8 +71,8 @@
 
  <div class="ctl">
   <button title="name the satellite the last session followed, from its log and the satellite catalogues (public and amateur-observed classified ones). Also runs by itself when a session ends"
-  onclick="mnt('identify',{})">what was that?</button>
-  <button id="identbtn" title="name satellites automatically: live in the guide caption while following, and once more when the session ends. Off saves the Pi a few seconds of work per session; 'what was that?' works either way"
+  onclick="mnt('identify',{})">Identify</button>
+  <button id="identbtn" title="name satellites automatically: live in the guide caption while following, and once more when the session ends. Off saves the Pi a few seconds of work per session; Identify works either way"
   onclick="mnt('identify_on',{on: this.className === 'on' ? 0 : 1})">naming off</button></div>
  <div class="ctl">
   <button id="motorbtn" onclick="mnt('motors',{on: MOTORS ? 0 : 1})">motors off</button></div></div>
@@ -134,6 +134,14 @@
   onclick="trackComing()">Track selected</button></div>
  <div class="hint" id="coming-head"></div>
  <div class="info" id="coming"></div></div>
+
+<!-- @history -->
+<div class="panel box grow history"><h2>History</h2>
+ <div class="ctl">
+  <button onclick="mnt('history',{})" title="list the latest sessions again">Refresh</button>
+  <button id="histwhat" disabled onclick="identifyPicked()"
+  title="name the satellite the picked session followed - from its log, the star alignment it ran with and the satellite catalogues">Identify</button></div>
+ <div class="info" id="history"></div></div>
 
 <!-- @sky -->
 <div class="panel sky">
