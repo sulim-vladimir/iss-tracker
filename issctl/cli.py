@@ -1,6 +1,7 @@
 """issctl command line: passes, mount-test, console, track (real hardware or --sim)."""
 
 import argparse
+import json
 import re
 import collections
 import datetime
@@ -645,6 +646,10 @@ def cmd_console(args, cfg):
         sol, _, _ = solve_here()
         b = brightness(sol, (x, y))
         parts = []
+        if b["mag"] is not None and not b["catalog_label"]:
+            # kept for "Add to Coming up": a satellite measured during a session rates it
+            ui.setdefault("brightness_log", []).append({"t": float(sol.t), "mag": float(b["mag"])})
+            del ui["brightness_log"][:-50]
         if b["mag"] is not None:
             parts.append(f"measured magnitude {b['mag']:.1f} ± {b['mag_err']:.1f} "
                          f"(against {b['n_ref']} catalogue stars in the frame)")
@@ -1067,6 +1072,12 @@ def cmd_console(args, cfg):
                 identify_later(None)
         elif action == "history":
             refresh_history()
+        elif action == "rate":
+            f = str(params.get("file") or "")
+            if re.fullmatch(r"(servo|track)-\d{8}-\d{6}\.csv", f) and (ROOT / "logs" / f).with_suffix(".id.json").exists():
+                threading.Thread(target=lambda: _safely(rate_session, f), daemon=True).start()
+        elif action == "track_identified":
+            threading.Thread(target=lambda: _safely(track_identified), daemon=True).start()
         elif action == "main_steers":
             state["main_steers"] = params.get("on") not in (None, "0", "false")
             persist()
@@ -1203,12 +1214,46 @@ def cmd_console(args, cfg):
     def refresh_history():
         from .identify import list_sessions
         try:
-            ui["history"] = list_sessions()
+            rows = list_sessions()
+            for r in rows:            # can it be added to Coming up? only what has no rating yet
+                sid = (r.get("result") or {}).get("best_id")
+                r["rated"] = None if not sid else forecaster.rating(sid) is not None
+            ui["history"] = rows
         except Exception as e:
             say(f"history: {e}")
 
+    def rate_session(fname):
+        """History's "Add to Coming up": give the satellite a session was identified as a
+        standard magnitude, so it is listed from now on. From a Brightness measurement taken
+        during the session when there is one (its distance and sun angle then from the orbit),
+        otherwise the default."""
+        from . import forecast as fc
+        from . import identify as idf
+        path = ROOT / "logs" / fname
+        res = json.loads(path.with_suffix(".id.json").read_text())
+        sid, name = res.get("best_id"), res.get("best")
+        if not sid:
+            say("add to Coming up: identify the session first")
+            return
+        t0, dur = idf._first_last_t(path)
+        seen = [b for b in ui.get("brightness_log", []) if t0 - 10 <= b["t"] <= t0 + dur + 10]
+        std, how = float(cfg.get("forecast", {}).get("default_std_mag", 5.0)), "default"
+        if seen:
+            sat, _ = get_satellite(cfg, sid, offline=True, log=say)
+            rng, ph = fc.range_phase(sat, site, seen[-1]["t"])
+            std = float(fc.standard_mag(seen[-1]["mag"], rng, ph))
+            how = f"from your brightness measurement, mag {seen[-1]['mag']:.1f} at {rng:.0f} km"
+        state.setdefault("std_mags", {})[str(sid).lstrip("0")] = round(std, 1)
+        persist()
+        forecaster.add_rating(sid, round(std, 1))
+        say(f"{name}: added to Coming up, standard magnitude {std:.1f} ({how})")
+        refresh_history()
+        do_forecast((ui.get("forecast") or {}).get("mode") or "sky")
+
     from .forecast import Forecaster, field_track
-    forecaster = Forecaster(site, log=say, std_mags=cfg.get("forecast", {}).get("std_mags"))
+    # ratings for what qs.mag lacks: the config's, plus those added from History (state.json)
+    forecaster = Forecaster(site, log=say, std_mags={**(cfg.get("forecast", {}).get("std_mags") or {}),
+                                                     **state.get("std_mags", {})})
 
     def do_forecast(mode):
         """Coming up: bright satellites through the guide field, or anywhere visible from here.
@@ -1247,30 +1292,90 @@ def cmd_console(args, cfg):
     live = LiveIdentifier(site, frame=(cfg["cameras"]["guide"]["width"],
                                        cfg["cameras"]["guide"]["height"]), log=say)
 
-    def name_it_live(tracker):
-        """Feed the live identifier each new detection while this tracker runs. Reads only."""
-        live.reset()
-        last, failed = None, False
-        while session["tracker"] is tracker:
-            src = tracker.source
-            px = tracker.last_px.get(src)
-            if src in ("guide", "main") and px is not None and (src, px) != last:
-                last = (src, px)
-                live.add(clock.now(), state, mount.position(), px, src)
-            if not state.get("identify_on", True):
-                live.label = ""
-            elif not failed:
-                try:
-                    live.update(clock.now())
-                except Exception as e:
-                    failed = True
-                    say(f"live identification off for this session: {e}")
-            time.sleep(0.1)
+    def _safely(fn, *a):
+        try:
+            fn(*a)
+        except Exception as e:
+            say(f"{getattr(fn, '__name__', 'error')}: {e}")
+
+    def name_it_live():
+        """Name what is being looked at, for the guide caption and the sky chart: the target of
+        a running session, or - with no session - the object picked in the guide image, which the
+        camera's circle follows while the mount stands still. Each sample is the detection with
+        the counters AT ITS FRAME TIME: at a 1 s exposure the counters now are up to half a
+        degree further on. Reads only - it never moves the mount."""
+        from . import identify as idf
+        key, last_t, failed, path_for = None, -np.inf, False, None
+        while True:
+            time.sleep(0.2)
+            try:
+                tr, guide = session["tracker"], cams.get("guide")
+                samples = []
+                if tr is not None:
+                    now_key = ("session", id(tr))
+                    src = tr.source
+                    t, px = tr.last_det.get(src, -np.inf), tr.last_px.get(src)
+                    if src in ("guide", "main") and px is not None and np.isfinite(t):
+                        samples = [(t, px, src)]
+                elif guide is not None and guide.manual and len(guide.pick_track):
+                    track = list(guide.pick_track)
+                    now_key = ("pick", track[0][0])
+                    samples = [(t, (x, y), "guide") for t, x, y in track]
+                else:
+                    now_key = None
+                if now_key != key:
+                    key, last_t, failed, path_for = now_key, -np.inf, False, None
+                    live.reset()
+                    ui["identified"] = None
+                if key is None or not state.get("identify_on", True):
+                    live.label, ui["identified"] = "", None
+                    continue
+                for t, px, src in samples:
+                    if t > last_t:
+                        last_t = t
+                        at = mount.position_at(t)
+                        live.add(t, state, at if at is not None else mount.position(), px, src)
+                if failed:
+                    continue
+                live.update(clock.now())
+                if live.best is None:
+                    ui["identified"], path_for = None, None
+                elif path_for is None or path_for[0] != live.best[1] or clock.now() - path_for[1] > 60:
+                    name, sid, sat = live.best
+                    now = clock.now()
+                    ui["identified"] = {"name": name, "id": sid, "label": live.label,
+                                        "path": idf.sky_path(sat, site, now - 120, now + 900)}
+                    path_for = (sid, now)
+                else:
+                    ui["identified"]["label"] = live.label
+            except Exception as e:
+                failed = True
+                say(f"live identification stopped: {e}")
+
+    threading.Thread(target=name_it_live, name="live-naming", daemon=True).start()
+
+    def track_identified():
+        """Sky chart's Track: follow the object just named on its orbit (pass mode). A running
+        Follow session is stopped first - the orbit carries the target through faint spells and
+        gaps that the camera alone cannot."""
+        ident = ui.get("identified")
+        if not ident:
+            say("track: nothing identified to track")
+            return
+        tr, th = session["tracker"], session["thread"]
+        if tr is not None:
+            if (session["info"] or {}).get("mode") != "servo":
+                say("track: a pass is already being tracked")
+                return
+            stop_tracking()
+            if th is not None:
+                th.join(timeout=10)
+        say(f"track: switching to {ident['name']} on its orbit")
+        start_tracking(which=ident["id"], at=clock.now())
 
     def run_tracker(tracker, label):
         """Hand the mount to a tracker until it finishes, then give it back to the console."""
         session["tracker"] = tracker
-        threading.Thread(target=name_it_live, args=(tracker,), daemon=True).start()
         ui["mode"] = "track"
         ui["jog"][:] = 0
         ui["tracking"] = False
@@ -1457,6 +1562,7 @@ def cmd_console(args, cfg):
                             if ui["mode"] == "track" else None),
                 "busy": ui["busy"], "msg": ui["msg"], "jog": ui["jog"].tolist(), "cal": cal,
                 "sat_label": live.label if state.get("identify_on", True) else "",
+                "identified": ui.get("identified") if state.get("identify_on", True) else None,
                 "identify_on": state.get("identify_on", True),
                 "spiral": bool(ui.get("spiral")),
                 "history": ui.get("history"),

@@ -385,6 +385,18 @@ It runs by itself when a session ends, and live during it: the guide caption sho
 ~15 s of locking. **naming on/off** switches both automatic runs; the button works either way. From
 the command line: `./issctl.sh identify [logs/servo-....csv]`.
 
+**Naming a pick, without following.** Click a moving object in the guide image: the red circle
+stays on it while the mount stands still, and after ~5 s of its motion the guide caption names it.
+Once named, its path is drawn on the sky chart in green - where it has been and where it goes until
+it sets - and **Track it** (under the chart) follows it on its orbit in pass mode, stopping a running
+Follow first: the orbit carries the target through faint spells the camera alone loses.
+
+**Add to Coming up** (History): a session identified as a satellite Coming up does not list - it has
+no brightness rating, like most things launched since ~2018 - can be added. The rating comes from a
+**Brightness** measurement taken on it during that session (converted to a standard magnitude with
+its distance and sun angle from the orbit), otherwise `[forecast] default_std_mag` (5.0). It is kept
+in `data/state.json`; `[forecast] std_mags` in the config holds the hand-set ones.
+
 Each session saves the pointing model it ran with next to its log, so a later re-alignment cannot
 skew the answer. The mount's own alt/az columns in the log are *not* used - see
 [Known limits](#known-limits--next-steps).

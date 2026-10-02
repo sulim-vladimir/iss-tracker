@@ -171,3 +171,29 @@ def test_configured_magnitudes_bring_unrated_objects_in(tmp_path, monkeypatch, s
                           std_mags={"42058": 3.0, "042065": 3.0})
     rated._ensure()
     assert sorted(s[1] for s in rated.sats) == ["42058", "42065", "67006"]
+
+
+def test_a_measured_magnitude_becomes_a_standard_one(site):
+    """History's "Add to Coming up" rates a satellite from a Brightness measurement: the
+    inverse of apparent_mag, at the distance and sun angle the orbit gives for that moment."""
+    for rng, ph in ((1000.0, np.pi / 2), (2300.0, 1.9), (800.0, 0.6)):
+        m = fc.apparent_mag(4.0, rng, ph)
+        assert fc.standard_mag(m, rng, ph) == pytest.approx(4.0)
+    sat = idf.build(idf.load_tles([DATA / "sample.tle"]))[1][2]
+    t = pr.time_to_unix(sat.epoch) + 600.0
+    rng, ph = fc.range_phase(sat, site, t)
+    assert 300.0 < rng < 15000.0 and 0.0 <= ph <= np.pi
+
+
+def test_ratings_added_later_are_used_by_the_next_forecast(tmp_path, monkeypatch, site):
+    (tmp_path / "qs.mag").write_text(_mag_line(67006, " ", 25, "293D", "Starlink", 5.0) + "\n")
+    monkeypatch.setattr(idf, "refresh_catalogs", lambda *a, **k: [DATA / "sample.tle"])
+    monkeypatch.setattr(fc, "refresh_mags", lambda *a, **k: tmp_path / "qs.mag")
+    monkeypatch.setattr(fc, "refresh_bright", lambda *a, **k: None)
+    f = fc.Forecaster(site, catalog_dir=tmp_path, log=lambda *a: None)
+    f._ensure()
+    assert f.rating("67006") == 5.0 and f.rating("42065") is None
+    f.add_rating("042065", 3.2)
+    assert f.rating("42065") == 3.2 and f.sats is None          # rebuilt on the next run
+    f._ensure()
+    assert "42065" in [s[1] for s in f.sats]

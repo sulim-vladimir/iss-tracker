@@ -164,6 +164,7 @@ sky_max_mag = 6.0             # ...and for "anywhere I can see" (the sky mask ab
 # on 2026-10-02. SENTINEL-6A: an estimate from its smaller predecessors on the same orbit (Jason 1
 # 4.0, Jason 2 4.5); followed, faint, at 2300 km on 2026-10-02.
 std_mags = { "42058" = 3.0, "42065" = 3.0, "46984" = 4.0 }
+default_std_mag = 5.0        # History's "Add to Coming up" without a Brightness measurement on it
 
 [preview]
 enabled = true

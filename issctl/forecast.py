@@ -148,6 +148,23 @@ def apparent_mag(std, range_km, phase_rad):
     return std + 5 * np.log10(range_km / 1000.0) - 2.5 * np.log10(np.maximum(f * np.pi, 1e-4))
 
 
+def standard_mag(mag, range_km, phase_rad):
+    """apparent_mag backwards: the standard magnitude of a satellite measured at mag."""
+    f = (np.sin(phase_rad) + (np.pi - phase_rad) * np.cos(phase_rad)) / np.pi
+    return mag - 5 * np.log10(range_km / 1000.0) + 2.5 * np.log10(np.maximum(f * np.pi, 1e-4))
+
+
+def range_phase(sat, site, t):
+    """Distance (km) and phase angle (rad, sun-satellite-observer) of a satellite at unix t."""
+    when = pr.unix_to_time(t)
+    r = sat.at(when).position.km
+    here = site.topos.at(when).position.km
+    u_sun, d_sun = pr.sun_vector(np.atleast_1d(t))
+    to_obs, to_sun = here - r, u_sun[0] * d_sun[0] - r
+    cosb = np.dot(to_obs, to_sun) / (np.linalg.norm(to_obs) * np.linalg.norm(to_sun))
+    return float(np.linalg.norm(to_obs)), float(np.arccos(np.clip(cosb, -1.0, 1.0)))
+
+
 def field_track(site, alt, az, t0, times, follow_stars):
     """Unit alt/az vectors of the field centre at `times`: fixed on the stars when the mount
     tracks sidereally, otherwise fixed where it points."""
@@ -246,6 +263,20 @@ class Forecaster:
         # [forecast] std_mags: ratings for what qs.mag lacks; they win over qs.mag
         self.std_mags = {str(k).lstrip("0"): float(v) for k, v in (std_mags or {}).items()}
         self.sats, self.built_at = None, 0.0
+        self._qs = None
+
+    def rating(self, sid):
+        """The standard magnitude Coming up uses for a catalogue id, or None: it is not listed."""
+        if self._qs is None:
+            path = Path(self.catalog_dir) / "qs.mag"
+            self._qs = load_mags(path) if path.exists() else {}
+        key = str(sid).lstrip("0")
+        return self.std_mags.get(key, self._qs.get(key))
+
+    def add_rating(self, sid, mag):
+        """Rate an object from now on; the next forecast rebuilds the candidate list."""
+        self.std_mags[str(sid).lstrip("0")] = float(mag)
+        self.sats = None
 
     def _ensure(self, offline=False):
         if self.sats is not None and time.time() - self.built_at < 12 * 3600:

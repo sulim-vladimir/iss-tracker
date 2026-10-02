@@ -132,10 +132,11 @@ def _result_path(csv_path):
 def save_result(csv_path, matches, text):
     """Keep what Identify said about a session, for the history list."""
     kind = verdict(matches)
-    best = matches[0]["name"] if matches else None
+    best = matches[0] if matches and kind else None
     _result_path(csv_path).write_text(json.dumps({
         "text": text.splitlines()[0] if text else "", "verdict": kind,
-        "best": best if kind else None, "at": time.time()}))
+        "best": best["name"] if best else None, "best_id": best["id"] if best else None,
+        "at": time.time()}))
 
 
 def _first_last_t(path):
@@ -295,6 +296,7 @@ class LiveIdentifier:
     def reset(self):
         self.samples, self.candidates, self.label, self.last_rank = [], None, "", -1e9
         self.named_at = -1e9
+        self.best = None      # (name, catalogue id, satellite) while the label names one object
 
     def add(self, t, state, axes, px, source):
         if not (state.get("alignment") or {}).get("model"):
@@ -321,6 +323,7 @@ class LiveIdentifier:
             res = rank(t, v, self.sats, self.site, top=self.CANDIDATES)     # lost it: search all
         self.candidates = [r["sat"] for r in res]
         kind = verdict(res)
+        best = res[0]["sat"] if kind in ("sure", "probably") else None
         if kind == "sure":
             label = res[0]["name"]
         elif kind == "probably":
@@ -330,10 +333,21 @@ class LiveIdentifier:
         else:
             label = ""
         if label:
-            self.label, self.named_at = label, now
+            self.label, self.named_at, self.best = label, now, best
         elif now - self.named_at > self.HOLD_S:
-            self.label = ""
+            self.label, self.best = "", None
         return self.label
+
+
+def sky_path(sat, site, t0, t1, step=10.0):
+    """[[az, alt, unix t], ...] of a satellite above the horizon between t0 and t1, for the sky
+    chart - the same form as a Coming-up row's path."""
+    from . import predict as pr
+    t = np.arange(t0, t1 + step, step)
+    alt, az, _ = (sat - site.topos).at(pr.unix_to_time(t)).altaz()
+    a, z = alt.degrees, az.degrees
+    return [[round(float(z[i]), 2), round(float(a[i]), 2), round(float(t[i]), 1)]
+            for i in range(len(t)) if a[i] > 0.0]
 
 
 def _hadec(v):

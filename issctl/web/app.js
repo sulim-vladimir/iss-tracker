@@ -205,6 +205,14 @@ function drawSky(s) {
       stroke: !open ? '#c0504d' : (lit > 0.5 ? '#3fb9d6' : '#6b7580')}));
   }
   drawComing(svg, (s.mount && s.mount.now) || Date.now() / 1000);
+  drawIdentified(svg, s);
+  const tb = document.getElementById('skytrackid');
+  if (tb) {
+    const id = s.mount && s.mount.identified, servo = MODE === 'track' && s.mount.session === 'servo';
+    tb.disabled = !id || (MODE === 'track' && !servo);
+    tb.title = id ? `follow ${id.name} on its orbit (pass mode)` + (servo ? ' - stops Follow first' : '')
+                  : 'pick a moving object in the guide image; once it is named, track it on its orbit';
+  }
   if (SKY_PICK) {            // the picked point: a yellow cross
     const [x, y] = pos(SKY_PICK[0], SKY_PICK[1]);
     for (const [dx, dy] of [[7, 0], [0, 7]])
@@ -372,28 +380,36 @@ function markComing(box) {
 // the picked pass on the sky chart: its path in violet, and where it is now (or where it comes in)
 function drawComing(svg, now) {
   const r = comingSelected();
-  if (!r || !r.path || r.path.length < 2) return;
-  for (let i = 1; i < r.path.length; i++) {
-    const [x0, y0] = pos(r.path[i - 1][0], r.path[i - 1][1]), [x1, y1] = pos(r.path[i][0], r.path[i][1]);
-    svg.appendChild(el('line', {x1: x0, y1: y0, x2: x1, y2: y1, 'stroke-width': 2, stroke: '#b784f5'}));
+  if (r) drawPath(svg, r.path, r.name, now, '#b784f5', '#cdb0f7');
+}
+// the object named live (a pick or a session's target): where it has been and where it goes
+function drawIdentified(svg, s) {
+  const id = s.mount && s.mount.identified;
+  if (id) drawPath(svg, id.path, id.label || id.name, s.mount.now || Date.now() / 1000, '#3fd6a0', '#9be8cb');
+}
+function drawPath(svg, path, name, now, color, textColor) {
+  if (!path || path.length < 2) return;
+  for (let i = 1; i < path.length; i++) {
+    const [x0, y0] = pos(path[i - 1][0], path[i - 1][1]), [x1, y1] = pos(path[i][0], path[i][1]);
+    svg.appendChild(el('line', {x1: x0, y1: y0, x2: x1, y2: y1, 'stroke-width': 2, stroke: color}));
   }
   // Where it is NOW, between the 10 s path points: jumping to the next point drew it up to
   // 10 s ahead, which made a mount sitting right on it look as if it were trailing.
-  let k = r.path.findIndex(p => p[2] >= now);
-  const inside = k > 0 && now >= r.path[0][2];
+  let k = path.findIndex(p => p[2] >= now);
+  const inside = k > 0 && now >= path[0][2];
   let az, alt;
   if (inside) {
-    const [a0, h0, t0] = r.path[k - 1], [a1, h1, t1] = r.path[k];
+    const [a0, h0, t0] = path[k - 1], [a1, h1, t1] = path[k];
     const f = (now - t0) / Math.max(t1 - t0, 1e-6), da = ((a1 - a0 + 540) % 360) - 180;
     az = (a0 + f * da + 360) % 360;
     alt = h0 + f * (h1 - h0);
   } else {
-    [az, alt] = r.path[0];
+    [az, alt] = path[0];
   }
   const [x, y] = pos(az, alt);
-  svg.appendChild(el('circle', inside ? {cx: x, cy: y, r: 4, fill: '#b784f5'}
-                                      : {cx: x, cy: y, r: 4, fill: 'none', stroke: '#b784f5', 'stroke-width': 2}));
-  svg.appendChild(el('text', {x: x + 7, y: y - 6, fill: '#cdb0f7', 'font-size': 11})).textContent = r.name;
+  svg.appendChild(el('circle', inside ? {cx: x, cy: y, r: 4, fill: color}
+                                      : {cx: x, cy: y, r: 4, fill: 'none', stroke: color, 'stroke-width': 2}));
+  svg.appendChild(el('text', {x: x + 7, y: y - 6, fill: textColor, 'font-size': 11})).textContent = name;
 }
 
 // ---- which camera the tracker is steering with, shown in each camera's caption ----
@@ -410,7 +426,7 @@ function trackNote(name, t) {
 }
 
 // ---- history: the latest sessions, and Identify for any of them ----
-let HISTORY_PICK = null, HISTORY_ASKED = false;
+let HISTORY_PICK = null, HISTORY_ASKED = false, HISTORY_ROWS = [];
 function showHistory(h) {
   const box = document.getElementById('history');
   if (!box) return;
@@ -418,7 +434,8 @@ function showHistory(h) {
     if (!HISTORY_ASKED) { HISTORY_ASKED = true; mnt('history', {}); }
     return;
   }
-  const key = h.map(r => r.file + (r.result ? r.result.at : '')).join(',');
+  HISTORY_ROWS = h;
+  const key = h.map(r => r.file + (r.result ? r.result.at : '') + r.rated).join(',');
   if (box.dataset.key !== key) {
     box.dataset.key = key;
     box.replaceChildren();
@@ -444,6 +461,11 @@ function markHistory(box) {
   box.querySelectorAll('.row').forEach(el => el.classList.toggle('sel', el.dataset.file === HISTORY_PICK));
   const b = document.getElementById('histwhat');
   if (b) b.disabled = !HISTORY_PICK;
+  const row = HISTORY_ROWS.find(r => r.file === HISTORY_PICK), rb = document.getElementById('histrate');
+  if (rb) rb.disabled = !(row && row.result && row.result.best_id && row.rated === false);
+}
+function ratePicked() {
+  if (HISTORY_PICK) mnt('rate', {file: HISTORY_PICK});
 }
 function identifyPicked() {
   if (HISTORY_PICK) mnt('identify', {file: HISTORY_PICK});

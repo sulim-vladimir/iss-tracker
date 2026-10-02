@@ -140,12 +140,15 @@
  <div class="ctl">
   <button onclick="mnt('history',{})" title="list the latest sessions again">Refresh</button>
   <button id="histwhat" disabled onclick="identifyPicked()"
-  title="name the satellite the picked session followed - from its log, the star alignment it ran with and the satellite catalogues">Identify</button></div>
+  title="name the satellite the picked session followed - from its log, the star alignment it ran with and the satellite catalogues">Identify</button>
+  <button id="histrate" disabled onclick="ratePicked()"
+  title="the picked session was identified as a satellite Coming up does not list (it has no brightness rating): list it from now on. Its rating comes from a Brightness measurement you took on it during that session, else a default (standard magnitude 5)">Add to Coming up</button></div>
  <div class="info" id="history"></div></div>
 
 <!-- @sky -->
 <div class="panel sky">
 <svg id="sky" viewBox="0 0 330 330" onclick="pickSky(event)"></svg>
 <div class="ctl"><button id="skygoto" disabled title="click a point on the chart first; the mount slews there and holds that altitude and azimuth still (sidereal off) - a place to wait for a satellite"
- onclick="gotoSky()">Go to point</button></div>
+ onclick="gotoSky()">Go to point</button>
+ <button id="skytrackid" disabled onclick="mnt('track_identified',{})">Track it</button></div>
 <div class="info" id="sky-info"></div></div>

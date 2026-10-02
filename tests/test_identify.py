@@ -147,6 +147,11 @@ def test_names_it_live_while_following(tmp_path, tles, site):
     assert labels[0] == ""                            # too little to go on at first
     assert labels[-1] == "NOSS 3-8 (B)"
     assert live.candidates and len(live.candidates) <= live.CANDIDATES
+    # the satellite itself, for drawing its path and tracking it on its orbit
+    assert live.best[:2] == ("NOSS 3-8 (B)", "42065")
+    path = idf.sky_path(live.best[2], site, times[0], times[-1])
+    assert path and all(alt > 0 for _, alt, _ in path)
+    assert path[0][2] >= times[0] and path[-1][2] <= times[-1] + 10
 
 
 def test_live_names_nothing_without_a_star_alignment(site):
@@ -204,3 +209,4 @@ def test_history_lists_sessions_with_what_they_were(tmp_path, tles, site):
     idf.save_result(old, matches, idf.describe(matches))
     got = [r for r in idf.list_sessions(tmp_path) if r["file"] == old.name][0]["result"]
     assert got["best"] == "NOSS 3-8 (B)" and got["verdict"] == "sure"
+    assert got["best_id"] == "42065"          # what "Add to Coming up" rates
