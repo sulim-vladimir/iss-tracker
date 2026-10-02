@@ -155,3 +155,19 @@ def test_bright_orbits_survive_a_failed_refresh(tmp_path, monkeypatch):
 
     path = fc.refresh_bright(tmp_path, log=lambda *a: None, fetch=offline)
     assert [t[1] for t in idf.load_tles([path])] == ["42058"]
+
+
+def test_configured_magnitudes_bring_unrated_objects_in(tmp_path, monkeypatch, site):
+    """qs.mag has no rating for NOSS 3-8, so the pair never appeared in Coming up - even on
+    the night it was followed by hand. [forecast] std_mags fills that in."""
+    (tmp_path / "qs.mag").write_text(_mag_line(67006, " ", 25, "293D", "Starlink", 5.0) + "\n")
+    monkeypatch.setattr(idf, "refresh_catalogs", lambda *a, **k: [DATA / "sample.tle"])
+    monkeypatch.setattr(fc, "refresh_mags", lambda *a, **k: tmp_path / "qs.mag")
+    monkeypatch.setattr(fc, "refresh_bright", lambda *a, **k: None)
+    plain = fc.Forecaster(site, catalog_dir=tmp_path, log=lambda *a: None)
+    plain._ensure()
+    assert [s[1] for s in plain.sats] == ["67006"]
+    rated = fc.Forecaster(site, catalog_dir=tmp_path, log=lambda *a: None,
+                          std_mags={"42058": 3.0, "042065": 3.0})
+    rated._ensure()
+    assert sorted(s[1] for s in rated.sats) == ["42058", "42065", "67006"]

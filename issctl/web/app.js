@@ -264,6 +264,11 @@ function armBright() {        // "Brightness" claims the next click in the guide
   const b = document.getElementById('brightbtn');
   if (b) { b.textContent = BRIGHT_ARMED ? 'Click a star' : 'Brightness'; b.className = BRIGHT_ARMED ? 'on' : ''; }
 }
+function follow() {           // the object already picked in the guide image, else the next click
+  const g = LAST_STATE && LAST_STATE.cams && LAST_STATE.cams.guide;
+  if (g && g.manual && !FOLLOW_ARMED) return mnt('servo', {});
+  armFollow();
+}
 function armFollow() {        // "Follow" claims the next click in the guide image, like the boresight
   FOLLOW_ARMED = !FOLLOW_ARMED;
   if (FOLLOW_ARMED && ARMED) armBoresight(ARMED);

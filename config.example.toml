@@ -144,6 +144,8 @@ servo_alpha = 0.5
 servo_reacquire_growth_arcmin_per_s = 60   # the gate opens about as fast as the ISS moves
 servo_beta = 0.3
 servo_give_up_s = 20          # stop the run after this long with no detection at all
+servo_smear_px = 20           # servo centring speed limit: the target may smear this far across the guide
+                              # image in one exposure (20 px at 1 s on the guide = ~0.27 deg/s; at 8 ms no limit)
 servo_reseed_deg = 30         # re-anchor the frozen reference once the estimate walks this far
 
 # ---- "Coming up": bright satellites due through the guide field or the visible sky -------
@@ -151,6 +153,11 @@ servo_reseed_deg = 30         # re-anchor the frozen reference once the estimate
 minutes = 60                  # how far ahead to look
 field_max_mag = 7.5           # faintest predicted magnitude listed for the guide field
 sky_max_mag = 6.0             # ...and for "anywhere I can see" (the sky mask above)
+# Standard magnitudes for objects McCants' qs.mag does not rate (it has almost nothing launched
+# since ~2018): without one an object never appears in Coming up. Catalogue id = magnitude at
+# 1000 km and half phase. NOSS 3-8 (A)/(B): rated like the older NOSS 3 pairs (3.0); seen bright
+# on 2026-10-02.
+std_mags = { "42058" = 3.0, "42065" = 3.0 }
 
 [preview]
 enabled = true

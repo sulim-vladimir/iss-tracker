@@ -1006,6 +1006,8 @@ def cmd_console(args, cfg):
             if params.get("fx") is not None and "guide" in cams:
                 g = cams["guide"]
                 pick = (float(params["fx"]) * g.width, float(params["fy"]) * g.height)
+            elif "guide" in cams and cams["guide"].manual and cams["guide"].gate is not None:
+                pick = cams["guide"].gate[:2]    # clicked first: the red circle is on it now
             return start_servo(pick)
         if action == "untrack":
             return stop_tracking()
@@ -1206,7 +1208,7 @@ def cmd_console(args, cfg):
             say(f"history: {e}")
 
     from .forecast import Forecaster, field_track
-    forecaster = Forecaster(site, log=say)
+    forecaster = Forecaster(site, log=say, std_mags=cfg.get("forecast", {}).get("std_mags"))
 
     def do_forecast(mode):
         """Coming up: bright satellites through the guide field, or anywhere visible from here.
@@ -1281,8 +1283,9 @@ def cmd_console(args, cfg):
         """Follow whatever the cameras can see, with no orbit and no alignment.
 
         The mount is left exactly where it is pointing and the reference is frozen there, so
-        nothing moves until a detection arrives. `pick` is the guide pixel clicked after pressing
-        Follow: the session starts locked on that object, not on the brightest blob in view.
+        nothing moves until a detection arrives. `pick` is the guide pixel of the object - clicked
+        before pressing Follow (the camera has kept its circle on it since) or after: the session
+        starts locked on that object, not on the brightest blob in view.
         """
         if session["thread"] and session["thread"].is_alive():
             return
@@ -1306,8 +1309,10 @@ def cmd_console(args, cfg):
                                    "rise": None, "max_alt": None, "rise_at": "-",
                                    "starts_at": f"{datetime.datetime.now():%H:%M:%S}"}
                 if pick is not None and "guide" in cams:
+                    track = list(cams["guide"].pick_track)   # select() below clears it
                     tracker.select("guide", *pick)
                     say(f"following the object at guide pixel ({pick[0]:.0f}, {pick[1]:.0f})")
+                    tracker.seed_rate("guide", track)
                 else:
                     say("servo mode: point at the target and click it in the guide image")
                 run_tracker(tracker, "servo")

@@ -1,5 +1,6 @@
 """Threaded capture + detection for ZWO ASI cameras (and a simulated camera)."""
 
+import collections
 import threading
 import time
 
@@ -22,6 +23,13 @@ class Camera:
         self.gate = None
         self.follow = False   # keep the gate on whatever was picked, frame to frame
         self.manual = False   # picked by the user: the tracker must not move the gate
+        # Set by a running tracker: frame time -> gate where the target must be in THAT frame,
+        # from the mount's position then. A gate that only follows the last detection is left
+        # behind when the mount moves the target across the image between two frames.
+        self.gate_fn = None
+        # Where the picked object was, frame by frame, while the gate followed it: (t, x, y).
+        # Follow fits its speed and direction from this, so the mount starts at its rate.
+        self.pick_track = collections.deque(maxlen=30)
         self.sinks = []
         self.fps = 0.0
         self._frame = None
@@ -49,11 +57,13 @@ class Camera:
         self.gate = (float(x), float(y), float(radius or max(20.0, 0.03 * self.width)))
         self.follow = True
         self.manual = True
+        self.pick_track.clear()
 
     def clear_selection(self):
         self.gate = None
         self.follow = False
         self.manual = False
+        self.pick_track.clear()
 
     def _grab(self):
         raise NotImplementedError
@@ -102,7 +112,15 @@ class Camera:
                     misses = 0
                 continue
             misses = restarts = 0
-            gate = self.gate  # snapshot: a click may replace it while we are detecting
+            gate = picked = self.gate  # snapshot: a click may replace it while we are detecting
+            fn, predicted = self.gate_fn, None
+            if fn is not None and gate is not None:
+                try:
+                    predicted = fn(t)
+                except Exception as e:
+                    print(f"{self.name}: gate prediction failed: {e}")
+            if predicted is not None:
+                gate = predicted
             # Inside a pick you made, a lower threshold: the search is a small circle round what
             # you clicked, so it can afford to take fainter things without picking up noise.
             sigma = self.cfg["detect_sigma"]
@@ -114,8 +132,9 @@ class Camera:
                          smooth=self.cfg.get("detect_smooth", 0.0))
             if det:
                 det.t = t
-                if self.follow and gate is not None and self.gate is gate:
-                    self.gate = (det.x, det.y, gate[2])  # stay on the object we were given
+                if self.follow and picked is not None and self.gate is picked:
+                    self.gate = (det.x, det.y, picked[2])  # stay on the object we were given
+                    self.pick_track.append((t, det.x, det.y))
             with self._lock:
                 self._frame, self._frame_t, self._det = img, t, det
                 self._seq += 1

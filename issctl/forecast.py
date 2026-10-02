@@ -241,8 +241,10 @@ def _sun_alt(site, t):
 class Forecaster:
     """Holds the built catalogue between requests: building it is the slow part."""
 
-    def __init__(self, site, catalog_dir=idf.CATALOG_DIR, log=print):
+    def __init__(self, site, catalog_dir=idf.CATALOG_DIR, log=print, std_mags=None):
         self.site, self.catalog_dir, self.log = site, catalog_dir, log
+        # [forecast] std_mags: ratings for what qs.mag lacks; they win over qs.mag
+        self.std_mags = {str(k).lstrip("0"): float(v) for k, v in (std_mags or {}).items()}
         self.sats, self.built_at = None, 0.0
 
     def _ensure(self, offline=False):
@@ -255,7 +257,7 @@ class Forecaster:
         tles = idf.load_tles(idf.refresh_catalogs(self.catalog_dir, log=self.log, offline=True))
         if not tles or path is None:
             raise RuntimeError("no catalogue or magnitudes yet - connect to the internet once")
-        self.sats = candidates(tles, load_mags(path))
+        self.sats = candidates(tles, {**load_mags(path), **self.std_mags})
         self.built_at = time.time()
 
     def run(self, t0, **kw):

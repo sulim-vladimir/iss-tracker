@@ -105,6 +105,10 @@ class Tracker:
         self.growth = tr.get("servo_reacquire_growth_arcmin_per_s", 60.0) if self.servo \
             else tr["reacquire_growth_arcmin_per_s"]
         self.give_up_s = tr.get("servo_give_up_s", 20.0)
+        # How far the target may smear across the guide image during one exposure while the
+        # servo centres it. Jumping the whole offset at full speed - 2.6 deg in under a second -
+        # turned a 1 s exposure into a streak and lost the object every time on the rig.
+        self.smear_px = tr.get("servo_smear_px", 20.0)
         self.reseed_deg = tr.get("servo_reseed_deg", 30.0)
         self.at_limit = [False, False]
         self.t0 = None
@@ -143,6 +147,8 @@ class Tracker:
         self.stop_requested = False
         self.on_visibility = None
         self.on_record = None
+        for name, cam in cameras.items():
+            cam.gate_fn = lambda t, n=name: self._predicted_gate(n, t)
         self._csv = None
         if log_path:
             self._csv_file = open(log_path, "w", newline="")
@@ -169,6 +175,37 @@ class Tracker:
         if self.servo:
             self.cross_rate[:] = 0.0      # in servo mode the rate belonged to the old object
         self.log(f"target selected by hand in {name} at ({x:.0f}, {y:.0f})")
+
+    def seed_rate(self, name, track, window_s=8.0, min_points=3, min_span_s=1.5):
+        """Servo: start at the picked object's own speed and direction, measured while the
+        camera's circle followed it before Follow was pressed. Otherwise the rate starts at zero
+        and is learned frame by frame - slowly, at a 1 s guide exposure - while the mount lags.
+        `track` is the camera's pick_track: (t, x, y). Returns the rate (deg/s, axes) or None."""
+        cal = self.cal.get(name)
+        pts = list(track)
+        if not self.servo or cal is None or len(pts) < min_points \
+                or self.clock.now() - pts[-1][0] > 5.0:
+            return None
+        pts = [p for p in pts if p[0] >= pts[-1][0] - window_s]
+        span = pts[-1][0] - pts[0][0]
+        if len(pts) < min_points or span < min_span_s:
+            return None
+        rows = []
+        for t, x, y in pts:
+            m = self.mount.position_at(t)
+            if m is None:
+                return None
+            rows.append((t, *(m + axes_offset_from_pixel(cal, m[1], (x, y)))))
+        a = np.array(rows)
+        a[:, 1] = a[0, 1] + geo.wrap180(a[:, 1] - a[0, 1])
+        rate = np.array([np.polyfit(a[:, 0] - a[0, 0], a[:, k], 1)[0] for k in (1, 2)])
+        if not np.all(np.isfinite(rate)) or np.any(np.abs(rate) > np.asarray(self.mount.max_rate)):
+            return None
+        self.cross_rate = rate
+        sky = float(np.hypot(*(rate * geo.sky_metric(a[-1, 2]))))
+        self.log(f"measured its motion over {span:.0f} s ({len(pts)} frames): {sky:.2f} deg/s - "
+                 f"starting at that rate")
+        return rate
 
     def clear_selection(self, name=None):
         for n, cam in self.cams.items():
@@ -227,7 +264,7 @@ class Tracker:
     def _jump_allowance(self, lost_for):
         """How far from the estimate a detection may sit. Grows while we coast blind (clouds),
         because the prediction drifts, but never far enough to let a random star take over."""
-        extra = self.growth * max(0.0, lost_for - self.tr["lost_timeout_s"])
+        extra = self.growth * max(0.0, lost_for - self._lost_timeout("guide"))
         return min(self.tr["max_offset_jump_arcmin"] + extra, self.tr["max_reacquire_arcmin"])
 
     def _main_allowance(self, lost_for):
@@ -255,6 +292,27 @@ class Tracker:
         radius = self._jump_allowance(now - self.last_good) / 60.0 * cal_px_per_deg(cal)
         cam.gate = (cal["boresight"][0], cal["boresight"][1],
                     min(radius, 0.5 * max(cam.width, cam.height)))
+
+    def _predicted_gate(self, name, t):
+        """Search circle for a frame taken at t, round where the estimate puts the target in it.
+
+        Only for a target the user picked and the loop has locked: the camera's own gate then
+        follows the last detection, which is fine while the mount holds still and useless while
+        it moves - the target jumps across the image between frames and the circle stays behind
+        on a star. Centred instead from the mount's position at that frame's time."""
+        cam, cal = self.cams[name], self.cal.get(name)
+        if cal is None or not cam.manual or not np.isfinite(self.last_good) or cam.gate is None:
+            return None
+        meas = self.mount.position_at(t)
+        if meas is None:
+            return None
+        d = self.target(t)[0] - meas
+        d[0] = geo.wrap180(d[0])
+        x, y = np.asarray(cal["boresight"], dtype=float) - jacobian(cal, meas[1]) @ d
+        if not (np.isfinite(x) and np.isfinite(y)):
+            return None
+        lost = self._jump_allowance(t - self.last_good) / 60.0 * cal_px_per_deg(cal)
+        return float(x), float(y), max(float(cam.gate[2]), min(lost, 0.5 * max(cam.width, cam.height)))
 
     def _vision(self, name, det):
         cal = self.cal.get(name)
@@ -379,16 +437,31 @@ class Tracker:
                  f"{jump:.0f}' from the prediction")
         return True
 
+    def _lost_timeout(self, name):
+        """How long this camera may go without a detection before the target counts as lost:
+        lost_timeout_s, or 2.5 frame intervals when its frames come further apart. At a 1 s
+        guide exposure one skipped frame already passed 1.5 s, and every frame was reported
+        "target lost, coasting" on the rig while the guide held the target on the boresight."""
+        base = self.tr["lost_timeout_s"]
+        cam = self.cams.get(name)
+        if cam is None:
+            return base
+        period = getattr(cam, "exposure_ms", 0.0) / 1000.0
+        fps = getattr(cam, "fps", 0.0) or 0.0
+        if fps >= 0.2:                        # slower than that is a stall, not a frame rate
+            period = max(period, 1.0 / fps)
+        return max(base, min(2.5 * period, 10.0))
+
     def _check_timeouts(self, now):
-        timeout = self.tr["lost_timeout_s"]
-        if "main" in self.cams and now - self.last_seen["main"] > timeout and self.main_streak:
+        timeout = self._lost_timeout
+        if "main" in self.cams and now - self.last_seen["main"] > timeout("main") and self.main_streak:
             self.main_last_px = None
             if self.main_streak >= self.tr["main_handoff_frames"]:
                 self.log("main camera lost target, back to guide")
             self.main_streak = 0
-        if "guide" in self.cams and now - self.last_seen["guide"] > timeout and not self.cams["guide"].manual:
+        if "guide" in self.cams and now - self.last_seen["guide"] > timeout("guide") and not self.cams["guide"].manual:
             self._search_gate("guide", now)
-        if all(now - t > timeout for t in self.last_seen.values()) and self.source != "predict":
+        if all(now - t > timeout(n) for n, t in self.last_seen.items()) and self.source != "predict":
             self.source = "predict"
             if self.servo:
                 # There is no prediction to fall back on - the estimated rate is all we have, so
@@ -400,6 +473,18 @@ class Tracker:
                 self.cross_rate[:] = 0.0
 
     # ---- control ----
+    def _smear_limit(self, corr):
+        """Slow the centring move so the target stays a dot in the camera that is steering.
+        Only the correction: the target's own motion (the feed-forward) is not limited."""
+        name = self.source if self.source in self.cams else "guide"
+        cam, cal = self.cams.get(name), self.cal.get(name)
+        if cam is None or cal is None or getattr(cam, "exposure_ms", None) is None:
+            return corr
+        exp_s = max(cam.exposure_ms / 1000.0, 1e-3)
+        vmax = self.smear_px / (cal_px_per_deg(cal) * exp_s)        # deg/s on the sky
+        speed = float(np.hypot(*(corr * geo.sky_metric(self.mount.last[1][1]))))
+        return corr * (vmax / speed) if speed > vmax else corr
+
     def _limit_guard(self, cmd, pos):
         """Refuse to drive an axis further past its mechanical limit.
 
@@ -499,7 +584,10 @@ class Tracker:
         _, v = self.target(now + self.cmd_latency)
         tracking = self.traj.t_start <= now + self.time_offset <= self.traj.t_end
         ff = v if tracking else np.zeros(2)
-        cmd = ff + limit_correction(self.kp * err, err, self.mount.max_accel)
+        corr = limit_correction(self.kp * err, err, self.mount.max_accel)
+        if self.servo:
+            corr = self._smear_limit(corr)
+        cmd = ff + corr
         cmd = self._limit_guard(cmd, meas)
         pos = self.mount.set_rates(*cmd)
         if self.servo and np.max(np.abs(self.cross)) > self.reseed_deg:
@@ -571,6 +659,8 @@ class Tracker:
                 self.clock.sleep(self.dt - (time.monotonic() - tick) * self.clock.speed)
         finally:
             self.mount.stop()
+            for cam in self.cams.values():
+                cam.gate_fn = None
             if self.recordable and self.on_record:
                 self.on_record(False)
             if on_end:

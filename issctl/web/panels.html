@@ -21,8 +21,8 @@
  onclick="mnt('centre',{cam:'NAME'})">LABEL</button>EXTRA
 
 <!-- @servo -->
- <button id="servobtn" class="right" title="servo mode: press this, then click the object in the guide image - a satellite, the ISS, a plane - and the mount follows it, with no orbit and no alignment. A later click in the image moves the lock to what you clicked. Shorten the exposure first: 8 ms for the ISS, 50-200 ms for fainter satellites. Stops by itself after servo_give_up_s with nothing detected"
- onclick="MODE === 'track' ? mnt('untrack', {}) : armFollow()">Follow</button>
+ <button id="servobtn" class="right" title="servo mode: click the object in the guide image first - a satellite, the ISS, a plane - and the red circle stays on it; then press this and the mount follows it, with no orbit and no alignment. With nothing picked, press this and then click the object. A later click in the image moves the lock to what you clicked. Shorten the exposure first: 8 ms for the ISS, 50-200 ms for fainter satellites. Stops by itself after servo_give_up_s with nothing detected"
+ onclick="MODE === 'track' ? mnt('untrack', {}) : follow()">Follow</button>
 
 <!-- @steer -->
  <button id="steerbtn" class="right" title="may the main camera take over steering from the guide once it has the target steady? Off: guide only - main still shows and records"

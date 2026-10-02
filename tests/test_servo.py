@@ -161,3 +161,141 @@ def test_a_click_during_servo_restarts_on_the_clicked_object(cfg):
     assert np.allclose(p + t.cross_at(now), target, atol=1e-3)   # all the way there, at once
     assert np.allclose(t.cross_rate, 0.0)                        # and none of the star's motion
     assert cam.manual and t.source == "guide"
+
+
+class _StepClock:
+    """Simulated time that only moves when the loop sleeps: a 60 s run takes no time."""
+
+    speed = 1.0
+
+    def __init__(self, t=1.79e9):
+        self.t = t
+
+    def now(self):
+        return self.t
+
+    def sleep(self, s):
+        self.t += max(s, 0.0)
+
+
+class _SkyCam(_ClickCam):
+    """A guide camera over a little sky: one moving object and one star, rendered for each
+    frame's mid-exposure time from the mount's position then. Its gate behaves like the real
+    one (Camera._run): a pick follows the last detection, a tracker's gate_fn overrides it, and
+    whatever smears more than 40 px in one exposure is not detected."""
+
+    def __init__(self, cal, mount, things, exposure_ms=1000.0):
+        super().__init__()
+        self.cal, self.mount, self.things, self.exposure_ms = cal, mount, things, exposure_ms
+        self.follow, self.gate_fn, self.det, self.seq = False, None, None, 0
+        self.pick_track = []
+
+    def select(self, x, y, radius=None):
+        self.gate, self.manual, self.follow = (x, y, 38.4), True, True
+        self.pick_track = []
+
+    def pixel(self, axes, t):
+        from issctl.calib import jacobian
+        m = self.mount.position_at(t)
+        return np.asarray(self.cal["boresight"]) - jacobian(self.cal, m[1]) @ (axes(t) - m)
+
+    def frame(self, t_end):
+        from issctl.detect import Detection
+        half = self.exposure_ms / 2000.0
+        t = t_end - half
+        picked = gate = self.gate
+        if self.gate_fn is not None and gate is not None:
+            gate = self.gate_fn(t) or gate
+        best = None
+        for axes, flux in self.things:
+            px = self.pixel(axes, t)
+            smear = np.hypot(*(self.pixel(axes, t + half) - self.pixel(axes, t - half)))
+            inside = gate is None or np.hypot(*(px - gate[:2])) <= gate[2]
+            if smear < 40.0 and inside and (best is None or flux > best[1]):
+                best = (px, flux)
+        self.det = Detection(best[0][0], best[0][1], best[1], 20, t) if best else None
+        if self.det and self.follow and picked is not None and self.gate is picked:
+            self.gate = (self.det.x, self.det.y, picked[2])
+            self.pick_track.append((t, self.det.x, self.det.y))
+        self.seq += 1
+
+    def latest(self):
+        return None, self.det, self.seq
+
+
+def test_follow_keeps_a_picked_object_while_the_mount_centres_it(cfg):
+    """The rig, 2026-10-02: guide at 1 s exposure, a bright object clicked 2.6 deg off the
+    boresight. The mount jumped the whole offset at full speed, the next frame was a smear, and
+    the search circle - still on the clicked pixel - found a star there and followed it off.
+    Now the circle sits where the object must be in each frame, the centring move is slow
+    enough to keep it a dot, and the object's motion measured while it was only picked is the
+    starting rate: it ends up on the boresight and the star never wins."""
+    from issctl.calib import axes_offset_from_pixel, ideal_calibration
+
+    clock = _StepClock()
+    mount = SimMount(cfg, {}, clock, start=HOME + [30.0, -40.0])
+    mount.query()
+    cal = ideal_calibration(cfg["cameras"]["guide"], rotation_deg=20.0, dec_cal=50.0)
+    t0, here = clock.now(), mount.position()
+    bs = np.asarray(cal["boresight"], dtype=float)
+    clicked = bs + [190.0, 60.0]
+    start = here + axes_offset_from_pixel(cal, here[1], clicked)
+    star_at = here + axes_offset_from_pixel(cal, here[1], clicked + [-30.0, 0.0])
+    rate = np.array([0.25, 0.12])                                   # deg/s, a slow satellite
+    sat = lambda t: start + rate * (t - t0)
+    star = lambda t: star_at
+    cam = _SkyCam(cal, mount, [(sat, 2000.0), (star, 1000.0)])
+
+    cam.select(*clicked)                    # clicked first: the circle stays on it, mount still
+    next_frame = clock.now() + 1.0
+    while clock.now() < t0 + 5.0:
+        mount.query()
+        if clock.now() >= next_frame:
+            cam.frame(clock.now())
+            next_frame += 1.0
+        clock.sleep(0.05)
+    assert cam.det is not None and np.hypot(*(cam.pixel(sat, cam.det.t) - [cam.det.x, cam.det.y])) < 1.0
+
+    t = Tracker(cfg, {"cameras": {"guide": cal}}, mount, {"guide": cam}, clock, FreeRun())
+    track = list(cam.pick_track)
+    t.select("guide", *cam.gate[:2])        # Follow pressed: start on the pick, at its rate
+    assert np.allclose(t.seed_rate("guide", track), rate, atol=0.01)
+    on_star = 0
+    while clock.now() < t0 + 60.0:
+        if clock.now() >= next_frame:
+            cam.frame(clock.now())
+            next_frame += 1.0
+            if cam.det is not None and np.hypot(*(cam.pixel(star, cam.det.t) - [cam.det.x, cam.det.y])) < 1.0:
+                on_star += 1
+        t.step()
+        clock.sleep(t.dt)
+    assert on_star == 0
+    assert np.hypot(*(cam.pixel(sat, clock.now()) - bs)) < 20.0     # on the boresight
+    assert t.source == "guide" and clock.now() - t.last_good < 3.0  # and still locked
+
+
+def test_one_missed_frame_at_a_long_exposure_is_not_a_loss(cfg):
+    """2026-10-02: guide at 1 s exposure, target held on the boresight for a minute - and the
+    console said "target lost, coasting" every second, because one skipped frame already passed
+    the fixed 1.5 s timeout. The timeout now follows the camera's frame interval."""
+    clock = _StepClock()
+    mount = SimMount(cfg, {}, clock)
+    cam = _ClickCam()
+    cam.exposure_ms, cam.fps = 1000.0, 1.0
+    t = Tracker(cfg, {"cameras": {}}, mount, {"guide": cam}, clock, FreeRun())
+    assert t._lost_timeout("guide") == pytest.approx(2.5)
+    cam.exposure_ms, cam.fps = 8.0, 30.0                # the ISS: the configured timeout applies
+    assert t._lost_timeout("guide") == t.tr["lost_timeout_s"]
+    cam.exposure_ms, cam.fps = 1000.0, 0.01             # a stalled camera: no endless wait
+    assert t._lost_timeout("guide") == pytest.approx(2.5)
+    cam.exposure_ms = 60000.0
+    assert t._lost_timeout("guide") == 10.0
+
+    cam.exposure_ms, cam.fps = 1000.0, 1.0
+    messages = []
+    t.log = messages.append
+    t.source, t.last_seen["guide"] = "guide", clock.now()
+    t._check_timeouts(clock.now() + 2.0)                # one frame skipped
+    assert t.source == "guide" and not messages
+    t._check_timeouts(clock.now() + 3.0)                # two: now it is lost
+    assert t.source == "predict" and "target lost" in messages[0]
