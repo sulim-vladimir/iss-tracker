@@ -18,7 +18,7 @@ body{background:#2f3439;color:#e8e8e8;font:14px/1.4 system-ui,sans-serif;margin:
  .panel.box{flex:0 1 auto;min-width:0;max-width:none}
  .panel.box.grow{flex:1 1 320px;min-width:260px}
  button.small{font-size:11px;padding:2px 8px;margin-left:8px;vertical-align:middle}
- #log{max-height:230px;overflow-y:auto;white-space:pre}
+ #log{max-height:460px;overflow-y:auto;white-space:pre}
  /* A long calibration warning must not push the rest of the page below the fold. */
  .panel.box .info{max-height:230px;overflow-y:auto}
  /* The controls sit beside the frames, and every pixel they do not use goes to the cameras:
