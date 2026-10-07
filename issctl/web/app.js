@@ -60,6 +60,8 @@ function applyMount(m) {
   }
   const ib = document.getElementById('identbtn');
   if (ib) { const on = m.identify_on !== false; ib.textContent = on ? 'naming ON' : 'naming off'; ib.className = on ? 'on' : ''; }
+  const kb = document.getElementById('keepsidebtn');
+  if (kb) { kb.textContent = 'Keep pier side: ' + (m.keep_side ? 'ON' : 'off'); kb.className = m.keep_side ? 'on' : ''; }
   const sb = document.getElementById('siderealbtn');
   if (sb) {
     sb.textContent = m.tracking ? 'sidereal ON' : 'sidereal off';
@@ -121,6 +123,7 @@ function apply(s) {
   }
   if (s.mount) applyMount(s.mount);
   LAST_STATE = s;
+  refreshSkyTrack(s.pass);
   drawSky(s);
   const em = document.getElementById('estop-msg');
   if (em) em.textContent = (s.stopped || (s.mount && s.mount.aborted)) ? 'motors halted' : '';
@@ -271,7 +274,16 @@ function passLine(p) {
     return `tracking  t+${(p.now - p.start).toFixed(0)}s  ${clock(p.end - p.now)} left`;
   return 'pass over';
 }
-(async () => { try { SKY = await (await fetch('/api/sky')).json(); } catch (e) {} })();
+// the planned pass on the chart comes with /api/sky: read it again whenever the session changes -
+// a new pass planned, or the last one ended - not only when the page loads
+let SKY_KEY = null;
+async function refreshSkyTrack(p) {
+  const key = p ? `${p.name}:${p.start}` : '';
+  if (key === SKY_KEY) return;
+  SKY_KEY = key;
+  try { SKY = await (await fetch('/api/sky')).json(); } catch (e) { SKY_KEY = null; }
+}
+refreshSkyTrack(null);
 setInterval(async () => apply(await (await fetch('/api/state')).json()), 1000);
 
 

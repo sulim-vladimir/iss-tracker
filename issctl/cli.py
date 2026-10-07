@@ -1084,8 +1084,8 @@ def cmd_console(args, cfg):
             else:
                 mount.stop()
             return
-        # what only changes the picture works whatever the mount is doing
-        display = action in ("marks", "frame_shown")
+        # what only changes the picture, or the next plan, works whatever the mount is doing
+        display = action in ("marks", "frame_shown", "keep_side")
         if ui["mode"] == "track" and action != "main_steers" and not display:
             ui["msg"] = "tracking a pass - stop it first"
             return
@@ -1169,6 +1169,12 @@ def cmd_console(args, cfg):
                 hidden = set(state.get("marks_hidden", [])) - {name} | (set() if on else {name})
                 state["marks_hidden"] = sorted(hidden)
                 persist()
+        elif action == "keep_side":
+            state["keep_side"] = params.get("on") not in (None, "0", "false")
+            persist()
+            say("passes " + ("stay on the pier side the mount is on - no meridian flip"
+                             if state["keep_side"] else
+                             "may use either pier side, whichever tracks longest (a flip if need be)"))
         elif action == "frame_shown":
             state["frame_shown"] = params.get("on") not in (None, "0", "false")
             persist()
@@ -1621,6 +1627,9 @@ def cmd_console(args, cfg):
             finally:
                 ui["mode"] = "console"
                 session["tracker"] = None
+                # the plan goes with the session: left behind, the sky chart kept drawing the
+                # pass and "tracking ... left" for good, a page reload included
+                session["traj"] = session["info"] = None
                 done = session.pop("csv", None)
                 if done is not None and state.get("identify_on", True):
                     identify_later(done)
@@ -1665,8 +1674,17 @@ def cmd_console(args, cfg):
                 else:
                     cand = [r for r in rows if r[2] == "visible" and r[1]["useful_s"] > 0] or rows
                     p, rep, _ = cand[0]
+                side = pier_side() if keep_side() else None
                 traj, rep = pr.plan_pass(sat, site, cfg["mount"], p["rise"], p["set"], mask=mask,
-                                         model=model)
+                                         model=model, side=side, after=clock.now())
+                if side and rep["useful_s"] <= 0:
+                    _, flip = pr.plan_pass(sat, site, cfg["mount"], p["rise"], p["set"], mask=mask,
+                                           model=model, after=clock.now())
+                    ui["msg"] = (f"{name}: nothing left of the pass at {fmt_t(p['rise'])} is reachable "
+                                 f"without a pier flip (the mount is {side})"
+                                 + (f" - a flip would give {flip['useful_s']:.0f} s: switch Keep "
+                                    f"pier side off to allow it" if flip["useful_s"] > 0 else ""))
+                    return
                 rise, _ = pr.pass_horizon(sat, site, p)
                 session["traj"] = traj
                 session["info"] = {
@@ -1693,6 +1711,9 @@ def cmd_console(args, cfg):
             finally:
                 ui["mode"] = "console"
                 session["tracker"] = None
+                # the plan goes with the session: left behind, the sky chart kept drawing the
+                # pass and "tracking ... left" for good, a page reload included
+                session["traj"] = session["info"] = None
                 done = session.pop("csv", None)
                 if done is not None and state.get("identify_on", True):
                     identify_later(done)
@@ -1712,6 +1733,17 @@ def cmd_console(args, cfg):
         if tr:
             tr.stop_requested = True
             ui["msg"] = "stopping tracking..."
+
+    def keep_side():
+        return bool(state.get("keep_side", cfg["tracking"].get("keep_pier_side", True)))
+
+    def pier_side():
+        """The side the tube is on now, or None at the pole (axis2 ~90), where either side is
+        only a Dec turn away and keeping one means nothing."""
+        a2 = float(mount.position()[1])
+        if abs(a2 - 90.0) < 2.0:
+            return None
+        return "east_looking" if a2 <= 90.0 else "west_looking"
 
     def tracking_note():
         """Which camera the running tracker is steering with, for the camera captions."""
@@ -1768,6 +1800,7 @@ def cmd_console(args, cfg):
                 "spiral": bool(ui.get("spiral")),
                 "history": ui.get("history"),
                 "favorites": ui.get("favorites"), "fav_passes": ui.get("fav_passes"),
+                "keep_side": keep_side(),
                 "main_steers": bool(state.get("main_steers", cfg["tracking"].get("main_steers", False))),
                 "forecast": ui.get("forecast"), "now": clock.now(),
                 "rates": [round(float(r), 4) for r in mount.rate_cmd],

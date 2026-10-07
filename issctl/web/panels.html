@@ -71,7 +71,9 @@
   onclick="mnt('solve_centre',{target:tgt()})">centre by solve</button></div>
  <div class="ctl">
   <button id="siderealbtn" title="follow the stars at sidereal rate"
-  onclick="mnt('track',{on: this.className === 'on' ? 0 : 1})">sidereal off</button></div>
+  onclick="mnt('track',{on: this.className === 'on' ? 0 : 1})">sidereal off</button>
+  <button id="keepsidebtn" title="ON: a pass is planned on the pier side the mount is on now - never a meridian flip; a pass that side cannot reach is refused, saying what a flip would give. Off: whichever side tracks longest, which may swing the tube right round (a pass close to the pole needs ~180 deg of RA). At the pole (home) either side is fine"
+  onclick="mnt('keep_side',{on: this.className === 'on' ? 0 : 1})">Keep pier side</button></div>
 
  <div class="ctl">
   <button title="name the satellite the last session followed, from its log and the satellite catalogues (public and amateur-observed classified ones). Also runs by itself when a session ends"

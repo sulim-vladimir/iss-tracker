@@ -397,53 +397,65 @@ def shadow_events(t, lit, threshold=0.5):
     return [(float(t[i + 1]), "leaves" if above[i + 1] else "enters") for i in idx]
 
 
-def plan_pass(sat, site, mount_cfg, rise, set_, dt=0.25, margin=30.0, model=None, mask=None):
-    """Choose the pier side that keeps the ISS trackable, sunlit and unobstructed for longest."""
+def plan_pass(sat, site, mount_cfg, rise, set_, dt=0.25, margin=30.0, model=None, mask=None,
+              side=None, after=None):
+    """Choose the pier side that keeps the ISS trackable, sunlit and unobstructed for longest.
+
+    side: plan on this pier side only - the mount stays on the side it is on, no meridian flip.
+    after: unix time; only what is left of the pass from then on counts (a pass already up).
+    """
     t = np.arange(rise - margin, set_ + margin, dt)
     ha, dec, alt, az = sat_hadec(sat, site, t)
     lit = illumination(sat, t)
     open_sky = np.ones(len(t), dtype=bool) if mask is None or mask.empty else mask.visible(alt, az)
     vmax = axis_rate_limits(mount_cfg)
     lim = mount_cfg["axis1_hour_limit"]
+    a2_lo, a2_hi = mount_cfg.get("axis2_limits", [-10.0, 190.0])
+    vis = alt >= site.min_altitude
     best = None
     to_axes = geo.hadec_to_axes if model is None else model.hadec_to_axes
-    for side in geo.SIDES:
-        a1, a2 = to_axes(ha, dec, side)
+    for sd in ([side] if side else geo.SIDES):
+        a1, a2 = to_axes(ha, dec, sd)
         a1, a2 = np.asarray(a1, dtype=float), np.asarray(a2, dtype=float)
         a1 = np.degrees(np.unwrap(np.radians(a1)))
-        a1 -= 360.0 * np.round(np.median(a1[alt >= site.min_altitude]) / 360.0) if np.any(alt >= site.min_altitude) else 0
+        a1 -= 360.0 * np.round(np.median(a1[vis]) / 360.0) if np.any(vis) else 0
         v1, v2 = np.gradient(a1, t), np.gradient(a2, t)
-        a2_lo, a2_hi = mount_cfg.get("axis2_limits", [-10.0, 190.0])
-        ok = ((alt >= site.min_altitude) & (np.abs(a1) <= lim) & (a2 >= a2_lo) & (a2 <= a2_hi)
-              & (np.abs(v1) <= vmax[0]) & (np.abs(v2) <= vmax[1]))
-        (i0, i1), n = _longest_run(ok)
-        vis = alt >= site.min_altitude
-        tracked = np.zeros_like(ok)
-        if n > 1:
-            tracked[i0:i1 + 1] = True
-        report = {
-            "side": side,
-            "track_start": float(t[i0]), "track_end": float(t[i1]),
-            "tracked_s": float(t[i1] - t[i0]) if n > 1 else 0.0,
-            "useful_s": float(np.sum(tracked & (lit > 0.5) & open_sky) * dt),
-            "sunlit_s": float(np.sum(vis & (lit > 0.5)) * dt),
-            "blocked_s": float(np.sum(vis & (lit > 0.5) & ~open_sky) * dt),
-            "windows": mask_mod.segments(t, tracked & (lit > 0.5) & open_sky),
-            "shadow": shadow_events(t[vis], lit[vis]),
-            "visible_s": float(vis.sum() * dt),
-            "max_rate": [float(np.abs(v1[vis]).max()), float(np.abs(v2[vis]).max())],
-            "rate_limit": vmax.tolist(),
-            "axis1_range": [float(a1[vis].min()), float(a1[vis].max())],
-            "limited_by": [name for name, bad in (
-                ("axis1_limit", np.any(vis & (np.abs(a1) > lim))),
-                ("axis2_limit", np.any(vis & ((a2 < a2_lo) | (a2 > a2_hi)))),
-                ("axis1_rate", np.any(vis & (np.abs(v1) > vmax[0]))),
-                ("axis2_rate", np.any(vis & (np.abs(v2) > vmax[1]))),
-            ) if bad],
-        }
-        key = (report["useful_s"], report["tracked_s"])
-        if best is None or key > (best[0]["useful_s"], best[0]["tracked_s"]):
-            best = (report, a1, a2)
+        # axis1 is an angle: which turn of it the path is planned in decides which part of the
+        # pass falls inside the limits. A pass round the pole sweeps ~180 deg of it, its median
+        # sits near +-180 and the median's turn was a coin toss - so try each one.
+        for turn in (0.0, -360.0, 360.0):
+            b1 = a1 + turn
+            ok = (vis & (np.abs(b1) <= lim) & (a2 >= a2_lo) & (a2 <= a2_hi)
+                  & (np.abs(v1) <= vmax[0]) & (np.abs(v2) <= vmax[1]))
+            if after is not None:
+                ok &= t >= after
+            (i0, i1), n = _longest_run(ok)
+            tracked = np.zeros_like(ok)
+            if n > 1:
+                tracked[i0:i1 + 1] = True
+            report = {
+                "side": sd,
+                "track_start": float(t[i0]), "track_end": float(t[i1]),
+                "tracked_s": float(t[i1] - t[i0]) if n > 1 else 0.0,
+                "useful_s": float(np.sum(tracked & (lit > 0.5) & open_sky) * dt),
+                "sunlit_s": float(np.sum(vis & (lit > 0.5)) * dt),
+                "blocked_s": float(np.sum(vis & (lit > 0.5) & ~open_sky) * dt),
+                "windows": mask_mod.segments(t, tracked & (lit > 0.5) & open_sky),
+                "shadow": shadow_events(t[vis], lit[vis]),
+                "visible_s": float(vis.sum() * dt),
+                "max_rate": [float(np.abs(v1[vis]).max()), float(np.abs(v2[vis]).max())],
+                "rate_limit": vmax.tolist(),
+                "axis1_range": [float(b1[vis].min()), float(b1[vis].max())],
+                "limited_by": [name for name, bad in (
+                    ("axis1_limit", np.any(vis & (np.abs(b1) > lim))),
+                    ("axis2_limit", np.any(vis & ((a2 < a2_lo) | (a2 > a2_hi)))),
+                    ("axis1_rate", np.any(vis & (np.abs(v1) > vmax[0]))),
+                    ("axis2_rate", np.any(vis & (np.abs(v2) > vmax[1]))),
+                ) if bad],
+            }
+            key = (report["useful_s"], report["tracked_s"])
+            if best is None or key > (best[0]["useful_s"], best[0]["tracked_s"]):
+                best = (report, b1, a2)
     report, a1, a2 = best
     traj = Trajectory(t, a1, a2, alt, report["side"], report["track_start"], report["track_end"],
                       lit, open_sky.astype(float))

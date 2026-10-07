@@ -130,6 +130,8 @@ time_gain = 0.3               # along-track time-offset integrator gain per upda
 max_time_offset_s = 20
 main_steers = false           # may the main camera take over steering? (the console's switch
                               # overrides this; off = guide only, main just watches and records)
+keep_pier_side = true         # plan passes on the pier side the mount is on - no meridian flip
+                              # (the console's "Keep pier side" switch overrides this)
 main_handoff_frames = 3       # consecutive main-camera detections before trusting it
 lost_timeout_s = 1.5          # fall back to guide / pure prediction after this
 shadow_threshold = 0.25       # sunlit fraction below which we stop believing the cameras

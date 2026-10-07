@@ -1,4 +1,5 @@
 import time
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -305,3 +306,50 @@ def test_a_stalled_camera_restarts_its_stream_and_says_so():
     # a restart that did not bring frames back is followed by a full reopen
     assert cam.reopened
     assert cam.fps < 1.0
+
+
+def _near_pole_passes():
+    """COSMOS 2226 (inclination 74 deg) on passes that come close to the pole: the RA axis has to
+    turn up to ~180 deg, so neither pier side follows all of one inside axis1_hour_limit. On
+    2026-10-07 the planner swung the tube right round to the other side for one like it."""
+    from issctl.predict import find_passes, make_satellite, sat_hadec, time_to_unix
+    cfg = load_config(Path(__file__).parent.parent / "config.example.toml")
+    site = Site(cfg)
+    name, l1, l2 = (Path(__file__).parent / "data" / "cosmos2226.tle").read_text().splitlines()[:3]
+    sat = make_satellite((name, l1, l2))
+    out = [p for p in find_passes(sat, site, time_to_unix(sat.epoch), 48)
+           if sat_hadec(sat, site, np.arange(p["rise"], p["set"], 10.0))[1].max() > 70]
+    assert len(out) >= 3
+    return cfg, site, sat, out
+
+
+def test_keep_pier_side_plans_on_that_side_only():
+    cfg, site, sat, passes = _near_pole_passes()
+    p = passes[0]
+    lim = cfg["mount"]["axis1_hour_limit"]
+    _, best = plan_pass(sat, site, cfg["mount"], p["rise"], p["set"], dt=1.0)
+    for side in ("east_looking", "west_looking"):
+        traj, rep = plan_pass(sat, site, cfg["mount"], p["rise"], p["set"], dt=1.0, side=side)
+        assert rep["side"] == side and 0 < rep["tracked_s"] <= best["tracked_s"]
+        run = (traj.t >= rep["track_start"]) & (traj.t <= rep["track_end"])
+        assert np.all(np.abs(traj.a1[run]) <= lim + 1e-9)
+
+
+def test_each_pier_side_finds_its_part_of_a_pass_round_the_pole():
+    """Which turn of axis1 a side was planned in came from the path's median, near +-180 deg on
+    these passes: it often picked the turn where nothing is inside the limits and scored a side
+    that can follow 4-5 minutes of the pass as 0 s - so the side choice was a coin toss. Every
+    side of every one of these passes can follow some of it."""
+    cfg, site, sat, passes = _near_pole_passes()
+    for p in passes:
+        for side in ("east_looking", "west_looking"):
+            _, rep = plan_pass(sat, site, cfg["mount"], p["rise"], p["set"], dt=1.0, side=side)
+            assert rep["tracked_s"] > 200, (p["rise"], side)
+
+
+def test_a_pass_already_up_is_planned_from_now():
+    cfg, site, sat, passes = _near_pole_passes()
+    p = passes[0]
+    now = p["rise"] + 0.6 * (p["set"] - p["rise"])
+    _, rep = plan_pass(sat, site, cfg["mount"], p["rise"], p["set"], dt=1.0, after=now)
+    assert rep["track_start"] >= now and rep["tracked_s"] > 0

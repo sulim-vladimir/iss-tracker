@@ -338,6 +338,15 @@ correcting timing and cross-track error from the cameras. It works for **any sat
 catalogues, classified ones included. From the command line: `./issctl.sh passes --sat 42065`,
 `./issctl.sh track --sat 42065` (a name or NORAD number; the ISS without `--sat`).
 
+**Keep pier side** (Target & tracking, on by default: `[tracking] keep_pier_side`) plans a pass on
+the side of the pier the tube is on now, so the mount never makes a meridian flip to reach it. A pass
+close to the celestial pole needs up to ~180 deg of RA while it crosses the north, more than
+`axis1_hour_limit` allows on one side, so each side can follow only its own part of it; with the
+switch on you get this side's part, and a pass this side cannot reach at all is refused with what a
+flip would have given. Off, the planner takes whichever side tracks longest - which may swing the
+tube right round to the other side and wait there with the counterweight up. At the pole (home)
+either side is fine. A pass already up is planned from now: the part gone by no longer counts.
+
 The cameras only take over once the target is really there: before the first lock nothing counts
 until the pass has started and the mount has arrived, the guide searches only within
 `acquire_radius_arcmin` (3 deg) of the prediction, and a blob must hold still in the frame while the
