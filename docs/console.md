@@ -27,6 +27,11 @@ Under the image:
 * **Main steers** (main) - may main take over steering, see [Tracking](tracking.md#pass-mode).
 * **Set boresight** and **Marks on/off** (guide) - move the green cross; hide or show both crosses
   (works during tracking too).
+* **Stretch: frame / sky** - how the picture is brightened. *Frame* makes the brightest 0.1% of the
+  frame white, so lit windows coming into view turn the sky and stars dark, as if the exposure had
+  dropped (it has not - exposure is always manual). *Sky* sets white from the sky background and its
+  noise, so the view holds still and windows just saturate. The picture only: detection, solving
+  and recording use the raw frames. Works during tracking and is remembered.
 * **Brightness** (guide) - measure a star's or a satellite's magnitude, see
   [Satellites](satellites.md#brightness).
 * **Frame line** (guide) - press it, then click two points along a window-frame edge in the guide
@@ -102,8 +107,8 @@ clipboard), **Warnings** what the last calibration found doubtful.
 **One session can do the whole evening.** **Track selected** hands the mount to the tracker and
 switches the page to tracking mode: the jog/goto/calibrate controls refuse ("tracking a pass - stop
 it first"), the sky chart shows the pass and a countdown, and the button becomes **Stop tracking**,
-which gives the mount back (so does the slew pad's **stop**). Display switches - Marks, Frame,
-Keep pier side, Main steers - work throughout. `./issctl.sh track` still exists for a headless
+which gives the mount back (so does the slew pad's **stop**). Display switches - Marks, Stretch,
+Frame, Keep pier side, Main steers - work throughout. `./issctl.sh track` still exists for a headless
 one-shot run, but it would fight the console over the serial port and cameras, so run one or the
 other.
 

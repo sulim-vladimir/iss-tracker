@@ -46,6 +46,14 @@ function applyMount(m) {
     b.textContent = on ? 'Marks on' : 'Marks off';
     b.className = on ? 'on' : '';
   }
+  for (const n of CAMS) {               // the picture's stretch: from the whole frame, or the sky
+    const b = document.getElementById('stretch-' + n);
+    if (!b) continue;
+    const mode = (m.stretch || {})[n] || 'frame';
+    b.dataset.mode = mode;
+    b.textContent = 'Stretch: ' + mode;
+    b.className = mode === 'sky' ? 'on' : '';
+  }
   const spb = document.getElementById('spiralbtn');
   if (spb) {
     spb.dataset.running = m.spiral ? '1' : '0';

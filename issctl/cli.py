@@ -470,6 +470,9 @@ def cmd_console(args, cfg):
     for n in state.get("marks_hidden", []):      # boresight/centre crosses hidden on the page
         if n in cams:
             cams[n].show_marks = False
+    for n, mode in state.get("stretch", {}).items():   # how each picture is brightened
+        if n in cams:
+            cams[n].stretch = mode
     def status_lines(name):
         return []   # axis angles and the clock live in the mount panel and the top bar
 
@@ -1085,7 +1088,7 @@ def cmd_console(args, cfg):
                 mount.stop()
             return
         # what only changes the picture, or the next plan, works whatever the mount is doing
-        display = action in ("marks", "frame_shown", "keep_side")
+        display = action in ("marks", "stretch", "frame_shown", "keep_side")
         if ui["mode"] == "track" and action != "main_steers" and not display:
             ui["msg"] = "tracking a pass - stop it first"
             return
@@ -1175,6 +1178,12 @@ def cmd_console(args, cfg):
             say("passes " + ("stay on the pier side the mount is on - no meridian flip"
                              if state["keep_side"] else
                              "may use either pier side, whichever tracks longest (a flip if need be)"))
+        elif action == "stretch":
+            name, mode = str(params.get("cam") or ""), params.get("mode")
+            if name in cams and mode in ("frame", "sky"):
+                cams[name].stretch = mode
+                state.setdefault("stretch", {})[name] = mode
+                persist()
         elif action == "frame_shown":
             state["frame_shown"] = params.get("on") not in (None, "0", "false")
             persist()
@@ -1796,6 +1805,7 @@ def cmd_console(args, cfg):
                 "observed": ui.get("observed") or {},
                 "frame_shown": state.get("frame_shown", True),
                 "marks_hidden": state.get("marks_hidden", []),
+                "stretch": state.get("stretch", {}),
                 "identify_on": state.get("identify_on", True),
                 "spiral": bool(ui.get("spiral")),
                 "history": ui.get("history"),

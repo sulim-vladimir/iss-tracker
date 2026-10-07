@@ -81,13 +81,33 @@ def draw_axes(img, cal, length=46, margin=10):
                     cv2.FONT_HERSHEY_SIMPLEX, 0.42, colour, 1)
 
 
+def display_range(frame, mode="frame"):
+    """Black and white points for showing a frame - the picture only, never the data.
+
+    "frame": the darkest 1% black, the brightest 0.1% white. It follows whatever is brightest, so
+    lit windows coming into view turn the sky and the stars dark, as if the exposure had dropped.
+    "sky": from the sky background and its noise (median - 2 sigma .. median + 6 sigma), which
+    looks the same on a clean star field but holds still while windows come and go - they just
+    saturate."""
+    sub = frame[::4, ::4]
+    if mode == "sky":
+        med = float(np.median(sub))
+        sigma = 1.4826 * float(np.median(np.abs(sub - med)))
+        if np.issubdtype(sub.dtype, np.integer):
+            sigma = max(sigma, 1.0)          # a flat 8-bit sky can have no spread at all
+        if sigma > 0:
+            return med - 2.0 * sigma, med + 6.0 * sigma
+    lo, hi = np.percentile(sub, (1, 99.9))
+    return float(lo), float(hi)
+
+
 def render(cam, cal, max_width=800):
     """Image only - status text lives under the frame on the page, not burned into the picture."""
     frame, det, _ = cam.latest()
     if frame is None:
         return None
     img = cv2.cvtColor(frame, cv2.COLOR_BayerBG2BGR) if cam.bayer else cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
-    lo, hi = np.percentile(frame[::4, ::4], (1, 99.9))
+    lo, hi = display_range(frame, getattr(cam, "stretch", "frame"))
     img = np.clip((img.astype(np.float32) - lo) * (255.0 / max(hi - lo, 1)), 0, 255).astype(np.uint8)
     k = min(1.0, max_width / img.shape[1])
     if k < 1:
@@ -128,6 +148,7 @@ class Preview:
                    extra=f["record"] if (n == "main" and can_record) else "",
                    # main's aim point is its frame centre; only the guide's is set by hand
                    bore=f["bore"].replace("NAME", n) if (n != "main" and can_move) else "",
+                   stretch=f["stretch"].replace("NAME", n) if can_move else "",
                    servo=f["servo"] if (n == "guide" and can_move) else "",
                    bright=f["bright"] if (n == "guide" and can_move) else "",
                    steer=f["steer"] if (n == "main" and can_move) else "",

@@ -35,8 +35,10 @@ Philips SPC900NC + 16 mm M12 lens (guide).
 
 ## State of play
 
-The README's Status and Known limits sections are kept current. What follows is the hardware
-record from the first evenings (2026-09-18).
+The README's Status and Known limits sections are kept current. Milestone: by 2026-10-07, with the
+guide steering (Main steers off), pass mode puts satellites where the prediction says in the guide
+frame and holds them inside the main field for a long time. Main steering did not control the mount
+well when tried, so it stays off - not investigated yet. What follows is the hardware record from the first evenings (2026-09-18).
 
 Verified on real hardware:
 

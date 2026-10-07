@@ -153,3 +153,21 @@ def test_boresight_and_centre_marks_can_be_hidden():
     hidden = render(cam, cal)
     by, bx = int(500 * 800 / 1280), int(700 * 800 / 1280)
     assert shown[by, bx].any() and not hidden[by, bx].any()
+
+
+def test_sky_stretch_holds_still_when_lit_windows_come_into_view():
+    """The frame stretch takes its white point from the brightest 0.1%, so a lit window darkens
+    the whole picture as if the exposure had dropped; the sky stretch does not move."""
+    from issctl.preview import display_range
+    rng = np.random.default_rng(0)
+    sky = np.clip(rng.normal(15, 6, (960, 1280)), 0, 255)
+    for x, y in rng.integers(20, 900, (60, 2)):
+        sky[y - 1:y + 2, x - 1:x + 2] = 120                     # stars
+    sky = sky.astype(np.uint8)
+    lit = sky.copy()
+    lit[300:500, 900:1100] = 250                                 # a lit window, 3% of the frame
+    f0, f1 = display_range(sky, "frame"), display_range(lit, "frame")
+    s0, s1 = display_range(sky, "sky"), display_range(lit, "sky")
+    assert f1[1] > 3 * f0[1]                                     # the frame stretch jumps
+    assert abs(s1[1] - s0[1]) < 0.1 * s0[1]                      # the sky one does not
+    assert abs(s0[1] - f0[1]) < 0.5 * f0[1]                      # and they agree on a clean field

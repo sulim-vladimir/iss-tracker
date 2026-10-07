@@ -61,16 +61,17 @@ plate solving (0.2-0.6 s on the Pi), star alignment (10-40" rms), goto and sync 
 model, the spiral search finding a star in the main camera, servo tracks of satellites - NOSS 3-8 (B),
 a classified satellite, held on the guide boresight to under a pixel for 80 s - and naming them from
 the log afterwards (NOSS 3-8 (B), SENTINEL-6A). Pass mode has run on real passes; the 27 s timing
-error they showed (leap seconds) is fixed.
+error they showed (leap seconds) is fixed. **By 2026-10-07, with the guide steering, satellites
+appear in the guide frame where the prediction puts them, and stay inside the main camera's
+12.9' x 7.3' field for a long time** - Main steers off.
 
-**Verified in simulation only so far**: the guide -> main handoff, shadow and obstruction coasting,
-SER recording.
+**Verified in simulation only so far**: shadow and obstruction coasting, SER recording.
 
 ## Known limits / next steps
 
-* **The guide -> main handoff is not yet confirmed on the real sky.** The first real servo track held
-  its target on the guide only, because the main matrix was then calibrated against the guide and
-  15-20% off; **Calibrate main on star** measures it on its own.
+* **The main camera does not steer yet.** The guide alone keeps satellites in the main field, and
+  with **Main steers** on the mount was not controlled well from main, so it stays off. Not
+  investigated yet - a session log with it on would show why.
 * **Exposure is set by hand** for both cameras. Planned: automatic guide exposure from the predicted
   brightness, and automatic main exposure for bright satellites.
 * **Backlash**: moves that matter (star calibration, spiral search, main calibration, centring)

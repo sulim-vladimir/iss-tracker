@@ -13,7 +13,7 @@
  <button onclick="api('/api/gain',{cam:'{{name}}',delta:25})">+</button>{{servo}}{{steer}}</div>
 <div class="ctl"><label>Target</label><span id="sel-{{name}}"></span></div>
 <div class="ctl btns">
- <button onclick="api('/api/select',{cam:'{{name}}',clear:1})">Auto</button>{{bore}}{{bright}}{{centre}}{{extra}}</div>
+ <button onclick="api('/api/select',{cam:'{{name}}',clear:1})">Auto</button>{{bore}}{{stretch}}{{bright}}{{centre}}{{extra}}</div>
 <div class="info" id="info-{{name}}"></div></div>
 
 <!-- @centre -->
@@ -39,6 +39,10 @@
  onclick="armBoresight('NAME')">set boresight</button>
  <button id="marks-NAME" class="on" title="show or hide the green boresight cross and the grey frame-centre cross, for a clean look at what is under them"
  onclick="mnt('marks',{cam:'NAME',on: this.className === 'on' ? 0 : 1})">Marks on</button>
+
+<!-- @stretch -->
+ <button id="stretch-NAME" title="how the picture is brightened - the picture only: detection, solving and recording always use the raw frame. Frame: the brightest 0.1% of the frame is white, so lit windows coming into view turn the sky and the stars dark. Sky: set from the sky background and its noise - the same on a clean star field, but it holds still when windows come and go (they just saturate)"
+ onclick="mnt('stretch',{cam:'NAME',mode: this.dataset.mode === 'sky' ? 'frame' : 'sky'})">Stretch: frame</button>
 
 <!-- @in_frame -->
 <button title="move the object to the middle of this image (grey cross)"
