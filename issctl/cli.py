@@ -1084,12 +1084,14 @@ def cmd_console(args, cfg):
             else:
                 mount.stop()
             return
-        if ui["mode"] == "track" and action != "main_steers":
+        # what only changes the picture works whatever the mount is doing
+        display = action in ("marks", "frame_shown")
+        if ui["mode"] == "track" and action != "main_steers" and not display:
             ui["msg"] = "tracking a pass - stop it first"
             return
-        if ui["busy"]:
+        if ui["busy"] and not display:
             return
-        if aborted() and action not in ("stop", "frame", "speed"):
+        if aborted() and action not in ("stop", "frame", "speed") and not display:
             ui["abort"].clear()  # any deliberate command clears the latched stop
         if action in ("jog", "goto", "track", "calibrate", "centre", "starcal",
                       "solve_centre", "gohome", "spiral", "maincal", "goto_altaz") and not ui["motors"]:
