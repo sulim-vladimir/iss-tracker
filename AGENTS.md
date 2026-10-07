@@ -1,7 +1,9 @@
 # Working on this project
 
-Handover notes for whoever (human or agent) picks this up next. `README.md` explains what the
-system does and how to run it; this file is about the state of play, the traps, and what to do next.
+Handover notes for whoever (human or agent) picks this up next. `README.md` says what the system
+does and its status, and `docs/` explains how to set it up and use it (setup, observing, tracking,
+satellites, the console, how it works); this file is about the state of play, the traps, and what
+to do next. When a feature changes, update the doc it belongs to in `docs/`.
 
 ## What this is
 
@@ -19,11 +21,11 @@ Philips SPC900NC + 16 mm M12 lens (guide).
 * **The simulator is the test bench.** Hardware is often not connected. `track --sim` runs the whole
   chain; `console --sim` gives a simulated mount, a fixed "distant light" and two brighter decoys.
   Anything you change in the control path, exercise there before claiming it works.
-* **Run the tests.** `.venv/bin/python -m pytest -q tests` (34 at the time of writing). Several exist
+* **Run the tests.** `.venv/bin/python -m pytest -q tests` (~170, about 2.5 minutes). Several exist
   because a real bug slipped through: the shadow/gate tests, the pole-degeneracy tests, the SER
-  writer tests.
+  writer tests, the leap-second offset, the pier-side turn search.
 * **Never commit the owner's site.** `config.toml` (real coordinates), `data/state.json`,
-  `captures/`, `logs/` are gitignored. `config.example.toml` keeps placeholder coordinates.
+  `data/favorites.json`, `captures/`, `logs/` are gitignored. `config.example.toml` keeps placeholder coordinates.
   Simulation writes `data/state-sim.json` so it can never overwrite real calibration.
 * **Config gets defaults from the example file.** `load_config` layers `config.toml` over
   `config.example.toml`, so adding a key to the example is enough - old configs keep working.
@@ -31,7 +33,10 @@ Philips SPC900NC + 16 mm M12 lens (guide).
   deleting captures. The browser page carries an emergency stop; the firmware halts the axes if the
   host goes quiet for 0.5 s.
 
-## State of play (2026-09-18)
+## State of play
+
+The README's Status and Known limits sections are kept current. What follows is the hardware
+record from the first evenings (2026-09-18).
 
 Verified on real hardware:
 
@@ -165,7 +170,9 @@ reports a confident translation that never happened.
   `star_cal_step_deg` tightens it. Do not persist a single-pass ISS fit as the alignment - it
   absorbs the TLE timing error into the orientation.
 * **Sensors** (accelerometer for tilt, magnetometer for repeatability) - discussed, postponed.
-* Backlash compensation; latency tuning from real logs.
+* Backlash compensation (servo on a star rocks in the ~10' Dec slack: 12' p-p, 2026-10-01);
+  latency tuning from real logs.
+* Automatic exposure: guide from the predicted magnitude, main for bright satellites.
 
 ## Debugging playbook
 
@@ -202,8 +209,5 @@ Useful when diagnosing: calibration prints the implied focal length beside the m
 
 ## Layout
 
-`issctl/`: `predict` (TLE, passes, trajectories), `geometry` (alt/az <-> HA/Dec <-> axes, pose
-choice), `mount` (serial + simulated), `camera` (ZWO, V4L2, simulated), `detect`, `calib`,
-`control` (the tracker), `mask`, `ser`, `preview` (browser UI), `sim`, `model` (unwired), `cli`,
-`forecast` (Coming up), `favorites` (observed satellites worth coming back to, `data/favorites.json`).
+The code layout, with a line per module, is in [docs/development.md](docs/development.md#layout).
 Firmware in `firmware/issmount/`. Tests in `tests/`.
