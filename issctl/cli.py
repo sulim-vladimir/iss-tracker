@@ -134,6 +134,56 @@ def cmd_passes(args, cfg):
             print(f"   usable: {describe_windows(sat, site, rep, rep['track_start'])}")
 
 
+def cmd_favorites(args, cfg):
+    """Favourites from the terminal: list, add, remove, and their visible passes."""
+    from . import favorites as fav
+    from . import identify as idf
+    from .forecast import Forecaster
+    site = pr.Site(cfg)
+    fcfg = cfg.get("forecast", {})
+    favs = fav.load()
+    forecaster = Forecaster(site, std_mags={**(fcfg.get("std_mags") or {}), **fav.ratings(favs)})
+    tles = (idf.load_tles(idf.refresh_catalogs(offline=True)) if args.offline
+            else forecaster.catalogue())
+    if args.add:
+        q = "25544" if args.add.strip().lower() in ISS_NAMES else args.add
+        found = idf.find_satellite(q, tles)
+        if len(found) != 1:
+            raise SystemExit(f"'{args.add}': " + ("not in the catalogues" if not found else
+                             ", ".join(f"{n} ({i})" for n, i, _, _ in found[:8])
+                             + " - give the number"))
+        name, sid, _, _ = found[0]
+        unrated = forecaster.rating(sid) is None
+        fav.add(favs, sid, name, float(fcfg.get("default_std_mag", 5.0)) if unrated else None,
+                "default" if unrated else None)
+        fav.save(favs)
+        print(f"added {name} ({sid})")
+    if args.remove:
+        e = fav.remove(favs, args.remove)
+        if e is None:
+            raise SystemExit(f"'{args.remove}' is not a favourite")
+        fav.save(favs)
+        print(f"removed {e['name']} ({e['id']})")
+    seen = idf.observed(tles=tles)
+    for k, e in favs.items():
+        last = seen.get(k)
+        print(f"{e['name']:24s} {k:>6s}  "
+              + (f"seen {datetime.datetime.fromtimestamp(last):%d %b}" if last else "not seen yet")
+              + (f"  std mag {e['std_mag']:.1f} ({e['mag_from']})" if e.get("std_mag") is not None else ""))
+    if not favs:
+        print("no favourites yet")
+        return
+    forecaster.set_ratings({**(fcfg.get("std_mags") or {}), **fav.ratings(favs)})
+    sats = fav.satellites(favs, tles, forecaster.rating, float(fcfg.get("default_std_mag", 5.0)))
+    rows = fav.passes(sats, site, time.time(), args.hours, mask=SkyMask.from_config(cfg),
+                      min_alt=cfg["site"]["min_altitude"])
+    print(f"\nvisible passes, next {args.hours:g} h:" if rows else
+          f"\nno visible passes in the next {args.hours:g} h")
+    for r in rows:
+        print(f"  {fmt_t(r['start'])} - {datetime.datetime.fromtimestamp(r['end']):%H:%M}  "
+              f"mag {r['mag']:4.1f}  max alt {r['max_alt']:3.0f}  {r['name']} ({r['id']})")
+
+
 def guide_radius_deg(cfg):
     """Half the guide field's short side: the circle certainly in view, whatever the camera's
     rotation. The sky chart draws it round the pointing; "Through the guide field" counts it."""
@@ -417,6 +467,9 @@ def cmd_console(args, cfg):
     solver = make_solver(cams["guide"], site, world) if "guide" in cams else None
     last_solve = {"sol": None, "axes": None}
     apply_saved_settings(cams, state)
+    for n in state.get("marks_hidden", []):      # boresight/centre crosses hidden on the page
+        if n in cams:
+            cams[n].show_marks = False
     def status_lines(name):
         return []   # axis angles and the clock live in the mount panel and the top bar
 
@@ -1072,10 +1125,19 @@ def cmd_console(args, cfg):
                 identify_later(None)
         elif action == "history":
             refresh_history()
-        elif action == "rate":
-            f = str(params.get("file") or "")
+        elif action == "favorite":
+            f, q = str(params.get("file") or ""), params.get("q")
             if re.fullmatch(r"(servo|track)-\d{8}-\d{6}\.csv", f) and (ROOT / "logs" / f).with_suffix(".id.json").exists():
-                threading.Thread(target=lambda: _safely(rate_session, f), daemon=True).start()
+                threading.Thread(target=lambda: _safely(favorite_session, f), daemon=True).start()
+            elif q:
+                threading.Thread(target=lambda: _safely(favorite_query, q), daemon=True).start()
+        elif action == "unfavorite":
+            sid = str(params.get("id") or "")
+            if sid:
+                threading.Thread(target=lambda: _safely(favorite_remove, sid), daemon=True).start()
+        elif action == "favorite_passes":
+            only = str(params.get("id") or "")     # blank: all of them
+            threading.Thread(target=lambda: _safely(do_favorite_passes, only), daemon=True).start()
         elif action == "frame_line":
             # a window-frame edge: two clicks in the guide image, saved as a line on the sky chart
             from .mask import frame_line
@@ -1098,6 +1160,13 @@ def cmd_console(args, cfg):
                 state["frame_lines"].pop()
                 persist()
                 say(f"frame line removed, {len(state['frame_lines'])} left")
+        elif action == "marks":
+            name, on = str(params.get("cam") or ""), params.get("on") not in (None, "0", "false")
+            if name in cams:
+                cams[name].show_marks = on
+                hidden = set(state.get("marks_hidden", [])) - {name} | (set() if on else {name})
+                state["marks_hidden"] = sorted(hidden)
+                persist()
         elif action == "frame_shown":
             state["frame_shown"] = params.get("on") not in (None, "0", "false")
             persist()
@@ -1240,48 +1309,144 @@ def cmd_console(args, cfg):
         from .identify import list_sessions
         try:
             rows = list_sessions()
-            for r in rows:            # can it be added to Coming up? only what has no rating yet
+            for r in rows:            # can it be added to the favourites? only what is not one yet
                 sid = (r.get("result") or {}).get("best_id")
-                r["rated"] = None if not sid else forecaster.rating(sid) is not None
+                r["favorite"] = None if not sid else str(sid).lstrip("0") in favs
             ui["history"] = rows
             from . import identify as idf
             tles = idf.load_tles(idf.refresh_catalogs(offline=True, log=lambda *_: None))
             ui["observed"] = idf.observed(tles=tles)     # Coming up marks what was seen before
+            publish_favorites()
         except Exception as e:
             say(f"history: {e}")
 
-    def rate_session(fname):
-        """History's "Add to Coming up": give the satellite a session was identified as a
-        standard magnitude, so it is listed from now on. From a Brightness measurement taken
-        during the session when there is one (its distance and sun angle then from the orbit),
-        otherwise the default."""
+    from . import favorites as fav
+    from .forecast import Forecaster, field_track
+    favs, favs_lock = fav.load(), threading.Lock()
+    if state.get("std_mags") and not args.sim:
+        # History's old "Add to Coming up" kept its ratings in state.json: they are favourites now
+        from . import identify as idf
+        if fav.migrate(favs, state, idf.load_tles(idf.refresh_catalogs(offline=True,
+                                                                      log=lambda *_: None))):
+            fav.save(favs)
+            persist()
+    cfg_mags = cfg.get("forecast", {}).get("std_mags") or {}
+    # ratings for what qs.mag lacks: the config's, plus the favourites' own
+    forecaster = Forecaster(site, log=say, std_mags={**cfg_mags, **fav.ratings(favs)})
+
+    def publish_favorites():
+        """The favourites for the page, with when each was last seen (History)."""
+        seen = ui.get("observed") or {}
+        with favs_lock:
+            ui["favorites"] = [dict(e, sessions=len(e.get("sessions", [])), last_seen=seen.get(k))
+                               for k, e in favs.items()]
+
+    def favorites_changed(rating_changed):
+        with favs_lock:
+            fav.save(favs)
+            if rating_changed:
+                forecaster.set_ratings({**cfg_mags, **fav.ratings(favs)})
+        publish_favorites()
+        refresh_history()
+        do_favorite_passes()
+        if rating_changed and ui.get("forecast"):
+            do_forecast(ui["forecast"].get("mode") or "sky")
+
+    def own_rating(sid, session_path=None):
+        """(standard magnitude, how) for an object no catalogue rates, else (None, None). From a
+        Brightness measurement taken during the session when there is one (its distance and sun
+        angle then from the orbit), otherwise the default."""
         from . import forecast as fc
         from . import identify as idf
+        if forecaster.rating(sid) is not None:
+            return None, None
+        std, how = float(cfg.get("forecast", {}).get("default_std_mag", 5.0)), "default"
+        if session_path is not None:
+            t0, dur = idf._first_last_t(session_path)
+            seen = [b for b in ui.get("brightness_log", []) if t0 - 10 <= b["t"] <= t0 + dur + 10]
+            if seen:
+                sat, _ = get_satellite(cfg, sid, offline=True, log=say)
+                rng, ph = fc.range_phase(sat, site, seen[-1]["t"])
+                std = float(fc.standard_mag(seen[-1]["mag"], rng, ph))
+                how = f"measured mag {seen[-1]['mag']:.1f} at {rng:.0f} km"
+        return round(std, 1), how
+
+    def favorite_session(fname):
+        """History's "Add to favourites": the satellite a session was identified as."""
         path = ROOT / "logs" / fname
         res = json.loads(path.with_suffix(".id.json").read_text())
         sid, name = res.get("best_id"), res.get("best")
         if not sid:
-            say("add to Coming up: identify the session first")
+            say("add to favourites: identify the session first")
             return
-        t0, dur = idf._first_last_t(path)
-        seen = [b for b in ui.get("brightness_log", []) if t0 - 10 <= b["t"] <= t0 + dur + 10]
-        std, how = float(cfg.get("forecast", {}).get("default_std_mag", 5.0)), "default"
-        if seen:
-            sat, _ = get_satellite(cfg, sid, offline=True, log=say)
-            rng, ph = fc.range_phase(sat, site, seen[-1]["t"])
-            std = float(fc.standard_mag(seen[-1]["mag"], rng, ph))
-            how = f"from your brightness measurement, mag {seen[-1]['mag']:.1f} at {rng:.0f} km"
-        state.setdefault("std_mags", {})[str(sid).lstrip("0")] = round(std, 1)
-        persist()
-        forecaster.add_rating(sid, round(std, 1))
-        say(f"{name}: added to Coming up, standard magnitude {std:.1f} ({how})")
-        refresh_history()
-        do_forecast((ui.get("forecast") or {}).get("mode") or "sky")
+        std, how = own_rating(sid, path)
+        with favs_lock:
+            fav.add(favs, sid, name, std, how, session=fname)
+        say(f"{name}: added to favourites"
+            + (f", standard magnitude {std:.1f} ({how}) - Coming up lists it now" if std is not None
+               else ""))
+        favorites_changed(std is not None)
 
-    from .forecast import Forecaster, field_track
-    # ratings for what qs.mag lacks: the config's, plus those added from History (state.json)
-    forecaster = Forecaster(site, log=say, std_mags={**(cfg.get("forecast", {}).get("std_mags") or {}),
-                                                     **state.get("std_mags", {})})
+    def favorite_query(query):
+        """The favourites box: a name or NORAD number from the catalogues."""
+        from . import identify as idf
+        q = str(query or "").strip()
+        if not q:
+            return
+        if q.lower() in ISS_NAMES:
+            q = "25544"
+        found = idf.find_satellite(q, forecaster.catalogue())
+        if len(found) != 1:
+            names = ", ".join(f"{n} ({i})" for n, i, _, _ in found[:6])
+            say(f"add to favourites: no satellite called '{q}' in the catalogues" if not found else
+                f"add to favourites: '{q}' matches {len(found)} satellites: {names}"
+                + (" ..." if len(found) > 6 else "") + " - give the number")
+            return
+        name, sid, _, _ = found[0]
+        std, how = own_rating(sid)
+        with favs_lock:
+            fav.add(favs, sid, name, std, how)
+        say(f"{name} ({sid}): added to favourites"
+            + (f", standard magnitude {std:.1f} ({how})" if std is not None else ""))
+        favorites_changed(std is not None)
+
+    def favorite_remove(sid):
+        with favs_lock:
+            e = fav.remove(favs, sid)
+        if e is None:
+            return
+        say(f"{e['name']}: removed from favourites")
+        favorites_changed(e.get("std_mag") is not None)
+
+    def do_favorite_passes(only=None):
+        """The favourites' visible passes over the next [forecast] favorite_hours. Reads only."""
+        hours = float(cfg.get("forecast", {}).get("favorite_hours", fav.HOURS))
+        prev = ui.get("fav_passes") or {}
+        only = only if only is not None else prev.get("only_id")
+        with favs_lock:
+            if only and str(only).lstrip("0") not in favs:
+                only = None                     # that one was removed: all of them again
+            pick = {k: e for k, e in favs.items() if not only or k == str(only).lstrip("0")}
+        if not pick:
+            ui["fav_passes"] = None
+            return
+        ui["fav_passes"] = dict(prev, busy=True)
+        try:
+            now = clock.now()
+            sats = fav.satellites(pick, forecaster.catalogue(), forecaster.rating,
+                                  float(cfg.get("forecast", {}).get("default_std_mag", 5.0)))
+            items = fav.passes(sats, site, now, hours, mask=SkyMask.from_config(cfg),
+                               min_alt=cfg["site"]["min_altitude"])
+            missing = len(pick) - len(sats)
+            who = next(iter(pick.values()))["name"] if only else "favourites"
+            ui["fav_passes"] = {"at": now, "hours": hours, "items": items, "busy": False,
+                                "only_id": str(only).lstrip("0") if only else None,
+                                "only": who if only else None, "missing": missing}
+            say(f"favourite passes: {len(items)} visible in the next {hours:.0f} h ({who})"
+                + (f"; {missing} without an orbit in the catalogues" if missing else ""))
+        except Exception as e:
+            ui["fav_passes"] = dict(prev, busy=False)
+            say(f"favourite passes: {e}")
 
     def do_forecast(mode):
         """Coming up: bright satellites through the guide field, or anywhere visible from here.
@@ -1481,9 +1646,11 @@ def cmd_console(args, cfg):
                 sat, name = get_satellite(cfg, which, log=say)
                 mask = SkyMask.from_config(cfg)
                 model = align.current_model(state)
-                rows = list_passes(cfg, sat, site, clock.now() - 60, 24, mask, model)
+                # far enough ahead for the pass asked for: Favourites look days ahead
+                hours = 24.0 if at in (None, "") else max(24.0, (float(at) - clock.now()) / 3600 + 2)
+                rows = list_passes(cfg, sat, site, clock.now() - 60, hours, mask, model)
                 if not rows:
-                    ui["msg"] = f"{name}: no passes in the next 24 h"
+                    ui["msg"] = f"{name}: no passes in the next {hours:.0f} h"
                     return
                 if at not in (None, ""):
                     row = pass_at(rows, float(at))
@@ -1594,9 +1761,11 @@ def cmd_console(args, cfg):
                 "frame_lines": [l["pts"] for l in state.get("frame_lines", [])],
                 "observed": ui.get("observed") or {},
                 "frame_shown": state.get("frame_shown", True),
+                "marks_hidden": state.get("marks_hidden", []),
                 "identify_on": state.get("identify_on", True),
                 "spiral": bool(ui.get("spiral")),
                 "history": ui.get("history"),
+                "favorites": ui.get("favorites"), "fav_passes": ui.get("fav_passes"),
                 "main_steers": bool(state.get("main_steers", cfg["tracking"].get("main_steers", False))),
                 "forecast": ui.get("forecast"), "now": clock.now(),
                 "rates": [round(float(r), 4) for r in mount.rate_cmd],
@@ -2037,6 +2206,12 @@ def main(argv=None):
     p.add_argument("--hours", type=float, default=48)
     p.add_argument("--offline", action="store_true")
 
+    p = sub.add_parser("favorites", help="list favourite satellites and their visible passes")
+    p.add_argument("--add", help="satellite name or NORAD number to add")
+    p.add_argument("--remove", help="NORAD number or exact name to remove")
+    p.add_argument("--hours", type=float, default=48)
+    p.add_argument("--offline", action="store_true")
+
     p = sub.add_parser("mount-test", help="run each axis both ways and report measured motion")
     p.add_argument("--rate", type=float, default=0.5)
     p.add_argument("--seconds", type=float, default=2.0)
@@ -2097,8 +2272,8 @@ def main(argv=None):
 
     args = ap.parse_args(argv)
     cfg = load_config(args.config)
-    commands = {"passes": cmd_passes, "mount-test": cmd_mount_test, "console": cmd_console,
-                "track": cmd_track, "axis-scale": cmd_axis_scale, "solve-setup": cmd_solve_setup,
+    commands = {"passes": cmd_passes, "favorites": cmd_favorites, "mount-test": cmd_mount_test,
+                "console": cmd_console, "track": cmd_track, "axis-scale": cmd_axis_scale, "solve-setup": cmd_solve_setup,
                 "solve": cmd_solve, "identify": cmd_identify}
     try:
         commands[args.cmd](args, cfg)

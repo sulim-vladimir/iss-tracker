@@ -140,3 +140,16 @@ def test_every_function_the_page_calls_is_defined():
     params = set(re.findall(r"\(\s*([A-Za-z_]\w*)\s*(?:,|\))", js))
     missing = sorted(c for c in called - defined - params if c not in ("async", "await"))
     assert not missing, f"called but never defined: {missing}"
+
+
+def test_boresight_and_centre_marks_can_be_hidden():
+    """'Marks off' on a camera: the crosses go, nothing else is drawn in their place."""
+    from issctl.preview import render
+    cam = _Cam("guide", 1280, 960)
+    cam.gate = None
+    cal = {"J": [[100.0, 0.0], [0.0, 100.0]], "boresight": [700.0, 500.0]}
+    shown = render(cam, cal)
+    cam.show_marks = False
+    hidden = render(cam, cal)
+    by, bx = int(500 * 800 / 1280), int(700 * 800 / 1280)
+    assert shown[by, bx].any() and not hidden[by, bx].any()

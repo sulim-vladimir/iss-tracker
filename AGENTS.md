@@ -203,5 +203,6 @@ Useful when diagnosing: calibration prints the implied focal length beside the m
 
 `issctl/`: `predict` (TLE, passes, trajectories), `geometry` (alt/az <-> HA/Dec <-> axes, pose
 choice), `mount` (serial + simulated), `camera` (ZWO, V4L2, simulated), `detect`, `calib`,
-`control` (the tracker), `mask`, `ser`, `preview` (browser UI), `sim`, `model` (unwired), `cli`.
+`control` (the tracker), `mask`, `ser`, `preview` (browser UI), `sim`, `model` (unwired), `cli`,
+`forecast` (Coming up), `favorites` (observed satellites worth coming back to, `data/favorites.json`).
 Firmware in `firmware/issmount/`. Tests in `tests/`.

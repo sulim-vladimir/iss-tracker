@@ -37,6 +37,8 @@
 <!-- @bore -->
  <button id="bore-NAME" title="move the green cross: press this, then click the object sitting in the MIDDLE of the main image - the click snaps to the brightest spot nearby. That is what the boresight means. Only trust it on something a kilometre away or more, or the parallax between the two cameras is wider than the main field"
  onclick="armBoresight('NAME')">set boresight</button>
+ <button id="marks-NAME" class="on" title="show or hide the green boresight cross and the grey frame-centre cross, for a clean look at what is under them"
+ onclick="mnt('marks',{cam:'NAME',on: this.className === 'on' ? 0 : 1})">Marks on</button>
 
 <!-- @in_frame -->
 <button title="move the object to the middle of this image (grey cross)"
@@ -143,9 +145,25 @@
   <button onclick="mnt('history',{})" title="list the latest sessions again">Refresh</button>
   <button id="histwhat" disabled onclick="identifyPicked()"
   title="name the satellite the picked session followed - from its log, the star alignment it ran with and the satellite catalogues">Identify</button>
-  <button id="histrate" disabled onclick="ratePicked()"
-  title="the picked session was identified as a satellite Coming up does not list (it has no brightness rating): list it from now on. Its rating comes from a Brightness measurement you took on it during that session, else a default (standard magnitude 5)">Add to Coming up</button></div>
+  <button id="histfav" disabled onclick="favoritePicked()"
+  title="keep the satellite the picked session was identified as in Favourites, and predict its passes. If no catalogue rates its brightness, it gets a rating from a Brightness measurement you took on it during that session, else a default (standard magnitude 5) - and Coming up lists it from then on">Add to favourites</button></div>
  <div class="info" id="history"></div></div>
+
+<!-- @favorites -->
+<div class="panel box grow favorites"><h2>Favourites</h2>
+ <div class="ctl">
+  <input id="favq" placeholder="name or NORAD id" style="width:124px"
+  title="a satellite to add: its catalogue number, or (part of) its name"
+  onkeydown="if(event.key==='Enter') addFavorite()">
+  <button onclick="addFavorite()" title="add this satellite to the favourites">Add</button>
+  <button id="favdel" disabled onclick="removeFavorite()" title="remove the picked favourite">Remove</button>
+  <button id="favpass" onclick="favoritePasses()"
+  title="predict the visible passes - sunlit, dark sky, above min_altitude and inside the sky openings - of the picked favourite, or of all of them with none picked">Predict passes</button>
+  <button id="favtrack" disabled onclick="trackFavorite()"
+  title="plan and track the pass picked below, in pass mode - click a pass to pick it and see its path on the sky chart">Track selected</button></div>
+ <div class="info" id="favorites"></div>
+ <div class="hint" id="favpass-head"></div>
+ <div class="info" id="favpasses"></div></div>
 
 <!-- @sky -->
 <div class="panel sky">

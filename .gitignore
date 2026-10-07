@@ -1,6 +1,7 @@
 # Private: real observing site, calibration and captures never go into git
 config.toml
 data/state.json
+data/favorites.json
 captures/
 *.ser
 logs/

@@ -93,7 +93,9 @@ def render(cam, cal, max_width=800):
     if k < 1:
         img = cv2.resize(img, None, fx=k, fy=k, interpolation=cv2.INTER_AREA)
     cx, cy = int((cam.width - 1) / 2 * k), int((cam.height - 1) / 2 * k)
-    if cam.name == "main":
+    if not getattr(cam, "show_marks", True):
+        pass                    # hidden from the page: nothing drawn over the object
+    elif cam.name == "main":
         # main's aim point IS its frame centre: a plain centre cross, no green boresight mark
         cv2.drawMarker(img, (cx, cy), (160, 160, 160), cv2.MARKER_CROSS, 26, 1)
     elif cal:
@@ -143,6 +145,7 @@ class Preview:
                       warnings_panel=f["warnings"] if can_move else "",
                       coming_panel=f["coming"] if can_move else "",
                       history_panel=f["history"] if can_move else "",
+                      favorites_panel=f["favorites"] if can_move else "",
                       log_panel=f["log"] if can_move else "",
                       messages_panel=f["messages"] if can_move else "",
                       cams=json.dumps(list(self.cams)))

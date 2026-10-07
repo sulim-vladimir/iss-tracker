@@ -278,6 +278,16 @@ class Forecaster:
         self.std_mags[str(sid).lstrip("0")] = float(mag)
         self.sats = None
 
+    def set_ratings(self, std_mags):
+        """Replace the hand-set ratings (the config's and the favourites'), for when one goes."""
+        self.std_mags = {str(k).lstrip("0"): float(v) for k, v in (std_mags or {}).items()}
+        self.sats = None
+
+    def catalogue(self):
+        """Every orbit the catalogues hold, kept as fresh as the forecast's own."""
+        self._ensure()
+        return idf.load_tles(idf.refresh_catalogs(self.catalog_dir, log=self.log, offline=True))
+
     def _ensure(self, offline=False):
         if self.sats is not None and time.time() - self.built_at < 12 * 3600:
             return

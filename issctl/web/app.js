@@ -36,8 +36,16 @@ function applyMount(m) {
   // Alt/az sits under the sky chart and the axis angles are not something you read while
   // working, so this panel carries only what has nowhere else to go: what just happened.
   document.getElementById('mount-msg').textContent = m.msg || '\u2014';
-  showComing(m.forecast, m.now, m.observed);
+  showComing(m.forecast, m.now, m.observed, m.favorites);
   showHistory(m.history);
+  showFavorites(m.favorites, m.fav_passes, m.now);
+  for (const n of CAMS) {               // boresight / centre crosses shown or hidden
+    const b = document.getElementById('marks-' + n);
+    if (!b) continue;
+    const on = !(m.marks_hidden || []).includes(n);
+    b.textContent = on ? 'Marks on' : 'Marks off';
+    b.className = on ? 'on' : '';
+  }
   const spb = document.getElementById('spiralbtn');
   if (spb) {
     spb.dataset.running = m.spiral ? '1' : '0';
@@ -206,6 +214,7 @@ function drawSky(s) {
   }
   drawFrame(svg, s);
   drawComing(svg, (s.mount && s.mount.now) || Date.now() / 1000);
+  drawFavPass(svg, (s.mount && s.mount.now) || Date.now() / 1000);
   drawIdentified(svg, s);
   const tb = document.getElementById('skytrackid');
   if (tb) {
@@ -341,7 +350,7 @@ function copyLog(btn) {
 let COMING = [], COMING_SEL = null;   // the rows on show, and the key of the one picked
 const comingKey = r => r.id + ':' + r.start;
 function comingSelected() { return COMING.find(r => comingKey(r) === COMING_SEL) || null; }
-function showComing(f, now, seen) {
+function showComing(f, now, seen, favs) {
   const box = document.getElementById('coming');
   if (!box) return;
   if (!f) { box.textContent = ''; COMING = []; markComing(box); return; }
@@ -371,6 +380,7 @@ function showComing(f, now, seen) {
   if (head) head.textContent = `${f.where} · next ${f.minutes || 60} min · updated ${hm(f.at).slice(0, 5)}`
     + (f.busy ? ' (updating...)' : '') + (rows.length ? '' : ' · nothing bright');
   seen = seen || {};
+  const fav = new Set((favs || []).map(e => e.id));
   box.querySelectorAll('.row').forEach((el, i) => {
     const r = rows[i];
     const when = r.start > now ? 'in ' + clock(r.start - now) : 'NOW, ' + clock(r.end - now) + ' left';
@@ -379,7 +389,8 @@ function showComing(f, now, seen) {
     // observed before (a History session was identified as it): another colour, and when
     const last = seen[String(r.id).replace(/^0+/, '')];
     const day = last ? new Date(last * 1000).toDateString().slice(4, 10) : '';
-    el.textContent = `${hm(r.peak)}  ${when.padEnd(14)} mag ${r.mag.toFixed(1).padStart(4)}  ${r.name}\n`
+    const star = fav.has(String(r.id).replace(/^0+/, '')) ? ' \u2605' : '';
+    el.textContent = `${hm(r.peak)}  ${when.padEnd(14)} mag ${r.mag.toFixed(1).padStart(4)}  ${r.name}${star}\n`
                    + `          ${where}, ${r.range_km} km` + (last ? `, seen ${day}` : '');
     el.classList.toggle('seen', !!last);
     el.title = `${r.name} (catalogue ${r.id})` + (last ? ` - observed before, last on ${day}` : '')
@@ -394,12 +405,14 @@ function trackComing() {           // "track selected", or "Stop tracking" while
 }
 function markComing(box) {
   box.querySelectorAll('.row').forEach(el => el.classList.toggle('sel', el.dataset.key === COMING_SEL));
-  const b = document.getElementById('comingtrack');
-  if (b) {
-    b.textContent = PASS_MODE ? 'Stop tracking' : 'Track selected';
-    b.className = PASS_MODE ? 'on' : '';
-    b.disabled = PASS_MODE ? false : (!comingSelected() || MODE === 'track');
-  }
+  trackButton('comingtrack', comingSelected());
+}
+function trackButton(id, picked) {   // "Track selected", which turns into "Stop tracking" in a pass
+  const b = document.getElementById(id);
+  if (!b) return;
+  b.textContent = PASS_MODE ? 'Stop tracking' : 'Track selected';
+  b.className = PASS_MODE ? 'on' : '';
+  b.disabled = PASS_MODE ? false : (!picked || MODE === 'track');
 }
 // the picked pass on the sky chart: its path in violet, and where it is now (or where it comes in)
 function drawComing(svg, now) {
@@ -476,7 +489,7 @@ function showHistory(h) {
     return;
   }
   HISTORY_ROWS = h;
-  const key = h.map(r => r.file + (r.result ? r.result.at : '') + r.rated).join(',');
+  const key = h.map(r => r.file + (r.result ? r.result.at : '') + r.favorite).join(',');
   if (box.dataset.key !== key) {
     box.dataset.key = key;
     box.replaceChildren();
@@ -489,6 +502,7 @@ function showHistory(h) {
       const what = r.kind === 'track' ? 'pass ' + (r.name || '') : 'follow';
       const res = !r.result ? 'not identified yet'
                 : r.result.best ? (r.result.verdict === 'sure' ? r.result.best : 'probably ' + r.result.best)
+                  + (r.favorite ? ' \u2605' : '')
                 : 'nothing matched';
       line.textContent = `${day} ${hm}  ${what.padEnd(14)} ${String(Math.round(r.duration)).padStart(4)} s  ${res}`;
       line.title = (r.result && r.result.text) || r.file;
@@ -502,12 +516,124 @@ function markHistory(box) {
   box.querySelectorAll('.row').forEach(el => el.classList.toggle('sel', el.dataset.file === HISTORY_PICK));
   const b = document.getElementById('histwhat');
   if (b) b.disabled = !HISTORY_PICK;
-  const row = HISTORY_ROWS.find(r => r.file === HISTORY_PICK), rb = document.getElementById('histrate');
-  if (rb) rb.disabled = !(row && row.result && row.result.best_id && row.rated === false);
+  const row = HISTORY_ROWS.find(r => r.file === HISTORY_PICK), fb = document.getElementById('histfav');
+  if (fb) fb.disabled = !(row && row.result && row.result.best_id && row.favorite === false);
 }
-function ratePicked() {
-  if (HISTORY_PICK) mnt('rate', {file: HISTORY_PICK});
+function favoritePicked() {
+  if (HISTORY_PICK) mnt('favorite', {file: HISTORY_PICK});
 }
 function identifyPicked() {
   if (HISTORY_PICK) mnt('identify', {file: HISTORY_PICK});
+}
+
+// ---- favourites: satellites worth coming back to, and their visible passes days ahead ----
+let FAV_PICK = null, FAV_ASKED = false, FAV_ROWS = [], FAVP = [], FAVP_SEL = null;
+function favPassSelected() { return FAVP.find(r => comingKey(r) === FAVP_SEL) || null; }
+function ahead(seconds) {          // "in 3h 20m", "in 1d 4h": passes are days away, not minutes
+  const m = Math.round(seconds / 60);
+  if (m < 60) return clock(seconds);
+  const d = Math.floor(m / 1440), h = Math.floor((m % 1440) / 60);
+  return d ? `${d}d ${h}h` : `${h}h ${m % 60}m`;
+}
+function showFavorites(favs, fp, now) {
+  const box = document.getElementById('favorites');
+  if (!box) return;
+  if (!favs) {                       // the list arrives with History; ask once
+    if (!HISTORY_ASKED) { HISTORY_ASKED = true; mnt('history', {}); }
+    return;
+  }
+  FAV_ROWS = favs;
+  if (!FAV_ROWS.some(e => e.id === FAV_PICK)) FAV_PICK = null;
+  const key = favs.map(e => e.id + ':' + e.std_mag + ':' + e.sessions + ':' + e.last_seen).join(',');
+  if (box.dataset.key !== key) {
+    box.dataset.key = key;
+    box.replaceChildren();
+    if (!favs.length) box.textContent = 'none yet - add one above, or from History';
+    for (const e of favs) {
+      const line = document.createElement('div');
+      line.className = 'row';
+      line.dataset.id = e.id;
+      const seen = e.last_seen ? 'seen ' + new Date(e.last_seen * 1000).toDateString().slice(4, 10) : 'not seen yet';
+      const mag = e.std_mag != null ? `std mag ${e.std_mag.toFixed(1)}` : '';
+      line.textContent = `${e.name.padEnd(22).slice(0, 22)} ${String(e.id).padStart(6)}  ${seen.padEnd(13)} ${mag}`;
+      line.title = `${e.name} (catalogue ${e.id})` + (e.sessions ? `, in ${e.sessions} session(s)` : '')
+                 + (e.mag_from ? ` - brightness: ${e.mag_from}` : '')
+                 + ' - click to pick it, for Remove or its own passes';
+      line.onclick = () => { FAV_PICK = FAV_PICK === e.id ? null : e.id; markFavorites(); };
+      box.appendChild(line);
+    }
+  }
+  if (favs.length && !fp && !FAV_ASKED) { FAV_ASKED = true; mnt('favorite_passes', {}); }
+  showFavPasses(fp, now);
+  markFavorites();
+}
+function showFavPasses(fp, now) {
+  const box = document.getElementById('favpasses'), head = document.getElementById('favpass-head');
+  if (!box) return;
+  if (!fp || !fp.items) {
+    box.textContent = fp && fp.busy ? 'working it out...' : '';
+    if (head) head.textContent = '';
+    FAVP = [];
+    return;
+  }
+  const rows = fp.items.filter(r => r.end > now);
+  FAVP = rows;
+  if (!favPassSelected()) FAVP_SEL = null;
+  const day = t => new Date(t * 1000).toDateString().slice(0, 10);
+  const hm = t => new Date(t * 1000).toTimeString().slice(0, 5);
+  const key = fp.at + ':' + rows.map(comingKey).join(',');
+  if (box.dataset.key !== key) {
+    box.dataset.key = key;
+    box.replaceChildren();
+    for (const r of rows) {
+      const line = document.createElement('div');
+      line.className = 'row';
+      line.dataset.key = comingKey(r);
+      line.onclick = () => {
+        FAVP_SEL = FAVP_SEL === line.dataset.key ? null : line.dataset.key;
+        markFavorites();
+        if (LAST_STATE) drawSky(LAST_STATE);
+      };
+      box.appendChild(line);
+    }
+  }
+  if (head) head.textContent = `Visible passes of ${fp.only || 'all favourites'} · next ${fp.hours} h · `
+    + `updated ${hm(fp.at)}` + (fp.busy ? ' (updating...)' : '') + (rows.length ? '' : ' · none visible')
+    + (fp.missing ? ` · ${fp.missing} without an orbit` : '');
+  box.querySelectorAll('.row').forEach((el, i) => {
+    const r = rows[i];
+    const when = r.start > now ? 'in ' + ahead(r.start - now) : 'NOW, ' + clock(r.end - now) + ' left';
+    el.textContent = `${day(r.peak)} ${hm(r.start)}-${hm(r.end)}  ${when.padEnd(12)} mag ${r.mag.toFixed(1).padStart(4)}  ${r.name}\n`
+                   + `          max alt ${r.max_alt.toFixed(0)}°, brightest at alt ${r.alt.toFixed(0)}° az ${r.az.toFixed(0)}°, ${r.range_km} km`;
+    el.title = `${r.name} (catalogue ${r.id}) - visible ${hm(r.start)}-${hm(r.end)}, brightest ${hm(r.peak)}`
+             + ' - click to show it on the sky chart';
+  });
+}
+function markFavorites() {
+  document.querySelectorAll('#favorites .row').forEach(el => el.classList.toggle('sel', el.dataset.id === FAV_PICK));
+  document.querySelectorAll('#favpasses .row').forEach(el => el.classList.toggle('sel', el.dataset.key === FAVP_SEL));
+  const d = document.getElementById('favdel');
+  if (d) d.disabled = !FAV_PICK;
+  const p = document.getElementById('favpass');
+  if (p) p.textContent = FAV_PICK ? 'Predict its passes' : 'Predict passes';
+  trackButton('favtrack', favPassSelected());
+}
+function addFavorite() {
+  const q = document.getElementById('favq');
+  if (q && q.value.trim()) { mnt('favorite', {q: q.value.trim()}); q.value = ''; }
+}
+function removeFavorite() {
+  const e = FAV_ROWS.find(e => e.id === FAV_PICK);
+  if (e && confirm(`Remove ${e.name} from the favourites?`)) { FAV_PICK = null; mnt('unfavorite', {id: e.id}); }
+}
+function favoritePasses() { mnt('favorite_passes', {id: FAV_PICK || ''}); }
+function trackFavorite() {
+  if (PASS_MODE) return mnt('untrack', {});
+  const r = favPassSelected();
+  if (r) mnt('track', {sat: r.id, at: r.peak});
+}
+// the picked favourite pass on the sky chart, in gold beside Coming up's violet
+function drawFavPass(svg, now) {
+  const r = favPassSelected();
+  if (r) drawPath(svg, r.path, r.name, now, '#e3b341', '#f0d080');
 }

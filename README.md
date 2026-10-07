@@ -79,6 +79,7 @@ TLE (Celestrak) --> Skyfield --> refracted alt/az --> HA/Dec --+
 | `issctl/control.py` | tracking controller (pass and servo mode) |
 | `issctl/identify.py` | Identify: name the satellite a session followed, live and afterwards |
 | `issctl/forecast.py` | "Coming up": bright satellites due through the guide field or the sky |
+| `issctl/favorites.py` | Favourites: the observed satellites worth coming back to, and their passes |
 | `issctl/deepsky.py` | goto by name: Messier, NGC, IC and common names (OpenNGC), CDS online |
 | `issctl/mask.py` | sky obstructions (balcony, window frame, buildings) |
 | `issctl/sim.py` | simulated sky for end-to-end testing |
@@ -299,7 +300,9 @@ in the terminal console) does not work at this ratio: moves that keep a star ins
 **Main's aim point is its frame centre**, shown as a grey cross. The **guide boresight** - the green
 cross in the guide image - marks where that centre looks: set it with **set boresight** on the guide
 (clicks snap to the nearest bright spot), or **boresight on star**, which identifies the main
-camera's star in the guide's plate solve.
+camera's star in the guide's plate solve. **Marks on/off** beside it hides the green and grey
+crosses on the guide image (and brings them back), for a clean look at what sits under them; the
+choice is remembered.
 
 ### Without stars
 
@@ -391,11 +394,21 @@ Once named, its path is drawn on the sky chart in green - where it has been and 
 it sets - and **Track it** (under the chart) follows it on its orbit in pass mode, stopping a running
 Follow first: the orbit carries the target through faint spells the camera alone loses.
 
-**Add to Coming up** (History): a session identified as a satellite Coming up does not list - it has
-no brightness rating, like most things launched since ~2018 - can be added. The rating comes from a
-**Brightness** measurement taken on it during that session (converted to a standard magnitude with
-its distance and sun angle from the orbit), otherwise `[forecast] default_std_mag` (5.0). It is kept
-in `data/state.json`; `[forecast] std_mags` in the config holds the hand-set ones.
+**Favourites** (the panel under Coming up) is a small database of the satellites worth coming back
+to, kept in `data/favorites.json`. Add one from **History** - **Add to favourites** on a session
+Identify has named - or type a name or NORAD number into the box. Each entry lists when it was last
+seen (from History) and keeps the sessions it was added from. **Predict passes** lists the visible
+passes of all of them - or of the picked one - over the next `[forecast] favorite_hours` (48):
+sunlit while the sky here is dark, above `min_altitude` and inside the sky mask, with the date, the
+visible span, the estimated magnitude and the highest point. Click a pass to draw it on the sky chart
+in gold; **Track selected** tracks it in pass mode. Favourites are starred in Coming up and History.
+From the terminal: `./issctl.sh favorites [--add NAME|ID] [--remove ID] [--hours 48]`.
+
+A favourite no catalogue rates for brightness - like most things launched since ~2018 - gets a
+rating of its own, so Coming up lists it too: from a **Brightness** measurement taken on it during
+that session (converted to a standard magnitude with its distance and sun angle from the orbit),
+otherwise `[forecast] default_std_mag` (5.0). `[forecast] std_mags` in the config holds the hand-set
+ones. (Ratings the old "Add to Coming up" kept in `data/state.json` become favourites on start-up.)
 
 Each session saves the pointing model it ran with next to its log, so a later re-alignment cannot
 skew the answer. The mount's own alt/az columns in the log are *not* used - see

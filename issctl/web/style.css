@@ -88,3 +88,11 @@ body{background:#2f3439;color:#e8e8e8;font:14px/1.4 system-ui,sans-serif;margin:
  #history .row:hover{background:#454c53}
  #history .row.sel{background:#4a3d63;outline:1px solid #b784f5}
  #history{max-height:230px;overflow-y:auto}
+ #favorites .row,#favpasses .row{white-space:pre;margin:2px 0;padding:2px 4px;border-radius:4px;cursor:pointer}
+ #favorites .row:hover,#favpasses .row:hover{background:#454c53}
+ #favorites .row.sel{background:#4a3d63;outline:1px solid #b784f5}
+ #favpasses .row.sel{background:#5a4a1f;outline:1px solid #e3b341}
+ #favorites{max-height:150px;overflow-y:auto}
+ #favpasses{max-height:230px;overflow-y:auto}
+ #favpass-head{margin:6px 0 2px}
+ #favtrack.on{background:#a33;}
