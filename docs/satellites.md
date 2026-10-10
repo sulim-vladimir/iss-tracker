@@ -84,7 +84,8 @@ around midnight most low satellites are in Earth's shadow.
 always stay), and **show** caps it at 10, 25 or 50 rows, soonest first; the header says "N of M
 shown" when the cap hides some. Both are remembered by the browser.
 
-Click a row to pick it: its path is drawn on the sky chart in **violet**, with a dot where it is now
+Click a row to pick it (then the up/down arrows move the pick): its path is drawn on the sky chart
+in **violet**, with a dot where it is now
 (a hollow circle where it will come in). **Track selected** plans and tracks that pass in
 [pass mode](tracking.md#pass-mode). Satellites seen before (a History session identified as them) are
 shown in green with the day; favourites are starred.

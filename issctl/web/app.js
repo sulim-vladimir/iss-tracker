@@ -293,6 +293,7 @@ async function refreshSkyTrack(p) {
 }
 refreshSkyTrack(null);
 comingRestore();
+{ const c = document.getElementById('coming'); if (c) c.addEventListener('keydown', comingKeys); }
 setInterval(async () => apply(await (await fetch('/api/state')).json()), 1000);
 
 
@@ -445,6 +446,19 @@ function trackComing() {           // "track selected", or "Stop tracking" while
   if (PASS_MODE) return mnt('untrack', {});
   const r = comingSelected();
   if (r) mnt('track', {sat: r.id, at: r.peak});
+}
+// up/down arrows walk the rows once the list has focus (a click on a row gives it)
+function comingKeys(e) {
+  if ((e.key !== 'ArrowUp' && e.key !== 'ArrowDown') || !COMING.length) return;
+  e.preventDefault();                                 // not the page scroll
+  const i = COMING.findIndex(r => comingKey(r) === COMING_SEL), down = e.key === 'ArrowDown';
+  const n = i < 0 ? (down ? 0 : COMING.length - 1) : Math.max(0, Math.min(COMING.length - 1, i + (down ? 1 : -1)));
+  COMING_SEL = comingKey(COMING[n]);
+  const box = e.currentTarget;
+  markComing(box);
+  const sel = box.querySelector('.row.sel');
+  if (sel) sel.scrollIntoView({block: 'nearest'});
+  if (LAST_STATE) drawSky(LAST_STATE);
 }
 function markComing(box) {
   box.querySelectorAll('.row').forEach(el => el.classList.toggle('sel', el.dataset.key === COMING_SEL));
