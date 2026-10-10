@@ -80,6 +80,10 @@ comes from the standard magnitude, the range and the phase angle - good to about
 tumbling rocket body does what it likes. The best hours are the first two after dusk and before dawn;
 around midnight most low satellites are in Earth's shadow.
 
+**Within** narrows the list to passes starting in the next 5, 10, 30 or 60 minutes (ones under way
+always stay), and **show** caps it at 10, 25 or 50 rows, soonest first; the header says "N of M
+shown" when the cap hides some. Both are remembered by the browser.
+
 Click a row to pick it: its path is drawn on the sky chart in **violet**, with a dot where it is now
 (a hollow circle where it will come in). **Track selected** plans and tracks that pass in
 [pass mode](tracking.md#pass-mode). Satellites seen before (a History session identified as them) are

@@ -142,6 +142,14 @@
   onclick="mnt('forecast',{mode:'sky'})">Anywhere</button>
   <button id="comingtrack" disabled title="plan and track the pass picked below, in pass mode - click a row to pick it and see its path on the sky chart"
   onclick="trackComing()">Track selected</button></div>
+ <div class="ctl">
+  <label>Within</label>
+  <select id="comingwin" onchange="comingFilter()" title="list only the passes that start this soon - the ones under way are always kept">
+   <option value="5">5 min</option><option value="10">10 min</option>
+   <option value="30">30 min</option><option value="60" selected>60 min</option></select>
+  <label>show</label>
+  <select id="comingmax" onchange="comingFilter()" title="at most this many rows, the soonest first">
+   <option>10</option><option selected>25</option><option>50</option></select></div>
  <div class="hint" id="coming-head"></div>
  <div class="info" id="coming"></div></div>
 

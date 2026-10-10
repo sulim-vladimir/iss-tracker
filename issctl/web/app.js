@@ -292,6 +292,7 @@ async function refreshSkyTrack(p) {
   try { SKY = await (await fetch('/api/sky')).json(); } catch (e) { SKY_KEY = null; }
 }
 refreshSkyTrack(null);
+comingRestore();
 setInterval(async () => apply(await (await fetch('/api/state')).json()), 1000);
 
 
@@ -376,7 +377,9 @@ function showComing(f, now, seen, favs) {
   if (!f) { box.textContent = ''; COMING = []; markComing(box); return; }
   if (f.busy && !f.items) { box.textContent = 'working it out...'; return; }
   const hm = t => new Date(t * 1000).toTimeString().slice(0, 8);
-  const rows = (f.items || []).filter(r => r.end > now).slice(0, 12);
+  const [win, max] = comingLimits();
+  const due = (f.items || []).filter(r => r.end > now && r.start <= now + win * 60);
+  const rows = due.slice(0, max);
   COMING = rows;
   if (!comingSelected()) COMING_SEL = null;              // it has gone by
   const key = f.at + ':' + rows.map(comingKey).join(',');
@@ -397,8 +400,9 @@ function showComing(f, now, seen, favs) {
     }
   }
   const head = document.getElementById('coming-head');
-  if (head) head.textContent = `${f.where} · next ${f.minutes || 60} min · updated ${hm(f.at).slice(0, 5)}`
-    + (f.busy ? ' (updating...)' : '') + (rows.length ? '' : ' · nothing bright');
+  if (head) head.textContent = `${f.where} · next ${Math.min(win, f.minutes || 60)} min · updated ${hm(f.at).slice(0, 5)}`
+    + (f.busy ? ' (updating...)' : '')
+    + (!rows.length ? ' · nothing bright' : due.length > rows.length ? ` · ${rows.length} of ${due.length} shown` : '');
   seen = seen || {};
   const fav = new Set((favs || []).map(e => e.id));
   box.querySelectorAll('.row').forEach((el, i) => {
@@ -417,6 +421,25 @@ function showComing(f, now, seen, favs) {
              + ' - click to show it on the sky chart';
   });
   markComing(box);
+}
+// the window and row limit picked above the list, kept in this browser
+function comingLimits() {
+  const w = document.getElementById('comingwin'), n = document.getElementById('comingmax');
+  return [w ? +w.value : 60, n ? +n.value : 25];
+}
+function comingFilter() {
+  try { localStorage.setItem('coming', JSON.stringify(comingLimits())); } catch (e) {}
+  if (LAST_STATE && LAST_STATE.mount) {
+    const m = LAST_STATE.mount;
+    showComing(m.forecast, m.now, m.observed, m.favorites);
+  }
+}
+function comingRestore() {
+  try {
+    const [w, n] = JSON.parse(localStorage.getItem('coming') || 'null') || [];
+    if (w) document.getElementById('comingwin').value = w;
+    if (n) document.getElementById('comingmax').value = n;
+  } catch (e) {}
 }
 function trackComing() {           // "track selected", or "Stop tracking" while a pass runs
   if (PASS_MODE) return mnt('untrack', {});
