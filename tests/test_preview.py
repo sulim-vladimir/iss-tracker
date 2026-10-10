@@ -138,6 +138,8 @@ def test_every_function_the_page_calls_is_defined():
     called = set(re.findall(r"(?<![\w.$])([A-Za-z_]\w*)\s*\(", code)) - builtins
     # anything else called with ( that is a local helper parameter, e.g. fmt(...) passed around
     params = set(re.findall(r"\(\s*([A-Za-z_]\w*)\s*(?:,|\))", js))
+    params |= {p.strip() for ps in re.findall(r"\bfunction\s+\w*\s*\(([^)]*)\)", js)
+               for p in ps.split(",") if p.strip()}           # and every later one, keys(...)
     missing = sorted(c for c in called - defined - params if c not in ("async", "await"))
     assert not missing, f"called but never defined: {missing}"
 

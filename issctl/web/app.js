@@ -293,7 +293,13 @@ async function refreshSkyTrack(p) {
 }
 refreshSkyTrack(null);
 comingRestore();
-{ const c = document.getElementById('coming'); if (c) c.addEventListener('keydown', comingKeys); }
+arrowRows('coming', () => COMING.map(comingKey), () => COMING_SEL, k => {
+  COMING_SEL = k; markComing(document.getElementById('coming')); if (LAST_STATE) drawSky(LAST_STATE); });
+arrowRows('favorites', () => FAV_ROWS.map(e => e.id), () => FAV_PICK, k => { FAV_PICK = k; markFavorites(); });
+arrowRows('favpasses', () => FAVP.map(comingKey), () => FAVP_SEL, k => {
+  FAVP_SEL = k; markFavorites(); if (LAST_STATE) drawSky(LAST_STATE); });
+arrowRows('history', () => HISTORY_ROWS.map(r => r.file), () => HISTORY_PICK, k => {
+  HISTORY_PICK = k; markHistory(document.getElementById('history')); });
 setInterval(async () => apply(await (await fetch('/api/state')).json()), 1000);
 
 
@@ -447,18 +453,21 @@ function trackComing() {           // "track selected", or "Stop tracking" while
   const r = comingSelected();
   if (r) mnt('track', {sat: r.id, at: r.peak});
 }
-// up/down arrows walk the rows once the list has focus (a click on a row gives it)
-function comingKeys(e) {
-  if ((e.key !== 'ArrowUp' && e.key !== 'ArrowDown') || !COMING.length) return;
-  e.preventDefault();                                 // not the page scroll
-  const i = COMING.findIndex(r => comingKey(r) === COMING_SEL), down = e.key === 'ArrowDown';
-  const n = i < 0 ? (down ? 0 : COMING.length - 1) : Math.max(0, Math.min(COMING.length - 1, i + (down ? 1 : -1)));
-  COMING_SEL = comingKey(COMING[n]);
-  const box = e.currentTarget;
-  markComing(box);
-  const sel = box.querySelector('.row.sel');
-  if (sel) sel.scrollIntoView({block: 'nearest'});
-  if (LAST_STATE) drawSky(LAST_STATE);
+// up/down arrows walk a list's rows once it has focus (a click on a row gives it):
+// keys() the rows' keys in order, get() the picked one, set(k) picks another
+function arrowRows(id, keys, get, set) {
+  const box = document.getElementById(id);
+  if (!box) return;
+  box.tabIndex = 0;
+  box.addEventListener('keydown', e => {
+    const ks = keys();
+    if ((e.key !== 'ArrowUp' && e.key !== 'ArrowDown') || !ks.length) return;
+    e.preventDefault();                               // not the page scroll
+    const i = ks.indexOf(get()), down = e.key === 'ArrowDown';
+    set(ks[i < 0 ? (down ? 0 : ks.length - 1) : Math.max(0, Math.min(ks.length - 1, i + (down ? 1 : -1)))]);
+    const sel = box.querySelector('.row.sel');
+    if (sel) sel.scrollIntoView({block: 'nearest'});
+  });
 }
 function markComing(box) {
   box.querySelectorAll('.row').forEach(el => el.classList.toggle('sel', el.dataset.key === COMING_SEL));
