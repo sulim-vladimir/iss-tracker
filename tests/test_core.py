@@ -373,3 +373,22 @@ def test_a_pass_already_up_is_planned_from_now():
     now = p["rise"] + 0.6 * (p["set"] - p["rise"])
     _, rep = plan_pass(sat, site, cfg["mount"], p["rise"], p["set"], dt=1.0, after=now)
     assert rep["track_start"] >= now and rep["tracked_s"] > 0
+
+
+def test_a_save_cut_short_keeps_the_last_good_state(tmp_path, monkeypatch):
+    # 2026-10-11 on the Pi: the console was stopped while saving and state.json was left at
+    # 0 bytes - calibration, alignment and position gone, and the next start refused.
+    import pathlib
+
+    from issctl.config import load_state, save_state
+    path = tmp_path / "state.json"
+    save_state({"cameras": {"guide": {"J": [[1, 2], [3, 4]]}}}, path)
+
+    def cut_short(self, text, *a, **k):
+        open(self, "w").close()                # emptied, as write_text does first...
+        raise KeyboardInterrupt                # ...and stopped before writing
+    monkeypatch.setattr(pathlib.Path, "write_text", cut_short)
+    with pytest.raises(KeyboardInterrupt):
+        save_state({"cameras": {}}, path)
+    monkeypatch.undo()
+    assert load_state(path) == {"cameras": {"guide": {"J": [[1, 2], [3, 4]]}}}

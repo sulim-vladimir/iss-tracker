@@ -44,4 +44,9 @@ def load_state(path=None):
 def save_state(state, path=None):
     path = path or STATE_FILE
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(state, indent=2))
+    # Written beside it, then swapped in: write_text empties the file first, and a console
+    # stopped mid-save left state.json at 0 bytes - calibration, alignment and position gone and
+    # the next start refused (2026-10-11). A rename is all or nothing.
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(state, indent=2))
+    tmp.replace(path)
