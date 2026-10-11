@@ -150,6 +150,7 @@ class Preview:
                    bore=f["bore"].replace("NAME", n) if (n != "main" and can_move) else "",
                    stretch=f["stretch"].replace("NAME", n) if can_move else "",
                    servo=f["servo"] if (n == "guide" and can_move) else "",
+                   orbit=f["orbit"] if (n == "guide" and can_move) else "",   # under Follow
                    bright=f["bright"] if (n == "guide" and can_move) else "",
                    steer=f["steer"] if (n == "main" and can_move) else "",
                    centre=(f["centre"].replace("EXTRA", "" if n == "main" else f["in_frame"])

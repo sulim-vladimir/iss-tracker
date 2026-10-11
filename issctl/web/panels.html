@@ -11,7 +11,7 @@
  <button onclick="api('/api/gain',{cam:'{{name}}',delta:-25})">-</button>
  <input id="gain-{{name}}" onchange="api('/api/gain',{cam:'{{name}}',value:this.value})">
  <button onclick="api('/api/gain',{cam:'{{name}}',delta:25})">+</button>{{servo}}{{steer}}</div>
-<div class="ctl"><label>Target</label><span id="sel-{{name}}"></span></div>
+<div class="ctl"><label>Target</label><span id="sel-{{name}}"></span>{{orbit}}</div>
 <div class="ctl btns">
  <button onclick="api('/api/select',{cam:'{{name}}',clear:1})">Auto</button>{{bore}}{{stretch}}{{bright}}{{centre}}{{extra}}</div>
 <div class="info" id="info-{{name}}"></div></div>
@@ -23,8 +23,10 @@
 <!-- @servo -->
  <button id="servobtn" class="right" title="servo mode: click the object in the guide image first - a satellite, the ISS, a plane - and the red circle stays on it; then press this and the mount follows it, with no orbit and no alignment. With nothing picked, press this and then click the object. A later click in the image moves the lock to what you clicked. Shorten the exposure first: 8 ms for the ISS, 50-200 ms for fainter satellites. Stops by itself after servo_give_up_s with nothing detected"
  onclick="MODE === 'track' ? mnt('untrack', {}) : follow()">Follow</button>
- <button id="orbitbtn" title="orbit lock: once Follow has the object named for sure, the same session goes on along its orbit - no stop, no slew. The orbit is fitted to what the camera followed (time and pointing offset), it then carries the mount through faint spells and Earth's shadow, and the guide only looks where the orbit says. An orbit that does not fit what was followed is refused and Follow goes on. Off: Follow stays on the camera; Track it switches by hand"
- onclick="mnt('auto_orbit',{on: this.className === 'on' ? 0 : 1})">Orbit lock</button>
+
+<!-- @orbit -->
+ <button id="orbitbtn" class="right" title="orbit lock: once Follow has the object named for sure, the same session goes on along its orbit - no stop, no slew. The orbit is fitted to what the camera followed (time and pointing offset), it then carries the mount through faint spells and Earth's shadow, and the guide only looks where the orbit says. An orbit that does not fit what was followed is refused and Follow goes on. Off: Follow stays on the camera; Track it switches by hand"
+ onclick="mnt('auto_orbit',{on: this.classList.contains('on') ? 0 : 1})">Orbit lock</button>
 
 <!-- @steer -->
  <button id="steerbtn" class="right" title="may the main camera take over steering from the guide once it has the target steady? Off: guide only - main still shows and records"

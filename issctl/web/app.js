@@ -67,7 +67,7 @@ function applyMount(m) {
     sb2.className = (m.main_steers ? 'on ' : '') + 'right';
   }
   const ob = document.getElementById('orbitbtn');
-  if (ob) { const on = m.auto_orbit !== false; ob.textContent = 'Orbit lock ' + (on ? 'on' : 'off'); ob.className = on ? 'on' : ''; }
+  if (ob) { const on = m.auto_orbit !== false; ob.textContent = 'Orbit lock ' + (on ? 'on' : 'off'); ob.classList.toggle('on', on); }
   const ib = document.getElementById('identbtn');
   if (ib) { const on = m.identify_on !== false; ib.textContent = on ? 'naming ON' : 'naming off'; ib.className = on ? 'on' : ''; }
   const kb = document.getElementById('keepsidebtn');
