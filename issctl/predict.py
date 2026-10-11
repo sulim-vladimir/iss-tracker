@@ -140,6 +140,10 @@ def _init_astropy():
     from astropy.utils.exceptions import AstropyWarning
 
     iers.conf.auto_download = False
+    # astropy 7 keeps IERS_Auto on its bundled IERS-A table without downloads, and still raises
+    # "interpolating from IERS_Auto using predictive values that are more than 30.0 days old"
+    # once that table is a month old - every goto, solve and star calibration with it
+    iers.conf.auto_max_age = None
     warnings.filterwarnings("ignore", message=".*polar motions.*", category=AstropyWarning)
     warnings.filterwarnings("ignore", message=".*IERS table.*", category=AstropyWarning)
     try:

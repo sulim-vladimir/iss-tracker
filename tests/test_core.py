@@ -100,6 +100,26 @@ def test_unix_to_time_has_no_leap_second_offset():
     assert abs(time_to_unix(arr[-1]) - (1.79e9 + 599.75)) < 1e-3
 
 
+def test_stale_bundled_iers_table_does_not_stop_astropy(monkeypatch):
+    # astropy 7 (the Pi) keeps IERS_Auto on its bundled table offline and raised "interpolating
+    # from IERS_Auto using predictive values that are more than 30.0 days old" once that table
+    # was a month old: star calibration failed. Rebuild that here, on any astropy version.
+    from astropy.time import Time
+    from astropy.utils import iers
+
+    from issctl.predict import _init_astropy
+    _init_astropy()
+    monkeypatch.setattr(iers.IERS_Auto, "_refresh_table_as_needed", lambda self, mjd: None)
+    table = iers.IERS_Auto.read()          # the bundled IERS-A, predictions from its release
+    later = Time(table.meta["predictive_mjd"] + 400, format="mjd")
+    table._time_now = later                # astropy's hook for "today" in its own tests
+    with iers.earth_orientation_table.set(table):
+        with iers.conf.set_temp("auto_max_age", 30.0):
+            with pytest.raises(ValueError, match="IERS_Auto"):
+                later.ut1
+        later.ut1                          # as _init_astropy leaves it: no error
+
+
 def test_illumination_geometry(cfg):
     sat = make_satellite(SIM_TLE)
     t0 = time_to_unix(sat.epoch)
