@@ -1093,7 +1093,8 @@ def cmd_console(args, cfg):
                 mount.stop()
             return
         # what only changes the picture, or the next plan, works whatever the mount is doing
-        display = action in ("marks", "stretch", "frame_shown", "keep_side", "favorite_named")
+        display = action in ("marks", "stretch", "frame_shown", "keep_side", "favorite_named",
+                             "auto_orbit")
         if ui["mode"] == "track" and action != "main_steers" and not display:
             ui["msg"] = "tracking a pass - stop it first"
             return
@@ -1205,6 +1206,12 @@ def cmd_console(args, cfg):
             say("main camera " + ("may take over steering when it has the target steady"
                                   if state["main_steers"] else
                                   "does not steer: guide only (main still shows and records)"))
+        elif action == "auto_orbit":
+            state["auto_orbit"] = params.get("on") not in (None, "0", "false")
+            persist()
+            say("orbit lock " + ("on: Follow goes on along the orbit once the object is named"
+                                 if state["auto_orbit"] else
+                                 "off: Follow stays on the camera (Track it switches by hand)"))
         elif action == "identify_on":
             state["identify_on"] = params.get("on") not in (None, "0", "false")
             persist()
@@ -1592,11 +1599,53 @@ def cmd_console(args, cfg):
                     named = ui["last_named"] = {"name": ui["identified"]["name"],
                                                 "id": ui["identified"]["id"], "since": now}
                 named["seen"] = now
+                # Orbit lock: Follow goes on along the orbit once the name is sure ("probably"
+                # or a pair not yet split is not enough), tried again every 15 s until it fits.
+                tr = session["tracker"]
+                key = (id(tr), named["id"])
+                if tr is not None and tr.servo and state.get("auto_orbit", True) \
+                        and live.label == named["name"] and now - orbit_tried.get(key, -1e9) > 15.0:
+                    orbit_tried[key] = now
+                    threading.Thread(target=_safely, args=(orbit_switch, tr, named["id"], named["name"]),
+                                     name="orbit-switch", daemon=True).start()
             except Exception as e:
                 failed = True
                 say(f"live identification stopped: {e}")
 
     threading.Thread(target=name_it_live, name="live-naming", daemon=True).start()
+
+    orbit_tried = {}      # (session tracker, catalogue id) -> when a switch was last tried
+
+    def orbit_switch(tr, which, name):
+        """Follow -> the same session on the named satellite's orbit, without stopping. The
+        tracker fits the orbit to what it has been following and refuses one that does not fit
+        (a wrong name), staying in Follow."""
+        sat, name = get_satellite(cfg, which, offline=True, log=say)
+        now = clock.now()
+        p = next((p for p in pr.find_passes(sat, site, now - 1800, 1.0)
+                  if p["rise"] - 60 <= now <= p["set"] + 60), None)
+        if p is None:
+            say(f"{name}: not up now by its orbit - staying in Follow")
+            return
+        # never a flip mid-follow: the orbit is planned on the side the tube is on
+        traj, rep = pr.plan_pass(sat, site, cfg["mount"], p["rise"], p["set"],
+                                 mask=SkyMask.from_config(cfg), model=align.current_model(state),
+                                 side=pier_side(), after=now)
+        if rep["useful_s"] <= 0:
+            say(f"{name}: what is left of its pass cannot be followed on this pier side "
+                f"({describe(rep)}) - staying in Follow")
+            return
+        if session["tracker"] is not tr or not tr.servo:
+            return
+        res = tr.switch_to_orbit(traj, name)
+        if not res or not res[0]:
+            return                          # the tracker said why
+        rise, _ = pr.pass_horizon(sat, site, p)
+        session["traj"] = traj
+        session["info"] = dict(session["info"] or {}, mode="pass", name=name, start=traj.t_start,
+                               end=traj.t_end, rise=rise, max_alt=p["max_alt"],
+                               rise_at=f"{datetime.datetime.fromtimestamp(rise):%H:%M:%S}",
+                               starts_at=f"{datetime.datetime.fromtimestamp(traj.t_start):%H:%M:%S}")
 
     def track_identified():
         """Sky chart's Track: follow the object just named on its orbit (pass mode). A running
@@ -1606,15 +1655,15 @@ def cmd_console(args, cfg):
         if not ident:
             say("track: nothing identified to track")
             return
-        tr, th = session["tracker"], session["thread"]
+        tr = session["tracker"]
         if tr is not None:
-            if (session["info"] or {}).get("mode") != "servo":
+            if not tr.servo:
                 say("track: a pass is already being tracked")
                 return
-            stop_tracking()
-            if th is not None:
-                th.join(timeout=10)
-        say(f"track: switching to {ident['name']} on its orbit")
+            say(f"track: switching Follow to {ident['name']} on its orbit")
+            orbit_switch(tr, ident["id"], ident["name"])
+            return
+        say(f"track: {ident['name']} on its orbit")
         start_tracking(which=ident["id"], at=clock.now())
 
     def run_tracker(tracker, label):
@@ -1836,6 +1885,7 @@ def cmd_console(args, cfg):
                 "sat_label": live.label if state.get("identify_on", True) else "",
                 "identified": ui.get("identified") if state.get("identify_on", True) else None,
                 "last_named": ui.get("last_named"),
+                "auto_orbit": state.get("auto_orbit", True),
                 "frame_lines": [l["pts"] for l in state.get("frame_lines", [])],
                 "observed": ui.get("observed") or {},
                 "frame_shown": state.get("frame_shown", True),
@@ -2260,6 +2310,25 @@ def cmd_track(args, cfg):
             last = recorder.last
             print(f"recorded {last['frames']} frames, dropped {last['dropped']} -> {last['path']}")
 
+    if args.servo and getattr(args, "orbit_after", None):
+        # what Orbit lock does in the console once the object is named: the same session goes
+        # on along the orbit, planned on the side the tube is on
+        def switch_later():
+            t_switch = clock.now() + args.orbit_after
+            while clock.now() < t_switch and not tracker.stop_requested:
+                clock.sleep(0.2)
+            a2 = float(mount.position()[1])
+            side = None if abs(a2 - 90.0) < 2.0 else ("east_looking" if a2 <= 90.0 else "west_looking")
+            orbit, orep = pr.plan_pass(sat, site, cfg["mount"], p["rise"], p["set"], mask=mask,
+                                       side=side, after=clock.now())
+            if orep["useful_s"] <= 0:
+                print(f"orbit: nothing left of the pass on the {side} side - staying in Follow")
+                return
+            tracker.switch_to_orbit(orbit, name)
+
+        import threading
+        threading.Thread(target=switch_later, name="orbit-later", daemon=True).start()
+
     try:
         tracker.run(lead_s=lead, on_start=on_start, on_end=on_end, on_record=recorder.set_gate)
     except KeyboardInterrupt:
@@ -2333,6 +2402,9 @@ def main(argv=None):
                    help="follow the cameras instead of the orbit: no prediction, no alignment, "
                         "no slew - the tube is pointed by hand and the loop keeps the target "
                         "on the boresight")
+    p.add_argument("--orbit-after", type=float, default=None,
+                   help="with --servo: after this many seconds switch the session to the orbit, "
+                        "as Orbit lock does in the console once the object is named")
     p.add_argument("--hand-error", type=float, default=1.0,
                    help="simulated hand-pointing error at the start of a --servo run, deg")
     p.add_argument("--azimuth-error", type=float, default=0.0,

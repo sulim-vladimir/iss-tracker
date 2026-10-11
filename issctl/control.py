@@ -25,7 +25,9 @@ so the mechanical limit guard below is the only thing standing between it and a 
 """
 
 import csv
+import threading
 import time
+from collections import deque
 
 import numpy as np
 
@@ -119,6 +121,17 @@ class Tracker:
         self.lock_min_px = tr.get("lock_min_px", 6.0)
         self.lock_growth = tr.get("lock_growth_px_s", 3.0)
         self.lock = {n: {"n": 0, "miss": None, "held": 0} for n in cameras}
+        # Pass mode holds the guide to the same steady lock without a pick: the orbit says where
+        # the satellite is in every frame, and the search was 15% of the frame round the last
+        # detection, where a brighter star hid the satellite and a hot pixel could take its place.
+        # Unseen for lock_reset_s, the lock is let go and the wider search comes back.
+        self.lock_reset_s = tr.get("lock_reset_s", 5.0)
+        # Where the target was, in mount axes, at each accepted detection: what Follow has learned
+        # about it, for fitting an orbit to when it has been named (switch_to_orbit).
+        self.sightings = deque(maxlen=400)
+        self._orbit_request = None
+        self.orbit_result = None
+        self._orbit_done = threading.Event()
         self.reseed_deg = tr.get("servo_reseed_deg", 30.0)
         self.at_limit = [False, False]
         self.t0 = None
@@ -312,7 +325,7 @@ class Tracker:
         it moves - the target jumps across the image between frames and the circle stays behind
         on a star. Centred instead from the mount's position at that frame's time."""
         cam, cal = self.cams[name], self.cal.get(name)
-        if cal is None or not cam.manual or not np.isfinite(self.last_good) or cam.gate is None:
+        if cal is None or not self._steady_on(name) or not np.isfinite(self.last_good) or cam.gate is None:
             return None
         px = self._predict_px(name, t)
         if px is None:
@@ -333,6 +346,12 @@ class Tracker:
         d[0] = geo.wrap180(d[0])
         x, y = np.asarray(cal["boresight"], dtype=float) - jacobian(cal, meas[1]) @ d
         return (float(x), float(y)) if np.isfinite(x) and np.isfinite(y) else None
+
+    def _steady_on(self, name):
+        """Is this camera held to the predicted track? A picked target in any mode, and the
+        guide in pass mode, where the orbit predicts the track."""
+        cam = self.cams.get(name)
+        return getattr(cam, "manual", False) or (not self.servo and name == "guide")
 
     def _steady_radius(self, name, t):
         """Acceptance radius (px) while the target holds a steady track; None until it has."""
@@ -391,7 +410,7 @@ class Tracker:
                 and not self._acquire(name, det, meas, p, v, jump):
             return
         lk = self.lock.get(name)
-        steady_on = lk is not None and (self.servo or getattr(self.cams[name], "manual", False))
+        steady_on = lk is not None and (self.servo or self._steady_on(name))
         pred_px = self._predict_px(name, det.t) if steady_on and np.isfinite(self.last_good) else None
         miss = None if pred_px is None else float(np.hypot(det.x - pred_px[0], det.y - pred_px[1]))
         if self.force_accept:
@@ -417,6 +436,7 @@ class Tracker:
         self.last_px[name] = (det.x, det.y)
         first_fix = not np.isfinite(self.last_good)
         self.last_good = det.t
+        self.sightings.append((det.t, iss.copy()))
         if lk is not None:
             if first_fix or miss is None:
                 lk.update(n=0, miss=None)
@@ -519,6 +539,10 @@ class Tracker:
             self.main_streak = 0
         if "guide" in self.cams and now - self.last_seen["guide"] > timeout("guide") and not self.cams["guide"].manual:
             self._search_gate("guide", now)
+        lk = self.lock.get("guide")
+        if not self.servo and lk and lk["n"] and now - self.last_det["guide"] > self.lock_reset_s:
+            lk.update(n=0, miss=None, held=0)
+            self.log(f"guide: steady lock let go after {self.lock_reset_s:.0f} s unseen - searching wider")
         if all(now - t > timeout(n) for n, t in self.last_seen.items()) and self.source != "predict":
             self.source = "predict"
             if self.servo:
@@ -574,8 +598,74 @@ class Tracker:
         self.traj.reseed(self.traj.seed + shift)
         self.cross = self.cross - shift
 
+    def switch_to_orbit(self, traj, name, wait_s=5.0):
+        """Follow -> pass mode on a named satellite's orbit, without stopping: the running loop
+        takes it on its next cycle. Returns (ok, message), or None if the loop did not answer."""
+        self._orbit_done.clear()
+        self._orbit_request = (traj, name)
+        if not self._orbit_done.wait(wait_s):
+            return None
+        return self.orbit_result
+
+    def fit_orbit(self, traj, now):
+        """How the sightings of the last orbit_fit_s seconds sit against an orbit: along-track
+        time offset (s) and cross offset (axes deg), or a reason it is not this satellite."""
+        span = self.tr.get("orbit_fit_s", 10.0)
+        obs = [(t, x) for t, x in self.sightings if t >= now - span]
+        if len(obs) < 4 or obs[-1][0] - obs[0][0] < 2.0:
+            return None, "not enough recent sightings to fit its orbit to"
+        dts = []
+        for t, x in obs:
+            p, v = traj.at(t)
+            o = x - p
+            o[0] = geo.wrap180(o[0])
+            g = geo.sky_metric(x[1]) ** 2
+            vv = float(np.sum(g * v * v))
+            if vv < 1e-9:
+                return None, "the orbit does not move there"
+            dts.append(float(np.sum(g * o * v)) / vv)
+        dt = float(np.median(dts))
+        if abs(dt) > self.tr["max_time_offset_s"]:
+            return None, f"its orbit is {dt:+.0f} s along track from what is followed"
+        cs = []
+        for t, x in obs:
+            c = x - traj.at(t + dt)[0]
+            c[0] = geo.wrap180(c[0])
+            cs.append(c)
+        cs = np.array(cs)
+        cross = np.median(cs, axis=0)
+        spread = float(np.max(np.hypot(*((cs - cross) * geo.sky_metric(obs[-1][1][1])).T))) * 60
+        if spread > self.tr.get("orbit_match_arcmin", 10.0):
+            return None, (f"what is followed wanders {spread:.0f}' off its orbit - "
+                          f"not that satellite, or not a good track yet")
+        return (dt, cross, len(obs), obs[-1][0] - obs[0][0], spread), None
+
+    def _adopt_orbit(self, traj, name, now):
+        fit, why = self.fit_orbit(traj, now)
+        if fit is None:
+            return False, f"{name}: staying in Follow - {why}"
+        dt, cross, n, span, spread = fit
+        self.traj, self.servo, self.name = traj, False, name
+        self.alpha, self.beta = self.tr["cross_alpha"], self.tr["cross_beta"]
+        self.growth = self.tr["reacquire_growth_arcmin_per_s"]
+        self.time_offset, self.cross = dt, cross
+        self.cross_rate = np.zeros(2)          # the orbit carries the motion now
+        self.t_update = now
+        self.hold_until = now                  # already on it: no waiting ahead on the path
+        for c in self.candidates.values():
+            c.clear()
+        off = float(np.hypot(*(cross * geo.sky_metric(self.mount.last[1][1])))) * 60
+        return True, (f"following {name} on its orbit: {dt:+.2f} s along track, {off:.1f}' off it "
+                      f"(fitted to {n} sightings over {span:.0f} s, within {spread:.1f}')")
+
     def step(self):
         now = self.clock.now()
+        if self._orbit_request is not None:
+            traj, name = self._orbit_request
+            self._orbit_request = None
+            self.orbit_result = self._adopt_orbit(traj, name, now)
+            self.log(self.orbit_result[1])
+            self._orbit_done.set()
         if self.servo and self.traj.seed is None:
             # A fresh query, not mount.last: until the driver has asked once, `last` is still the
             # placeholder home pose, and anchoring the run there would slew the tube away from
@@ -603,6 +693,9 @@ class Tracker:
             else:
                 self.log(f"{self.name} should be back in view - looking for it again")
                 self.source = "predict"
+                if not self.servo:
+                    for lk in self.lock.values():
+                        lk.update(n=0, miss=None, held=0)
             if self.on_visibility:
                 self.on_visibility(visible, reason)
         self.lit, self.open_sky, self.visible = lit, open_sky, visible
@@ -673,6 +766,7 @@ class Tracker:
         try:
             while not self.stop_requested:
                 now = self.clock.now()
+                traj = self.traj           # Follow may have switched to an orbit (switch_to_orbit)
                 if now > traj.t_end + 2.0:
                     break
                 if self.servo and now - max(self.last_good, self.t0) > self.give_up_s:

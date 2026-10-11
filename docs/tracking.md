@@ -35,6 +35,14 @@ chasing it.
 * a blob must hold still in the frame while the stars drift past - the mount follows the
   prediction, so the satellite is nearly still and the stars stream at its rate.
 
+**Once locked, the guide looks only where the orbit puts the satellite.** After `lock_frames` (5)
+frames on its predicted track it searches a circle of `lock_k` (4) times its typical miss, at least
+`lock_min_px` (6 px), round where the orbit says it is in that frame, and ignores everything else -
+before, it searched 15% of the frame round its last detection and took the brightest blob there,
+so a brighter star hid the satellite and a fainter star or a hot pixel could take its place. Unseen
+for `lock_reset_s` (5 s), or after Earth's shadow or an obstruction, the lock is let go and the
+wider search comes back. The Log says `ignored a jump of N px off the steady track` when it holds.
+
 The main camera then only confirms what the guide has: it must agree with the estimate to
 `main_agree_arcmin` (1.5', opening to 3x that while nothing is seen), so a star in its small field
 cannot take over. A click in either image overrides all of this: it means "that one". In simulation,
@@ -83,7 +91,20 @@ A later click in the image moves the lock to what you clicked, so if it has grab
 the satellite. It stops by itself after `servo_give_up_s` (20 s) with nothing detected.
 
 Once it has followed a target steadily for `lock_frames`, it searches only along the target's own
-predicted track, so a faint gap no longer lets a star nearby take over. Corrections are capped so
+predicted track, so a faint gap no longer lets a star nearby take over.
+
+**Orbit lock** (beside Follow, on by default): once the object is named for sure (not "probably",
+not a pair still too close to split), the same session goes on along its orbit - no stop, no slew,
+planned on the pier side the tube is on. The time and pointing offset of the orbit are fitted to the
+last `orbit_fit_s` (10 s) of what the camera followed, so it continues exactly where Follow had it;
+from then on it is pass mode: the feed-forward comes from the orbit, it coasts through faint spells
+and Earth's shadow, and the guide is held to the orbit's track. An orbit that does not fit what was
+followed - wandering more than `orbit_match_arcmin` (10') off it, or more than `max_time_offset_s`
+along it - is refused with the reason, and Follow goes on (tried again every 15 s). **Track it**
+during Follow does the same switch by hand. In simulation (NOSS 3-6 (A), Follow from a hand
+pointing 1 deg off) the switch after 40 s halved the median error (7" -> 3.7") and kept the target
+inside the main field 99% of the time instead of 83%. `track --sim --servo --orbit-after 40` runs
+it. Corrections are capped so
 the target smears at most `servo_smear_px` across the guide image in one exposure.
 
 **Shorten the guide exposure first**: 8 ms for the ISS, 50-200 ms for fainter satellites. At 1 s a

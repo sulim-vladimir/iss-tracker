@@ -337,3 +337,100 @@ def test_by_default_main_does_not_steer(cfg):
         t._vision("main", Detection(c[0] + 3, c[1] - 2, 900.0, 40, clock.now()))
         clock.sleep(0.1)
     assert t.source == "guide" and t.main_streak == 0
+
+
+def test_pass_mode_guide_holds_to_the_orbit_track(cfg):
+    """On the rig the guide in pass mode searched 15% of the frame round its last detection and
+    took the brightest blob there: a brighter star hid the satellite, a fainter star or a hot
+    pixel took its place. Locked on its track, it now looks only where the orbit puts it."""
+    t, clock, cal = rig(cfg)
+    b = cal["boresight"]
+    feed(t, clock, lambda k: (b[0] + 0.3 * (k % 2), b[1]), 3.0)       # acquired, then held
+    assert t.source == "guide" and t.lock["guide"]["n"] >= t.lock_frames
+    gx, gy, gr = t._predicted_gate("guide", clock.now())
+    assert np.hypot(gx - b[0], gy - b[1]) < 2.0 and gr <= 2 * t.lock_min_px
+
+    px_per_deg = float(np.linalg.norm(np.array(cal["J"])[:, 1]))
+    star = 0.6 * t.tr["max_offset_jump_arcmin"] / 60.0 * px_per_deg    # inside the old 25' limit
+    assert star > gr
+    before, rejected = t.last_px["guide"], t.rejected
+    t._vision("guide", Detection(b[0] + star, b[1], 900.0, 20, clock.now()))
+    assert t.last_px["guide"] == before and t.rejected == rejected + 1
+
+    clock.sleep(t.lock_reset_s + 1.0)                                   # gone for a while
+    t._check_timeouts(clock.now())
+    assert t.lock["guide"]["n"] == 0
+    assert t._predicted_gate("guide", clock.now())[2] > 5 * gr          # searching wider again
+
+
+class _Line:
+    """An orbit that is a straight line in mount axes - enough to test fitting sightings to it."""
+
+    side = "east_looking"
+
+    def __init__(self, t0, rate):
+        self.t0, self.rate = t0, np.array(rate, dtype=float)
+        self.t_start, self.t_end = t0 - 600.0, t0 + 600.0
+
+    def at(self, tq):
+        return START + self.rate * (tq - self.t0), self.rate.copy()
+
+    def illum_at(self, tq):
+        return 1.0
+
+    def open_at(self, tq):
+        return 1.0
+
+
+def _follow(cfg, truth, seconds):
+    """A Follow session fed guide detections of a target moving as truth(t) (mount axes)."""
+    from issctl.calib import jacobian
+    clock = Clock(speed=10.0)
+    mount = SimMount(cfg, {}, clock, start=START)
+    mount.query()
+    cal = ideal_calibration(cfg["cameras"]["guide"], rotation_deg=20.0, dec_cal=50.0)
+    cal["axis2_cal"] = float(START[1])
+    t = Tracker(cfg, {"cameras": {"guide": cal}}, mount, {"guide": _Cam()}, clock,
+                FreeRun(mount.position()))
+    for _ in range(int(seconds / 0.2)):
+        now = clock.now()
+        d = truth(now) - mount.position_at(now)
+        x, y = np.asarray(cal["boresight"]) - jacobian(cal, START[1]) @ d
+        t._vision("guide", Detection(x, y, 500.0, 20, now))
+        clock.sleep(0.2)
+    return t, clock
+
+
+def test_follow_switches_to_the_named_orbit_without_a_jump(cfg):
+    """Follow, named, then the same session goes on along the orbit: the time offset and the
+    cross offset are fitted to what the camera saw, so the reference does not move at all -
+    only the feed-forward now comes from the orbit."""
+    import threading
+    t0 = Clock(speed=10.0).now()
+    orbit = _Line(t0, (0.05, 0.02))
+    truth = lambda tq: orbit.at(tq + 2.0)[0] + np.array([0.3, -0.2])
+    t, clock = _follow(cfg, truth, 5.0)
+    assert t.servo
+    out = {}
+    th = threading.Thread(target=lambda: out.update(r=t.switch_to_orbit(orbit, "SAT 1")))
+    th.start()
+    while th.is_alive():
+        t.step()
+        clock.sleep(0.02)
+    ok, msg = out["r"]
+    assert ok, msg
+    assert not t.servo and t.traj is orbit and t.name == "SAT 1"
+    now = clock.now()
+    ref, vel = t.target(now)
+    assert np.hypot(*(ref - truth(now))) * 60 < 1.0                    # arcmin: no jump
+    assert np.allclose(vel, orbit.rate)                                # the orbit drives it
+
+
+def test_follow_keeps_away_from_an_orbit_that_does_not_fit(cfg):
+    """A wrong name (or the partner of a pair moving another way) must not take the mount."""
+    t0 = Clock(speed=10.0).now()
+    orbit = _Line(t0, (0.05, 0.02))
+    other = _Line(t0, (0.05, -0.08))
+    t, clock = _follow(cfg, lambda tq: orbit.at(tq)[0] + np.array([0.3, -0.2]), 5.0)
+    ok, msg = t._adopt_orbit(other, "SAT 2", clock.now())
+    assert not ok and "staying in Follow" in msg and t.servo
