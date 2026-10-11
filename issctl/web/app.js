@@ -227,13 +227,27 @@ function drawSky(s) {
   drawComing(svg, (s.mount && s.mount.now) || Date.now() / 1000);
   drawFavPass(svg, (s.mount && s.mount.now) || Date.now() / 1000);
   drawIdentified(svg, s);
+  // what is named now, or was last named: it stays after the object has left the frame
+  const m = s.mount || {}, live = m.identified, named = live || m.last_named;
   const tb = document.getElementById('skytrackid');
   if (tb) {
-    const id = s.mount && s.mount.identified, servo = MODE === 'track' && s.mount.session === 'servo';
-    tb.disabled = !id || (MODE === 'track' && !servo);
-    tb.title = id ? `follow ${id.name} on its orbit (pass mode)` + (servo ? ' - stops Follow first' : '')
-                  : 'pick a moving object in the guide image; once it is named, track it on its orbit';
+    const servo = MODE === 'track' && m.session === 'servo';
+    tb.disabled = !named || (MODE === 'track' && !servo);
+    tb.title = named ? `follow ${named.name} on its orbit (pass mode)` + (servo ? ' - stops Follow first' : '')
+                     : 'pick a moving object in the guide image; once it is named, track it on its orbit';
   }
+  const fb = document.getElementById('skyfav');
+  const isFav = named && (m.favorites || []).some(e => String(e.id) === String(named.id));
+  if (fb) {
+    fb.disabled = !named || isFav;
+    fb.title = !named ? 'pick a moving object in the guide image; once it is named, keep it in Favourites'
+             : isFav ? `${named.name} is a favourite already`
+             : `keep ${named.name} in Favourites and predict its passes - rated from a Brightness measurement taken while it was in view, else the default`;
+  }
+  const nl = document.getElementById('sky-named');
+  if (nl) nl.textContent = !named ? ''
+    : (live ? 'Named: ' : `Last named (seen ${new Date(named.seen * 1000).toTimeString().slice(0, 5)}): `)
+      + `${named.name} (${named.id})` + (isFav ? ' \u2605' : '');
   if (SKY_PICK) {            // the picked point: a yellow cross
     const [x, y] = pos(SKY_PICK[0], SKY_PICK[1]);
     for (const [dx, dy] of [[7, 0], [0, 7]])

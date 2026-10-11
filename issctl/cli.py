@@ -1072,6 +1072,11 @@ def cmd_console(args, cfg):
             return start_servo(pick)
         if action == "untrack":
             return stop_tracking()
+        if action == "track_identified":
+            # before the "tracking a pass" guard: during Follow it is how you switch to the
+            # orbit (it stops Follow itself, and refuses over a pass)
+            threading.Thread(target=lambda: _safely(track_identified), daemon=True).start()
+            return
         if action == "stop":
             # Graceful cancel: drop the jog and, if a goto/sync/calibration is running, ask it to
             # give up. The axes decelerate normally instead of losing steps like the estop does.
@@ -1088,7 +1093,7 @@ def cmd_console(args, cfg):
                 mount.stop()
             return
         # what only changes the picture, or the next plan, works whatever the mount is doing
-        display = action in ("marks", "stretch", "frame_shown", "keep_side")
+        display = action in ("marks", "stretch", "frame_shown", "keep_side", "favorite_named")
         if ui["mode"] == "track" and action != "main_steers" and not display:
             ui["msg"] = "tracking a pass - stop it first"
             return
@@ -1136,6 +1141,8 @@ def cmd_console(args, cfg):
                 threading.Thread(target=lambda: _safely(favorite_session, f), daemon=True).start()
             elif q:
                 threading.Thread(target=lambda: _safely(favorite_query, q), daemon=True).start()
+        elif action == "favorite_named":
+            threading.Thread(target=lambda: _safely(favorite_named), daemon=True).start()
         elif action == "unfavorite":
             sid = str(params.get("id") or "")
             if sid:
@@ -1187,8 +1194,6 @@ def cmd_console(args, cfg):
         elif action == "frame_shown":
             state["frame_shown"] = params.get("on") not in (None, "0", "false")
             persist()
-        elif action == "track_identified":
-            threading.Thread(target=lambda: _safely(track_identified), daemon=True).start()
         elif action == "main_steers":
             state["main_steers"] = params.get("on") not in (None, "0", "false")
             persist()
@@ -1369,10 +1374,11 @@ def cmd_console(args, cfg):
         if rating_changed and ui.get("forecast"):
             do_forecast(ui["forecast"].get("mode") or "sky")
 
-    def own_rating(sid, session_path=None):
+    def own_rating(sid, session_path=None, window=None):
         """(standard magnitude, how) for an object no catalogue rates, else (None, None). From a
-        Brightness measurement taken during the session when there is one (its distance and sun
-        angle then from the orbit), otherwise the default."""
+        Brightness measurement taken during the session - or the (t0, t1) `window` it was in
+        view - when there is one (its distance and sun angle then from the orbit), otherwise
+        the default."""
         from . import forecast as fc
         from . import identify as idf
         if forecaster.rating(sid) is not None:
@@ -1380,7 +1386,10 @@ def cmd_console(args, cfg):
         std, how = float(cfg.get("forecast", {}).get("default_std_mag", 5.0)), "default"
         if session_path is not None:
             t0, dur = idf._first_last_t(session_path)
-            seen = [b for b in ui.get("brightness_log", []) if t0 - 10 <= b["t"] <= t0 + dur + 10]
+            window = (t0, t0 + dur)
+        if window is not None:
+            seen = [b for b in ui.get("brightness_log", [])
+                    if window[0] - 10 <= b["t"] <= window[1] + 10]
             if seen:
                 sat, _ = get_satellite(cfg, sid, offline=True, log=say)
                 rng, ph = fc.range_phase(sat, site, seen[-1]["t"])
@@ -1402,6 +1411,22 @@ def cmd_console(args, cfg):
         say(f"{name}: added to favourites"
             + (f", standard magnitude {std:.1f} ({how}) - Coming up lists it now" if std is not None
                else ""))
+        favorites_changed(std is not None)
+
+    def favorite_named():
+        """The sky chart's "Add to favourites": the object named live - or the last one named,
+        after it has left the frame or the pick was let go. A pick on a still frame is no
+        session, so History never lists it and this is the only way to keep it."""
+        named = ui.get("last_named")
+        if not named:
+            say("add to favourites: nothing has been named yet")
+            return
+        sid, name = named["id"], named["name"]
+        std, how = own_rating(sid, window=(named["since"], named["seen"]))
+        with favs_lock:
+            fav.add(favs, sid, name, std, how)
+        say(f"{name} ({sid}): added to favourites"
+            + (f", standard magnitude {std:.1f} ({how})" if std is not None else ""))
         favorites_changed(std is not None)
 
     def favorite_query(query):
@@ -1550,7 +1575,8 @@ def cmd_console(args, cfg):
                 live.update(clock.now())
                 if live.best is None:
                     ui["identified"], path_for = None, None
-                elif path_for is None or path_for[0] != live.best[1] or clock.now() - path_for[1] > 60:
+                    continue
+                if path_for is None or path_for[0] != live.best[1] or clock.now() - path_for[1] > 60:
                     name, sid, sat = live.best
                     now = clock.now()
                     ui["identified"] = {"name": name, "id": sid, "label": live.label,
@@ -1558,6 +1584,14 @@ def cmd_console(args, cfg):
                     path_for = (sid, now)
                 else:
                     ui["identified"]["label"] = live.label
+                # Kept after the object has gone, for "Add to favourites" and "Track it": the
+                # live name goes the moment the pick stops following it.
+                named, now = ui.get("last_named"), clock.now()
+                if named is None or named["id"] != ui["identified"]["id"]:
+                    say(f"named: {ui['identified']['name']} ({ui['identified']['id']})")
+                    named = ui["last_named"] = {"name": ui["identified"]["name"],
+                                                "id": ui["identified"]["id"], "since": now}
+                named["seen"] = now
             except Exception as e:
                 failed = True
                 say(f"live identification stopped: {e}")
@@ -1568,7 +1602,7 @@ def cmd_console(args, cfg):
         """Sky chart's Track: follow the object just named on its orbit (pass mode). A running
         Follow session is stopped first - the orbit carries the target through faint spells and
         gaps that the camera alone cannot."""
-        ident = ui.get("identified")
+        ident = ui.get("identified") or ui.get("last_named")
         if not ident:
             say("track: nothing identified to track")
             return
@@ -1801,6 +1835,7 @@ def cmd_console(args, cfg):
                 "busy": ui["busy"], "msg": ui["msg"], "jog": ui["jog"].tolist(), "cal": cal,
                 "sat_label": live.label if state.get("identify_on", True) else "",
                 "identified": ui.get("identified") if state.get("identify_on", True) else None,
+                "last_named": ui.get("last_named"),
                 "frame_lines": [l["pts"] for l in state.get("frame_lines", [])],
                 "observed": ui.get("observed") or {},
                 "frame_shown": state.get("frame_shown", True),

@@ -279,6 +279,43 @@ def test_main_noise_wandering_about_never_takes_over(cfg):
     assert np.allclose(t.cross, before)
 
 
+def test_main_gone_blind_hands_back_to_the_guide(cfg):
+    """2026-10-11, NOSS 3-6 (A): main exposure cut from 100 to 10 ms mid-pass, the satellite
+    vanished from main and only noise was left. Every rejected noise blob still counted as
+    'seen', so main never timed out, stayed in charge and kept the guide muted for 16 s - and
+    the guide came back on the satellite's partner 40' away. Main must let go in a second or two."""
+    clock = Clock(speed=10.0)
+    mount = SimMount(cfg, {}, clock, start=START)
+    mount.query()
+    gcal = ideal_calibration(cfg["cameras"]["guide"], rotation_deg=20.0, dec_cal=50.0)
+    mcal = ideal_calibration(cfg["cameras"]["main"], rotation_deg=-60.0, dec_cal=50.0)
+    for c in (gcal, mcal):
+        c["axis2_cal"] = float(START[1])
+    main = _Cam()
+    main.width, main.height = 1936, 1096
+    t = Tracker(cfg, {"cameras": {"guide": gcal, "main": mcal}, "main_steers": True}, mount,
+                {"guide": _Cam(), "main": main}, clock, _Pass(clock.now()))
+    b, c = gcal["boresight"], np.array(mcal["boresight"])
+    feed(t, clock, lambda k: (b[0], b[1]), 2.0)
+    for k in range(3):                                               # main takes over
+        t._vision("main", Detection(c[0] + 5, c[1] - 3, 900.0, 40, clock.now()))
+        clock.sleep(0.1)
+    assert t.source == "main"
+
+    noise = [c + (300, 200), c + (-300, -200)]                       # exposure cut: only noise
+    for k in range(30):                                              # 3 s
+        t._vision("main", Detection(*noise[k % 2], 300.0, 25, clock.now()))
+        if k % 2:
+            t._vision("guide", Detection(b[0], b[1], 500.0, 20, clock.now()))
+        t._check_timeouts(clock.now())
+        clock.sleep(0.1)
+    assert t.source == "guide" and t.main_streak == 0
+    for k in range(3):                                               # exposure right again
+        t._vision("main", Detection(c[0] + 4, c[1] - 2, 900.0, 40, clock.now()))
+        clock.sleep(0.1)
+    assert t.source == "main"
+
+
 def test_by_default_main_does_not_steer(cfg):
     """Guide only unless switched on: main watches and records."""
     clock = Clock(speed=10.0)

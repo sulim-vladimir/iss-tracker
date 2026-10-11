@@ -58,6 +58,10 @@ object across the frame, and the guide caption names it. What it takes:
 Once named, its path is drawn on the sky chart in **green** - where it has been and where it goes
 until it sets - and **Track it** under the chart follows it on its orbit in pass mode (stopping a
 running Follow first: the orbit carries the target through faint spells the camera alone loses).
+**Add to favourites** beside it keeps it in [Favourites](#favourites), rated from a Brightness
+measurement taken while it was in view if there is one. Both still work after the object has left
+the frame: the last object named stays under the chart ("Last named ... seen 22:14"), and every new
+name is written to the Log. A pick on a still frame is not a session, so History never lists it.
 
 ## History
 

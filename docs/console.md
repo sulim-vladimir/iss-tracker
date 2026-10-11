@@ -93,7 +93,9 @@ Under the chart:
 
 * **Go to point** - click a point on the chart first; the mount slews there and holds that altitude
   and azimuth still (sidereal off) - a place to wait for a satellite.
-* **Track it** - follow the object just named on its orbit (pass mode).
+* **Track it** - follow the object just named (or the last one named) on its orbit (pass mode).
+* **Add to favourites** - keep the object just named, or the last one named, in Favourites. Works
+  during tracking.
 * **Frame on/off** and **Undo line** - show or hide the frame lines; remove the last one. Works
   during tracking.
 * the tracking state (countdown to the pass, or time left), the mount's alt/az and the axis rates.

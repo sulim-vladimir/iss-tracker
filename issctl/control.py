@@ -507,7 +507,12 @@ class Tracker:
 
     def _check_timeouts(self, now):
         timeout = self._lost_timeout
-        if "main" in self.cams and now - self.last_seen["main"] > timeout("main") and self.main_streak:
+        # Main in charge lets go when it has not been USED for a while, not when it has seen
+        # nothing at all: after a cut to 10 ms the noise it rejected every frame kept it in
+        # charge, with the guide muted, for 16 s (2026-10-11).
+        in_charge = self.main_streak >= self.tr["main_handoff_frames"]
+        main_t = self.last_det.get("main", -np.inf) if in_charge else self.last_seen.get("main", -np.inf)
+        if "main" in self.cams and now - main_t > timeout("main") and self.main_streak:
             self.main_last_px = None
             if self.main_streak >= self.tr["main_handoff_frames"]:
                 self.log("main camera lost target, back to guide")
