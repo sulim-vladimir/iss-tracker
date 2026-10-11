@@ -154,8 +154,9 @@ lock_k = 4.0                  # ...is searched for only within lock_k x its typi
 lock_min_px = 6               # ...never less than this (px of that camera),
 lock_growth_px_s = 3          # ...growing this fast while it is not seen - a faint gap no longer
                               # lets a star 35 px away take over (Sentinel-6A, 2026-10-02)
-                              # Pass mode holds the guide to it too, with no pick: the orbit
+pass_steady_lock = true       # pass mode holds the guide to it too, with no pick: the orbit
 lock_reset_s = 5              # ...predicts the track; unseen this long, it is let go (wider search)
+                              # false = the guide as before 2026-10-12 (brightest blob near the last one)
 orbit_fit_s = 10              # Orbit lock: Follow's last seconds of sightings the orbit is fitted to
 orbit_match_arcmin = 10       # ...refused (stays in Follow) if they wander further than this off it
 

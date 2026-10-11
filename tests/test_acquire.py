@@ -434,3 +434,14 @@ def test_follow_keeps_away_from_an_orbit_that_does_not_fit(cfg):
     t, clock = _follow(cfg, lambda tq: orbit.at(tq)[0] + np.array([0.3, -0.2]), 5.0)
     ok, msg = t._adopt_orbit(other, "SAT 2", clock.now())
     assert not ok and "staying in Follow" in msg and t.servo
+
+
+def test_pass_steady_lock_can_be_switched_off(cfg):
+    """[tracking] pass_steady_lock = false gives back the guide as it was before."""
+    import copy
+    off = copy.deepcopy(cfg)
+    off["tracking"]["pass_steady_lock"] = False
+    t, clock, cal = rig(off)
+    b = cal["boresight"]
+    feed(t, clock, lambda k: (b[0] + 0.3 * (k % 2), b[1]), 3.0)
+    assert t.source == "guide" and t._predicted_gate("guide", clock.now()) is None

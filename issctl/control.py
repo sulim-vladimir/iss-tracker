@@ -126,6 +126,7 @@ class Tracker:
         # detection, where a brighter star hid the satellite and a hot pixel could take its place.
         # Unseen for lock_reset_s, the lock is let go and the wider search comes back.
         self.lock_reset_s = tr.get("lock_reset_s", 5.0)
+        self.pass_lock = bool(tr.get("pass_steady_lock", True))   # false: the pre-2026-10-12 guide
         # Where the target was, in mount axes, at each accepted detection: what Follow has learned
         # about it, for fitting an orbit to when it has been named (switch_to_orbit).
         self.sightings = deque(maxlen=400)
@@ -351,7 +352,7 @@ class Tracker:
         """Is this camera held to the predicted track? A picked target in any mode, and the
         guide in pass mode, where the orbit predicts the track."""
         cam = self.cams.get(name)
-        return getattr(cam, "manual", False) or (not self.servo and name == "guide")
+        return getattr(cam, "manual", False) or (not self.servo and name == "guide" and self.pass_lock)
 
     def _steady_radius(self, name, t):
         """Acceptance radius (px) while the target holds a steady track; None until it has."""
