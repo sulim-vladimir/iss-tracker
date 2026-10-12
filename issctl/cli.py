@@ -610,15 +610,15 @@ def cmd_console(args, cfg):
     def say(text):
         ui["msg"] = f"{datetime.datetime.now():%H:%M:%S}  {text}"
 
-    def busy(fn):
+    def busy(fn, what=None):
         ui["abort"].clear()
-        ui["busy"] = True
+        ui["busy"], ui["busy_what"] = True, what       # what: "goto" turns its button into Stop
         try:
             fn()
         except Exception as e:
             say(f"error: {e}")
         finally:
-            ui["busy"] = False
+            ui["busy"], ui["busy_what"] = False, None
 
     def goto(name):
         first = True
@@ -1050,8 +1050,8 @@ def cmd_console(args, cfg):
         alt_p, az_p = geo.hadec_to_altaz(ha_p, dec_p, site.lat)
         return pos, float(alt_p), float(az_p)
 
-    def in_background(fn):
-        threading.Thread(target=busy, args=(fn,), daemon=True).start()
+    def in_background(fn, what=None):
+        threading.Thread(target=busy, args=(fn, what), daemon=True).start()
 
     def relabel_counters():
         """Home redefines what the counters mean, so star points taken before no longer apply."""
@@ -1259,7 +1259,7 @@ def cmd_console(args, cfg):
         elif action == "goto_altaz":
             ui["jog"][:] = 0
             alt, az = float(params.get("alt", -90)), float(params.get("az", 0)) % 360.0
-            in_background(lambda: goto_altaz(alt, az))
+            in_background(lambda: goto_altaz(alt, az), "goto")
         elif action == "spiral":
             ui["jog"][:] = 0
             in_background(do_spiral)
@@ -1294,7 +1294,8 @@ def cmd_console(args, cfg):
                 ui["msg"] = "enter a target first"
             else:
                 ui["jog"][:] = 0
-                in_background(lambda: (do_sync if action == "sync" else goto)(target))
+                in_background(lambda: (do_sync if action == "sync" else goto)(target),
+                              "goto" if action == "goto" else None)
         elif action == "centre":
             if cams:
                 ui["jog"][:] = 0
@@ -2067,7 +2068,7 @@ def cmd_console(args, cfg):
                 "planning": bool(ui.get("planning")),
                 "session": ((session["info"] or {}).get("mode", "pass")
                             if ui["mode"] == "track" else None),
-                "busy": ui["busy"], "msg": ui["msg"], "jog": ui["jog"].tolist(), "cal": cal,
+                "busy": ui["busy"], "busy_what": ui.get("busy_what"), "msg": ui["msg"], "jog": ui["jog"].tolist(), "cal": cal,
                 "sat_label": live.label,
                 "identified": ui.get("identified"),
                 "naming": ui.get("naming"), "orbit_pending": ui.get("orbit_pending"),

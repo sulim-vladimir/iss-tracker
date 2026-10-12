@@ -7,10 +7,9 @@ function mnt(action, params) { return api('/api/mount', Object.assign({action}, 
 let MODE = 'console', MOTORS = true, PASS_MODE = false, PLANNING = false;
 function applyMount(m) {
   MODE = m.mode || 'console';
+  gotoButtons(m);
   PLANNING = !!m.planning;           // Track pressed, the pass is being planned (takes seconds)
   MOTORS = m.motors !== false;
-  const mb = document.getElementById('motorbtn');
-  if (mb) { mb.textContent = MOTORS ? 'motors off' : 'motors ON'; mb.className = MOTORS ? '' : 'on'; }
   const servo = MODE === 'track' && m.session === 'servo';
   PASS_MODE = MODE === 'track' && !servo;
   const vb = document.getElementById('servobtn');
@@ -197,6 +196,17 @@ function pickSky(ev) {     // a click on the chart: the alt/az under it, for "Go
   const b = document.getElementById('skygoto');
   if (b) b.disabled = MODE === 'track';
   if (LAST_STATE) drawSky(LAST_STATE);
+}
+// a goto running: its buttons turn red and stop it (the graceful stop, not the emergency one)
+let SLEWING = false;
+function gotoOrStop() { return SLEWING ? mnt('stop', {}) : mnt('goto', {target: tgt()}); }
+function gotoButtons(m) {
+  SLEWING = !!(m.busy && m.busy_what === 'goto');
+  const gb = document.getElementById('gotobtn');
+  if (gb) { gb.textContent = SLEWING ? 'Stop' : 'Goto'; gb.className = SLEWING ? 'on-red' : ''; }
+  const sb = document.getElementById('skygoto');
+  if (sb && SLEWING) { sb.textContent = 'Stop'; sb.className = 'on-red'; sb.disabled = false; }
+  else if (sb && sb.textContent === 'Stop') { sb.textContent = 'Go to point'; sb.className = ''; }
 }
 function gotoSky() {
   if (SKY_PICK) mnt('goto_altaz', {az: SKY_PICK[0].toFixed(2), alt: SKY_PICK[1].toFixed(2)});

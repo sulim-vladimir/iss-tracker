@@ -60,7 +60,9 @@ picture and up moves it up, whatever the camera's rotation, through its matrix. 
   coordinates (`18.6 38.8`, `18:36:56 +38:47:01`) or `altaz ALT AZ`.
 * **go home** - slew to home (counterweight down, tube at the pole); tracking stops.
 * **centre by solve** - put the named object on the green cross using the plate solve.
-* **sidereal on/off**, **Keep pier side** ([why](tracking.md#the-pier-side)), **motors off**.
+* **sidereal on/off**, **Keep pier side** ([why](tracking.md#the-pier-side)). There is no motors-off
+  button: the firmware cuts the driver current by itself after `idle_disable_s` (10 s) standing
+  still, and powers them up again for the next move.
 
 ## Calibration
 

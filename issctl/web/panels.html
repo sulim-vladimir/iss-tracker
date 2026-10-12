@@ -85,7 +85,7 @@
  <div class="ctl">
   <input id="target" title="star or planet name; Messier, NGC or IC (M31, NGC 7000, IC 434) or a common name (Orion Nebula); anything else CDS knows when online; 'RAh Dec', '18:36:56 +38:47:01', or 'altaz ALT AZ'"
   placeholder="vega / M31 / NGC 7000" style="width:104px">
-  <button onclick="mnt('goto',{target:tgt()})">goto</button>
+  <button id="gotobtn" onclick="gotoOrStop()">goto</button>
   <button title="slew back to home: counterweight down, tube along the polar axis. Tracking stops"
   onclick="if(confirm('Slew to home (counterweight down, tube at the pole)?')) mnt('gohome',{})">go home</button>
   <button onclick="mnt('sync',{target:tgt()})">sync</button>
@@ -95,10 +95,7 @@
   <button id="siderealbtn" title="follow the stars at sidereal rate"
   onclick="mnt('track',{on: this.className === 'on' ? 0 : 1})">sidereal off</button>
   <button id="keepsidebtn" title="ON: a pass is planned on the pier side the mount is on now - never a meridian flip; a pass that side cannot reach is refused, saying what a flip would give. Off: whichever side tracks longest, which may swing the tube right round (a pass close to the pole needs ~180 deg of RA). At the pole (home) either side is fine"
-  onclick="mnt('keep_side',{on: this.className === 'on' ? 0 : 1})">Keep pier side</button></div>
-
- <div class="ctl">
-  <button id="motorbtn" onclick="mnt('motors',{on: MOTORS ? 0 : 1})">motors off</button></div></div>
+  onclick="mnt('keep_side',{on: this.className === 'on' ? 0 : 1})">Keep pier side</button></div></div>
 
 
 <!-- @status -->
@@ -200,7 +197,7 @@
 <div class="panel sky">
 <svg id="sky" viewBox="0 0 330 330" onclick="pickSky(event)"></svg>
 <div class="ctl"><button id="skygoto" disabled title="click a point on the chart first; the mount slews there and holds that altitude and azimuth still (sidereal off) - a place to wait for a satellite"
- onclick="gotoSky()">Go to point</button>
+ onclick="SLEWING ? mnt('stop', {}) : gotoSky()">Go to point</button>
  <button id="skyframe" title="show or hide the window-frame lines drawn with Frame line (guide panel)"
  onclick="mnt('frame_shown',{on: (LAST_STATE && LAST_STATE.mount && LAST_STATE.mount.frame_shown === false) ? 1 : 0})">Frame on</button>
  <button id="skyframeundo" disabled title="remove the last frame line"
