@@ -1095,7 +1095,7 @@ def cmd_console(args, cfg):
         # what only changes the picture, or the next plan, works whatever the mount is doing
         display = action in ("marks", "stretch", "frame_shown", "keep_side", "favorite_named",
                              "auto_orbit")
-        if ui["mode"] == "track" and action != "main_steers" and not display:
+        if ui["mode"] == "track" and action not in ("main_steers", "hand_pick") and not display:
             ui["msg"] = "tracking a pass - stop it first"
             return
         if ui["busy"] and not display:
@@ -1206,6 +1206,15 @@ def cmd_console(args, cfg):
             say("main camera " + ("may take over steering when it has the target steady"
                                   if state["main_steers"] else
                                   "does not steer: guide only (main still shows and records)"))
+        elif action == "hand_pick":
+            state["hand_pick"] = params.get("on") not in (None, "0", "false")
+            persist()
+            tr = session["tracker"]
+            if tr is not None:
+                tr.hand_pick = state["hand_pick"]
+            say("pass mode " + ("follows the prediction until you click the satellite in the guide"
+                                if state["hand_pick"] else
+                                "takes the first lock by itself: a blob near the prediction that holds still"))
         elif action == "auto_orbit":
             state["auto_orbit"] = params.get("on") not in (None, "0", "false")
             persist()
@@ -1897,6 +1906,7 @@ def cmd_console(args, cfg):
                 "favorites": ui.get("favorites"), "fav_passes": ui.get("fav_passes"),
                 "keep_side": keep_side(),
                 "main_steers": bool(state.get("main_steers", cfg["tracking"].get("main_steers", False))),
+                "hand_pick": bool(state.get("hand_pick", cfg["tracking"].get("pass_hand_pick", True))),
                 "forecast": ui.get("forecast"), "now": clock.now(),
                 "rates": [round(float(r), 4) for r in mount.rate_cmd],
                 "track": tracking_note()}
@@ -2262,6 +2272,8 @@ def cmd_track(args, cfg):
     else:
         reference = traj
     tracker = Tracker(cfg, state, mount, cams, clock, reference, log_path=log_path, name=name)
+    if args.sim:
+        tracker.hand_pick = False       # nobody clicks in a simulation
 
     def status_lines(name):
         if name != "guide":

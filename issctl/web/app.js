@@ -66,6 +66,13 @@ function applyMount(m) {
     sb2.textContent = 'Main steers: ' + (m.main_steers ? 'ON' : 'off');
     sb2.className = (m.main_steers ? 'on ' : '') + 'right';
   }
+  const pb = document.getElementById('pickbtn');
+  if (pb) {
+    const on = m.hand_pick !== false;
+    pb.dataset.on = on ? '1' : '0';
+    pb.textContent = 'Pick: ' + (on ? 'by hand' : 'auto');
+    pb.className = (on ? 'on ' : '') + 'right';
+  }
   const ob = document.getElementById('orbitbtn');
   if (ob) { const on = m.auto_orbit !== false; ob.textContent = 'Orbit lock ' + (on ? 'on' : 'off'); ob.classList.toggle('on', on); }
   const ib = document.getElementById('identbtn');

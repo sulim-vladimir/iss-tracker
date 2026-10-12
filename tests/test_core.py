@@ -392,3 +392,15 @@ def test_a_save_cut_short_keeps_the_last_good_state(tmp_path, monkeypatch):
         save_state({"cameras": {}}, path)
     monkeypatch.undo()
     assert load_state(path) == {"cameras": {"guide": {"J": [[1, 2], [3, 4]]}}}
+
+
+def test_real_clock_follows_the_wall_clock_after_suspend(monkeypatch):
+    # monotonic does not count a suspend; the real-time clock must not fall behind with it
+    import time as _time
+    from issctl.clock import Clock
+    clock = Clock()
+    wall = _time.time() + 75239.0
+    monkeypatch.setattr(_time, "time", lambda: wall)
+    assert abs(clock.now() - wall) < 1.0
+    sim = Clock(start_unix=1000.0, speed=10.0)
+    assert 1000.0 <= sim.now() < 1010.0

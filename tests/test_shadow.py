@@ -67,7 +67,8 @@ def rig():
     cfg = load_config()
     traj = make_trajectory()
     clock = FakeClock(T0 + 50.0)
-    state = {"index": [0.0, 90.0], "cameras": {"guide": ideal_calibration(cfg["cameras"]["guide"])}}
+    state = {"index": [0.0, 90.0], "cameras": {"guide": ideal_calibration(cfg["cameras"]["guide"])},
+             "hand_pick": False}
     mount = SimMount(cfg, state, clock, start=traj.at(T0 + 50.0)[0])
     cam = StubCam("guide", cfg["cameras"]["guide"])
     tracker = Tracker(cfg, state, mount, {"guide": cam}, clock, traj, log=lambda *a: None)

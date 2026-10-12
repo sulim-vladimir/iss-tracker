@@ -86,6 +86,11 @@ class Tracker:
         # track was guide-only, and every mess since came from main taking over (a star, then
         # noise). Main still shows and records; it just does not steer until switched on.
         self.main_steers = bool((state or {}).get("main_steers", cfg["tracking"].get("main_steers", False)))
+        # Pass mode: does the user click the satellite, or may the guide take the first lock by
+        # itself (_acquire)? By hand by default: a hot pixel holds still in the frame just as the
+        # satellite does, and the guide took one 65 px off the boresight for DELTA 2 R/B (rig,
+        # 2026-10-12) - the user can tell the satellite from a star, the detector cannot.
+        self.hand_pick = bool((state or {}).get("hand_pick", cfg["tracking"].get("pass_hand_pick", True)))
         self.cfg, self.mount, self.cams, self.clock, self.traj, self.log = cfg, mount, cameras, clock, traj, log
         m, tr = cfg["mount"], cfg["tracking"]
         self.tr = tr
@@ -236,6 +241,16 @@ class Tracker:
         for n, cam in self.cams.items():
             if name in (None, n):
                 cam.clear_selection()
+        if self.hand_pick and not self.servo:
+            # picking by hand: the cleared target is not the target any more, and nothing else
+            # becomes it either - follow the prediction until the next click
+            self.last_good = -np.inf
+            self.source = "predict"
+            self.main_streak = 0
+            for lk in self.lock.values():
+                lk.update(n=0, miss=None, held=0)
+            self.log("manual selection cleared - following the prediction; click the target")
+            return
         self.log("manual selection cleared, back to automatic")
 
     def altaz(self, pos=None):
@@ -407,9 +422,12 @@ class Tracker:
             self.main_streak += 1
             if self.main_streak < self.tr["main_handoff_frames"]:
                 return
-        if not self.force_accept and not self.servo and not np.isfinite(self.last_good) \
-                and not self._acquire(name, det, meas, p, v, jump):
-            return
+        if not self.force_accept and not self.servo and not np.isfinite(self.last_good):
+            if self.hand_pick:
+                self.candidates[name].clear()
+                return              # nothing is the target until the user clicks it
+            if not self._acquire(name, det, meas, p, v, jump):
+                return
         lk = self.lock.get(name)
         steady_on = lk is not None and (self.servo or self._steady_on(name))
         pred_px = self._predict_px(name, det.t) if steady_on and np.isfinite(self.last_good) else None
@@ -797,6 +815,9 @@ class Tracker:
                                  f"following from {self.hold_until - now:.0f} s")
                 if not started and now >= traj.t_start - 5.0:
                     started = True
+                    if not self.servo and self.hand_pick:
+                        self.log(f"{self.name}: following the prediction - click it in the guide "
+                                 f"image when you see it")
                     if on_start:
                         on_start()
                 tick = time.monotonic()

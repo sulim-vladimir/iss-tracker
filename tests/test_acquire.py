@@ -54,14 +54,17 @@ class _Cam:
         return None, None, 0
 
 
-def rig(cfg, traj_start=0.0, **kw):
+def rig(cfg, traj_start=0.0, hand_pick=False, **kw):
     clock = Clock(speed=10.0)
     mount = SimMount(cfg, {}, clock, start=START)
     mount.query()
     cal = ideal_calibration(cfg["cameras"]["guide"], rotation_deg=20.0, dec_cal=50.0)
     cal["axis2_cal"] = float(START[1])
     traj = _Pass(clock.now() + traj_start, **kw)
-    t = Tracker(cfg, {"cameras": {"guide": cal}}, mount, {"guide": _Cam()}, clock, traj)
+    state = {"cameras": {"guide": cal}}
+    if hand_pick is not None:             # None: the config's default
+        state["hand_pick"] = hand_pick
+    t = Tracker(cfg, state, mount, {"guide": _Cam()}, clock, traj)
     return t, clock, cal
 
 
@@ -150,7 +153,7 @@ def test_main_only_confirms_what_the_guide_has(cfg):
         c["axis2_cal"] = float(START[1])
     main = _Cam()
     main.width, main.height = 1936, 1096
-    t = Tracker(cfg, {"cameras": {"guide": gcal, "main": mcal}, "main_steers": True}, mount,
+    t = Tracker(cfg, {"cameras": {"guide": gcal, "main": mcal}, "main_steers": True, "hand_pick": False}, mount,
                 {"guide": _Cam(), "main": main}, clock, _Pass(clock.now()))
     b = gcal["boresight"]
     feed(t, clock, lambda k: (b[0], b[1]), 2.0)                     # guide locks on the target
@@ -254,7 +257,7 @@ def test_main_noise_wandering_about_never_takes_over(cfg):
         c["axis2_cal"] = float(START[1])
     main = _Cam()
     main.width, main.height = 1936, 1096
-    t = Tracker(cfg, {"cameras": {"guide": gcal, "main": mcal}, "main_steers": True}, mount,
+    t = Tracker(cfg, {"cameras": {"guide": gcal, "main": mcal}, "main_steers": True, "hand_pick": False}, mount,
                 {"guide": _Cam(), "main": main}, clock, _Pass(clock.now()))
     b = gcal["boresight"]
     feed(t, clock, lambda k: (b[0], b[1]), 2.0)
@@ -293,7 +296,7 @@ def test_main_gone_blind_hands_back_to_the_guide(cfg):
         c["axis2_cal"] = float(START[1])
     main = _Cam()
     main.width, main.height = 1936, 1096
-    t = Tracker(cfg, {"cameras": {"guide": gcal, "main": mcal}, "main_steers": True}, mount,
+    t = Tracker(cfg, {"cameras": {"guide": gcal, "main": mcal}, "main_steers": True, "hand_pick": False}, mount,
                 {"guide": _Cam(), "main": main}, clock, _Pass(clock.now()))
     b, c = gcal["boresight"], np.array(mcal["boresight"])
     feed(t, clock, lambda k: (b[0], b[1]), 2.0)
@@ -327,7 +330,7 @@ def test_by_default_main_does_not_steer(cfg):
         c["axis2_cal"] = float(START[1])
     main = _Cam()
     main.width, main.height = 1936, 1096
-    t = Tracker(cfg, {"cameras": {"guide": gcal, "main": mcal}}, mount,
+    t = Tracker(cfg, {"cameras": {"guide": gcal, "main": mcal}, "hand_pick": False}, mount,
                 {"guide": _Cam(), "main": main}, clock, _Pass(clock.now()))
     assert not t.main_steers
     b = gcal["boresight"]
@@ -445,3 +448,27 @@ def test_pass_steady_lock_can_be_switched_off(cfg):
     b = cal["boresight"]
     feed(t, clock, lambda k: (b[0] + 0.3 * (k % 2), b[1]), 3.0)
     assert t.source == "guide" and t._predicted_gate("guide", clock.now()) is None
+
+
+def test_by_default_a_pass_waits_for_the_users_click(cfg):
+    """Pick by hand (the default): a still blob on the prediction - a hot pixel looks just like
+    that, DELTA 2 R/B 2026-10-12 - is never taken; the click is, and the lock holds after it."""
+    t, clock, cal = rig(cfg, hand_pick=None)
+    assert t.hand_pick
+    b = cal["boresight"]
+    feed(t, clock, lambda k: (b[0] + 10, b[1]), 6.0)
+    assert t.source == "predict" and not np.isfinite(t.last_good)
+    t.select("guide", b[0] + 10, b[1])
+    feed(t, clock, lambda k: (b[0] + 10 + 0.3 * (k % 2), b[1]), 2.0)
+    assert t.source == "guide" and np.isfinite(t.last_good)
+
+
+def test_clearing_the_pick_waits_for_the_next_click(cfg):
+    t, clock, cal = rig(cfg, hand_pick=True)
+    b = cal["boresight"]
+    t.select("guide", *b)
+    feed(t, clock, lambda k: b, 1.0)
+    assert t.source == "guide"
+    t.clear_selection("guide")
+    feed(t, clock, lambda k: b, 6.0)
+    assert t.source == "predict" and not np.isfinite(t.last_good)

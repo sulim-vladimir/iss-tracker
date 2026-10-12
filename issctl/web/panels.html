@@ -27,6 +27,8 @@
 <!-- @orbit -->
  <button id="orbitbtn" class="right" title="orbit lock: once Follow has the object named for sure, the same session goes on along its orbit - no stop, no slew. The orbit is fitted to what the camera followed (time and pointing offset), it then carries the mount through faint spells and Earth's shadow, and the guide only looks where the orbit says. An orbit that does not fit what was followed is refused and Follow goes on. Off: Follow stays on the camera; Track it switches by hand"
  onclick="mnt('auto_orbit',{on: this.classList.contains('on') ? 0 : 1})">Orbit lock</button>
+ <button id="pickbtn" class="right" title="tracking a pass: who picks the satellite? By hand: the mount follows the prediction and nothing in the image is taken for the target until you click it in the guide image - a star or a hot pixel can no longer be locked by mistake. Auto: the guide takes a blob near the prediction that holds still in the frame. Can be switched during a pass"
+ onclick="mnt('hand_pick',{on: this.dataset.on === '1' ? 0 : 1})">Pick: by hand</button>
 
 <!-- @steer -->
  <button id="steerbtn" class="right" title="may the main camera take over steering from the guide once it has the target steady? Off: guide only - main still shows and records"

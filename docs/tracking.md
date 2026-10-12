@@ -28,7 +28,15 @@ the cross-track error from the cameras. **A pass already up** is planned from no
 no longer counts - and the mount waits a little *ahead* of the satellite on its path instead of
 chasing it.
 
-**The cameras only take over once the target is really there.** Before the first lock:
+**You pick the satellite (Pick: by hand, the default).** The mount follows the prediction and
+nothing in the image counts as the target until you click it in the guide image; from the click on
+it is held like any hand pick (steady lock on the orbit's track). Clearing the pick goes back to the
+prediction and waits for the next click. A hot pixel holds still in the frame just like the
+satellite, and the automatic first lock took one 65 px off the boresight (DELTA 2 R/B, 2026-10-12).
+The **Pick** button (guide panel, beside Orbit lock; `[tracking] pass_hand_pick`) switches to
+**auto**, also during a pass; `track --sim` always uses auto.
+
+**Pick: auto - the cameras only take over once the target is really there.** Before the first lock:
 
 * nothing counts until the pass has started and the mount has arrived;
 * the guide searches only within `acquire_radius_arcmin` (3 deg) of the prediction;

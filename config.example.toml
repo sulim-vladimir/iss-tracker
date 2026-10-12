@@ -132,6 +132,9 @@ main_steers = false           # may the main camera take over steering? (the con
                               # overrides this; off = guide only, main just watches and records)
 keep_pier_side = true         # plan passes on the pier side the mount is on - no meridian flip
                               # (the console's "Keep pier side" switch overrides this)
+pass_hand_pick = true         # pass mode: nothing is the target until you click it in the guide
+                              # (false = the guide takes a still blob near the prediction by itself;
+                              # the console's "Pick" switch overrides this)
 main_handoff_frames = 3       # consecutive main-camera detections before trusting it
 lost_timeout_s = 1.5          # fall back to guide / pure prediction after this
 shadow_threshold = 0.25       # sunlit fraction below which we stop believing the cameras
