@@ -226,6 +226,9 @@ class Tracker:
             if m is None:
                 return None
             rows.append((t, *(m + axes_offset_from_pixel(cal, m[1], (x, y)))))
+        # what the camera saw before Follow are sightings too: Track (pick -> orbit) can fit
+        # the orbit straight away instead of waiting for Follow's own
+        self.sightings.extend((t, np.array([a1, a2])) for t, a1, a2 in rows)
         a = np.array(rows)
         a[:, 1] = a[0, 1] + geo.wrap180(a[:, 1] - a[0, 1])
         rate = np.array([np.polyfit(a[:, 0] - a[0, 0], a[:, k], 1)[0] for k in (1, 2)])
@@ -781,6 +784,7 @@ class Tracker:
         self.mount.enable(True)
         started = False
         last_report = 0.0
+        prev_tick, late_n, late_max, late_said = None, 0, 0.0, -np.inf
         self.t0 = self.clock.now() if self.servo else traj.t_start
         try:
             while not self.stop_requested:
@@ -821,6 +825,17 @@ class Tracker:
                     if on_start:
                         on_start()
                 tick = time.monotonic()
+                # A late cycle leaves the last rate command running: at 1.7 deg/s a 1.5 s stall
+                # overshot by a degree and the correction swung back (USA 327, 2026-10-12, the
+                # live naming holding Python). Say so in the Log, at most every 10 s.
+                late = tick - prev_tick - self.dt / self.clock.speed if prev_tick else 0.0
+                prev_tick = tick
+                if late > 0.25:
+                    late_n, late_max = late_n + 1, max(late_max, late)
+                if late_n and tick - late_said > 10.0:
+                    self.log(f"control loop late {late_n}x, up to {late_max:.1f} s - the mount "
+                             f"ran on its last command meanwhile (the Pi busy?)")
+                    late_n, late_max, late_said = 0, 0.0, tick
                 err = self.step()
                 if now - last_report > 2.0:
                     sky = err * geo.sky_metric(self.mount.last[1][1]) * 60

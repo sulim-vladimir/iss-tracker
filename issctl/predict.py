@@ -129,6 +129,11 @@ def sat_hadec(sat, site, t_unix):
     return ha, dec, alt.degrees, az.degrees
 
 
+def sat_range_km(sat, site, t_unix):
+    """Distance from the site to the satellite, km - for the live readout of what is tracked."""
+    return float((sat - site.topos).at(unix_to_time(t_unix)).distance().km)
+
+
 # ---- stars / planets via astropy (bundled ephemeris, no downloads) ----
 
 def _init_astropy():

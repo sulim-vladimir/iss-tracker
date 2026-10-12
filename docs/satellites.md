@@ -33,8 +33,7 @@ the same moments. It answers with a name, "probably" a name, both members of a f
 "nothing in the catalogues flew this path" (an aircraft, a star, or an object no catalogue carries).
 
 It runs by itself when a session ends, and live during it: the guide caption shows the name within
-~15 s of locking. **naming on/off** (Target & tracking) switches both automatic runs; the
-**Identify** button works either way. From the command line: `./issctl.sh identify [logs/servo-....csv]`.
+~15 s of locking. Both always run; **Identify** in History names any session again. From the command line: `./issctl.sh identify [logs/servo-....csv]`.
 
 Each session saves the pointing model it ran with next to its log, so a later re-alignment cannot
 skew the answer. **Identify needs the star alignment** - without it the counters say nothing about
@@ -45,7 +44,7 @@ the sky.
 Click a moving object in the guide image and leave the mount alone: the red circle follows the
 object across the frame, and the guide caption names it. What it takes:
 
-1. **naming on**, and a **star alignment** - without one nothing is named at all;
+1. a **star alignment** - without one nothing is named at all;
 2. the pick must be **detected**: the Target line under the guide image says *locked on your pick*.
    *Your pick - nothing there* means the camera does not see it, and nothing can be named;
 3. **at least 4 detections spanning 3 s or more**. A ranking runs every 5 s, so at a 1 s exposure
@@ -56,11 +55,15 @@ object across the frame, and the guide caption names it. What it takes:
    the exposure.
 
 Once named, its path is drawn on the sky chart in **green** - where it has been and where it goes
-until it sets - and **Track it** under the chart follows it on its orbit in pass mode (stopping a
-running Follow first: the orbit carries the target through faint spells the camera alone loses).
-**Add to favourites** beside it keeps it in [Favourites](#favourites), rated from a Brightness
-measurement taken while it was in view if there is one. Both still work after the object has left
-the frame: the last object named stays under the chart ("Last named ... seen 22:14"), and every new
+until it sets. **Track** (guide panel, under Follow) then follows it on its orbit - only when you
+press it. The button tells where it is: *Identifying...* (red, naming; after 30 s with no match it
+says so - Follow still steers by the camera), *Track* / *Track?* (named / probably), *Starting...*,
+then *Stop* while the orbit steers, with the camera correcting. It starts Follow on the pick and
+fits the orbit to what the circle already followed, so nothing slews; a name that does not fit what
+was seen is refused and Follow goes on. During Follow it switches the session to the orbit.
+**Add to favourites** under the sky chart keeps it in [Favourites](#favourites), rated from a
+Brightness measurement taken while it was in view if there is one. It still works after the object
+has left the frame: the last object named stays under the chart ("Last named ... seen 22:14"), and every new
 name is written to the Log. A pick on a still frame is not a session, so History never lists it.
 
 ## History

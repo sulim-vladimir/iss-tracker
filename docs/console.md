@@ -60,12 +60,11 @@ picture and up moves it up, whatever the camera's rotation, through its matrix. 
   coordinates (`18.6 38.8`, `18:36:56 +38:47:01`) or `altaz ALT AZ`.
 * **go home** - slew to home (counterweight down, tube at the pole); tracking stops.
 * **centre by solve** - put the named object on the green cross using the plate solve.
-* **sidereal on/off**, **Keep pier side** ([why](tracking.md#the-pier-side)), **Identify** and
-  **naming on/off** ([Satellites](satellites.md#identify)), **motors off**.
+* **sidereal on/off**, **Keep pier side** ([why](tracking.md#the-pier-side)), **motors off**.
 
 ## Calibration
 
-**Set home** and the star tools - **Solve**, **Sync on stars**, **Calibrate on stars**, **Add
+**Set home** and the star tools - **Sync on stars**, **Calibrate on stars**, **Add
 star**, **Spiral search in main**, **Calibrate main on star**, **Boresight on star**, **Clear
 alignment** - all described in [Observing](observing.md). Under them a summary: when it was
 calibrated, each camera's scale and rotation, the star alignment and the polar error.
@@ -93,18 +92,17 @@ Under the chart:
 
 * **Go to point** - click a point on the chart first; the mount slews there and holds that altitude
   and azimuth still (sidereal off) - a place to wait for a satellite.
-* **Track it** - follow the object just named (or the last one named) on its orbit (pass mode).
 * **Add to favourites** - keep the object just named, or the last one named, in Favourites. Works
   during tracking.
-* **Frame on/off** and **Undo line** - show or hide the frame lines; remove the last one. Works
-  during tracking.
+* **Frame on/off**, **Undo line** and **Clear lines** - show or hide the frame lines; remove the
+  last one; remove them all (after the tripod moved or the alignment changed). Work during tracking.
 * the tracking state (countdown to the pass, or time left), the mount's alt/az and the axis rates.
 
 ## Lists and messages
 
 **Coming up**, **Favourites** and **History** are described in [Satellites](satellites.md).
 **Messages** shows the latest message, the **Log** everything with times (**copy** puts it on the
-clipboard), **Warnings** what the last calibration found doubtful.
+clipboard), **Warnings** what the last calibration found doubtful, with that calibration's date and a **Clear warnings** button.
 
 **One session can do the whole evening.** **Track selected** hands the mount to the tracker and
 switches the page to tracking mode: the jog/goto/calibrate controls refuse ("tracking a pass - stop

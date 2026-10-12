@@ -472,3 +472,30 @@ def test_clearing_the_pick_waits_for_the_next_click(cfg):
     t.clear_selection("guide")
     feed(t, clock, lambda k: b, 6.0)
     assert t.source == "predict" and not np.isfinite(t.last_good)
+
+
+def test_a_pick_watched_with_the_mount_still_fits_its_orbit_at_once(cfg):
+    """Track from a pick: what the red circle followed before Follow started counts, so the
+    orbit is adopted right away - no waiting for Follow's own sightings, and no slew."""
+    from issctl.calib import jacobian
+    clock = Clock(speed=10.0)
+    mount = SimMount(cfg, {}, clock, start=START)
+    mount.query()
+    cal = ideal_calibration(cfg["cameras"]["guide"], rotation_deg=20.0, dec_cal=50.0)
+    cal["axis2_cal"] = float(START[1])
+    orbit = _Line(clock.now(), (0.05, 0.02))
+    truth = lambda tq: orbit.at(tq + 1.5)[0] + np.array([0.3, -0.2])
+    track = []
+    for _ in range(25):                       # 5 s of the pick moving across a still frame
+        now = clock.now()
+        d = truth(now) - mount.position_at(now)
+        x, y = np.asarray(cal["boresight"]) - jacobian(cal, START[1]) @ d
+        track.append((now, float(x), float(y)))
+        clock.sleep(0.2)
+    t = Tracker(cfg, {"cameras": {"guide": cal}}, mount, {"guide": _Cam()}, clock,
+                FreeRun(mount.position()))
+    assert t.seed_rate("guide", track) is not None and len(t.sightings) == len(track)
+    ok, msg = t._adopt_orbit(orbit, "SAT 1", clock.now())
+    assert ok, msg
+    now = clock.now()
+    assert np.hypot(*(t.target(now)[0] - truth(now))) * 60 < 1.0      # arcmin: where it really is

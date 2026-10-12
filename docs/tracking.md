@@ -10,8 +10,8 @@ follows what the camera sees, with no orbit and no alignment - only the camera c
 
 ## Pass mode
 
-Start it from **Track selected** in [Coming up or Favourites](satellites.md), **Track it** under the
-sky chart (the object just named), `p` in the terminal console (the next ISS pass), or
+Start it from **Track selected** in [Coming up or Favourites](satellites.md), **Track** in the guide
+panel (a picked object, once named - see [Satellites](satellites.md#naming-a-pick-without-moving-the-mount)), `p` in the terminal console (the next ISS pass), or
 `./issctl.sh track`. It works for **any satellite** in the catalogues, classified ones included:
 
 ```bash
@@ -33,7 +33,7 @@ nothing in the image counts as the target until you click it in the guide image;
 it is held like any hand pick (steady lock on the orbit's track). Clearing the pick goes back to the
 prediction and waits for the next click. A hot pixel holds still in the frame just like the
 satellite, and the automatic first lock took one 65 px off the boresight (DELTA 2 R/B, 2026-10-12).
-The **Pick** button (guide panel, beside Orbit lock; `[tracking] pass_hand_pick`) switches to
+The **Pick** button (guide panel, after Orbit lock at the end of the button row; `[tracking] pass_hand_pick`) switches to
 **auto**, also during a pass; `track --sim` always uses auto.
 
 **Pick: auto - the cameras only take over once the target is really there.** Before the first lock:
@@ -101,15 +101,15 @@ the satellite. It stops by itself after `servo_give_up_s` (20 s) with nothing de
 Once it has followed a target steadily for `lock_frames`, it searches only along the target's own
 predicted track, so a faint gap no longer lets a star nearby take over.
 
-**Orbit lock** (beside Follow, on by default): once the object is named for sure (not "probably",
+**Orbit lock** (guide panel, end of the button row, on by default): once the object is named for sure (not "probably",
 not a pair still too close to split), the same session goes on along its orbit - no stop, no slew,
 planned on the pier side the tube is on. The time and pointing offset of the orbit are fitted to the
 last `orbit_fit_s` (10 s) of what the camera followed, so it continues exactly where Follow had it;
 from then on it is pass mode: the feed-forward comes from the orbit, it coasts through faint spells
 and Earth's shadow, and the guide is held to the orbit's track. An orbit that does not fit what was
 followed - wandering more than `orbit_match_arcmin` (10') off it, or more than `max_time_offset_s`
-along it - is refused with the reason, and Follow goes on (tried again every 15 s). **Track it**
-during Follow does the same switch by hand. In simulation (NOSS 3-6 (A), Follow from a hand
+along it - is refused with the reason, and Follow goes on (tried again every 15 s). **Track** (guide
+panel) during Follow does the same switch by hand. In simulation (NOSS 3-6 (A), Follow from a hand
 pointing 1 deg off) the switch after 40 s halved the median error (7" -> 3.7") and kept the target
 inside the main field 99% of the time instead of 83%. `track --sim --servo --orbit-after 40` runs
 it. Corrections are capped so

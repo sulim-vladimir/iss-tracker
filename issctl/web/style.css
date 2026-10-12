@@ -49,6 +49,8 @@ body{background:#2f3439;color:#e8e8e8;font:14px/1.4 system-ui,sans-serif;margin:
         padding:4px;width:74px;font-size:14px}
  .rec{margin-top:8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
  #recbtn.on,#comingtrack.on{background:#a33;}
+ #identtrack.on-red{background:#a33}
+ #identline{color:#9be8cb}
  button.on{background:#3a6b46}
  #estop{background:#b32222;color:#fff;font-weight:600;font-size:11px;padding:6px 0;
          width:75%;display:block;margin:8px auto 2px}
@@ -60,6 +62,7 @@ body{background:#2f3439;color:#e8e8e8;font:14px/1.4 system-ui,sans-serif;margin:
  .panel.sky{flex:0 1 auto;max-width:none;display:flex;flex-direction:column;align-items:flex-start;gap:8px}
  #sky{flex:0 0 auto;width:300px;max-width:100%;display:block;background:#20242a;border-radius:6px}
  #sky-info{margin-top:0;width:300px;max-width:100%}
+ .panel.sky>.ctl,.panel.sky>.hint{width:300px;max-width:100%;margin-top:0}   /* buttons wrap under the chart */
  #siderealbtn.on{background:#3a6b46}
  /* On a phone every panel stacks, and the arrows would end up below the main frame and the
     sky chart - a scroll away from the guide image you are steering by. display:contents
@@ -94,7 +97,7 @@ body{background:#2f3439;color:#e8e8e8;font:14px/1.4 system-ui,sans-serif;margin:
  #favorites .row:hover,#favpasses .row:hover{background:#454c53}
  #favorites .row.sel{background:#4a3d63;outline:1px solid #b784f5}
  #favpasses .row.sel{background:#5a4a1f;outline:1px solid #e3b341}
- #favorites{max-height:150px;overflow-y:auto}
+ #favorites{max-height:230px;overflow-y:auto}
  #favpasses{max-height:230px;overflow-y:auto}
  #favpass-head{margin:6px 0 2px}
  #favtrack.on{background:#a33;}

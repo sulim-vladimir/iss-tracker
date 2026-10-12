@@ -46,6 +46,13 @@ MAX_AGE_H = 24.0
 SAMPLES = 24          # points along the track: plenty to tell a formation pair apart
 MATCH_DEG = 0.5       # median separation below which a match is called confident
 LIKELY_DEG = 1.5      # ...and "probably", if nothing else comes within twice as close
+# Ranking the whole catalogue one satellite at a time took ~30 s on the Pi and held Python the
+# whole time: the 50 Hz control loop stalled for up to 1.5 s at a go while a session was being
+# named, with the last rate command latched - the mount lurched back and forth (USA 327,
+# 2026-10-12). A vectorised SGP4 pass over all of them picks the nearest few for the exact ranking.
+PREFILTER_ABOVE = 300     # catalogue size from which the quick pass runs
+PREFILTER_KEEP = 200      # ...and how many of the nearest it keeps
+PREFILTER_CHUNK = 1500    # satellites per step; the control loop gets Python back in between
 
 
 def refresh_catalogs(directory=CATALOG_DIR, max_age_h=MAX_AGE_H, log=print, offline=False):
@@ -274,6 +281,8 @@ def rank(t, v, sats, site, top=5):
     when = ts.from_datetimes([_utc(x) for x in t])
     alt, az = geo.hadec_to_altaz(*_hadec(v), site.lat)      # skyfield answers in alt/az
     track = _altaz_unit(np.asarray(alt), np.asarray(az))
+    if len(sats) > PREFILTER_ABOVE:
+        sats = [sats[i] for i in nearest(t, track, sats, site, max(PREFILTER_KEEP, top))]
     res = []
     for name, sid, sat in sats:
         try:
@@ -288,6 +297,50 @@ def rank(t, v, sats, site, top=5):
                     "az": [float(z.degrees[0]), float(z.degrees[-1])], "sat": (name, sid, sat)})
     res.sort(key=lambda r: r["median_deg"])
     return res[:top]
+
+
+def nearest(t, track, sats, site, keep):
+    """Indices of the `keep` satellites whose median separation from the track (alt/az unit
+    vectors at unix times t) is smallest - all of them at once with SGP4 arrays, TEME turned to
+    the Earth by GMST. Geometric and approximate (no polar motion, UT1 = UTC): it only chooses
+    which few rank() then measures properly."""
+    from sgp4.api import SatrecArray
+
+    t = np.asarray(t, dtype=float)
+    jd_all = t / 86400.0 + 2440587.5
+    jd = np.floor(jd_all - 0.5) + 0.5
+    fr = jd_all - jd
+    du = jd_all - 2451545.0
+    tc = du / 36525.0
+    gmst = np.radians((280.46061837 + 360.98564736629 * du + 0.000387933 * tc ** 2
+                       - tc ** 3 / 38710000.0) % 360.0)
+    lat, lon = np.radians(site.lat), np.radians(site.lon)
+    a, f = 6378.137, 1 / 298.257223563
+    e2 = f * (2 - f)
+    nrad = a / np.sqrt(1 - e2 * np.sin(lat) ** 2)
+    h = getattr(site, "elevation", 0.0) / 1000.0
+    here = np.array([(nrad + h) * np.cos(lat) * np.cos(lon), (nrad + h) * np.cos(lat) * np.sin(lon),
+                     (nrad * (1 - e2) + h) * np.sin(lat)])
+    east = np.array([-np.sin(lon), np.cos(lon), 0.0])
+    north = np.array([-np.sin(lat) * np.cos(lon), -np.sin(lat) * np.sin(lon), np.cos(lat)])
+    up = np.array([np.cos(lat) * np.cos(lon), np.cos(lat) * np.sin(lon), np.sin(lat)])
+    c, s = np.cos(gmst), np.sin(gmst)
+    med = np.full(len(sats), np.inf)
+    for k in range(0, len(sats), PREFILTER_CHUNK):
+        part = sats[k:k + PREFILTER_CHUNK]
+        err, r, _ = SatrecArray([sat.model for _, _, sat in part]).sgp4(jd, fr)   # TEME, km
+        x = c * r[..., 0] + s * r[..., 1] - here[0]
+        y = -s * r[..., 0] + c * r[..., 1] - here[1]
+        z = r[..., 2] - here[2]
+        d = np.stack([x, y, z], axis=-1)
+        enu = np.stack([d @ north, d @ east, d @ up], axis=-1)      # _altaz_unit's order
+        enu /= np.linalg.norm(enu, axis=-1, keepdims=True)
+        sep = np.degrees(np.arccos(np.clip(np.sum(enu * track, axis=-1), -1.0, 1.0)))
+        sep[err != 0] = np.inf
+        med[k:k + len(part)] = np.median(sep, axis=1)
+        time.sleep(0)                       # let the control loop run between chunks
+    med[~np.isfinite(med)] = np.inf
+    return np.argsort(med)[:keep]
 
 
 def verdict(matches):

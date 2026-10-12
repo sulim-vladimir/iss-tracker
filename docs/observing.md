@@ -59,8 +59,8 @@ into the tripod or the railing. **Before any large move**, check cable slack and
 The guide camera sees 17.7 x 13.3 deg at 49.9"/px, which always holds enough stars to plate-solve.
 That one fact does three jobs.
 
-**Solve** plate-solves the current guide frame and says where the tube really points and what is in
-view. **Sync on stars** sets the mount's counters from that. The detector
+**Sync on stars** plate-solves the current guide frame - where the tube really points and what is in
+view, written to the Log - and sets the mount's counters from it (`./issctl.sh solve` only looks). The detector
 ([solve.py](../issctl/solve.py) `find_stars`) smooths the frame by about a star's width first - on a
 1 s, 8-bit guide frame the single-pixel noise otherwise outnumbers the faint stars - and rejects lit
 windows and walls by their shape, so a frame with buildings in it still solves.

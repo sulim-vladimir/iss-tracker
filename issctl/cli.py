@@ -1093,8 +1093,8 @@ def cmd_console(args, cfg):
                 mount.stop()
             return
         # what only changes the picture, or the next plan, works whatever the mount is doing
-        display = action in ("marks", "stretch", "frame_shown", "keep_side", "favorite_named",
-                             "auto_orbit")
+        display = action in ("marks", "stretch", "frame_shown", "frame_undo", "frame_clear", "warnings_clear",
+                             "keep_side", "favorite_named", "auto_orbit")
         if ui["mode"] == "track" and action not in ("main_steers", "hand_pick") and not display:
             ui["msg"] = "tracking a pass - stop it first"
             return
@@ -1173,6 +1173,15 @@ def cmd_console(args, cfg):
                 state["frame_lines"].pop()
                 persist()
                 say(f"frame line removed, {len(state['frame_lines'])} left")
+        elif action == "warnings_clear":
+            state["calibration_warnings"] = []
+            persist()
+            say("calibration warnings cleared")
+        elif action == "frame_clear":
+            n = len(state.get("frame_lines") or [])
+            state["frame_lines"] = []
+            persist()
+            say(f"frame lines cleared ({n} removed)")
         elif action == "marks":
             name, on = str(params.get("cam") or ""), params.get("on") not in (None, "0", "false")
             if name in cams:
@@ -1221,12 +1230,6 @@ def cmd_console(args, cfg):
             say("orbit lock " + ("on: Follow goes on along the orbit once the object is named"
                                  if state["auto_orbit"] else
                                  "off: Follow stays on the camera (Track it switches by hand)"))
-        elif action == "identify_on":
-            state["identify_on"] = params.get("on") not in (None, "0", "false")
-            persist()
-            say("satellite naming " + ("on: live in the guide caption, and after each session"
-                                       if state["identify_on"] else
-                                       "off (Identify still works when pressed)"))
         elif action == "brightness":
             if solver is None or "guide" not in cams:
                 ui["msg"] = "no guide camera to solve"
@@ -1310,7 +1313,8 @@ def cmd_console(args, cfg):
             ui["msg"] = f"sky mask point: az {az_m:.1f} alt {alt_m:.1f}"
 
     # ---- tracking sessions started from the browser, sharing this process's mount and cameras ----
-    session = {"tracker": None, "traj": None, "info": None, "thread": None}
+    session = {"tracker": None, "traj": None, "info": None, "thread": None, "sat": None,
+               "range": (-np.inf, None)}
 
     def sky_now():
         return sky_payload(cfg, SkyMask.from_config(cfg), session["traj"], site)
@@ -1319,11 +1323,26 @@ def cmd_console(args, cfg):
         tr = session["tracker"]
         return tr.target_altaz() if tr else None
 
+    def range_now(tr, now):
+        """Live distance to the satellite being tracked (km), at most once a second; along its
+        orbit by the tracker's measured timing offset. None while Follow has no orbit."""
+        sat, (t_last, km) = session["sat"], session["range"]
+        if sat is None or tr is None or tr.servo:
+            return None
+        if now - t_last >= 1.0:
+            try:
+                km = round(pr.sat_range_km(sat, site, now + tr.time_offset))
+            except Exception:
+                km = None
+            session["range"] = (now, km)
+        return km
+
     def pass_now():
         info, tr = session["info"], session["tracker"]
         if not info:
             return None
-        return dict(info, now=clock.now(), source=tr.source if tr else "idle")
+        now = clock.now()
+        return dict(info, now=now, source=tr.source if tr else "idle", range_km=range_now(tr, now))
 
     def identify_session(path=None):
         """Identify: runs beside everything else - it never touches the mount."""
@@ -1578,7 +1597,9 @@ def cmd_console(args, cfg):
                     key, last_t, failed, path_for = now_key, -np.inf, False, None
                     live.reset()
                     ui["identified"] = None
-                if key is None or not state.get("identify_on", True):
+                    # what is being named and since when: the Track button shows "watching N s"
+                    ui["naming"] = None if key is None else {"of": key[0], "since": clock.now()}
+                if key is None:
                     live.label, ui["identified"] = "", None
                     continue
                 for t, px, src in samples:
@@ -1650,35 +1671,59 @@ def cmd_console(args, cfg):
         if not res or not res[0]:
             return                          # the tracker said why
         rise, _ = pr.pass_horizon(sat, site, p)
-        session["traj"] = traj
+        session["traj"], session["sat"], session["range"] = traj, sat, (-np.inf, None)
         session["info"] = dict(session["info"] or {}, mode="pass", name=name, start=traj.t_start,
                                end=traj.t_end, rise=rise, max_alt=p["max_alt"],
                                rise_at=f"{datetime.datetime.fromtimestamp(rise):%H:%M:%S}",
                                starts_at=f"{datetime.datetime.fromtimestamp(traj.t_start):%H:%M:%S}")
 
     def track_identified():
-        """Sky chart's Track: follow the object just named on its orbit (pass mode). A running
-        Follow session is stopped first - the orbit carries the target through faint spells and
-        gaps that the camera alone cannot."""
+        """Track (guide panel): the object picked and named goes on along its orbit. Picked with
+        the mount still, Follow starts on it first - the pick carries over, nothing slews, and
+        what the camera saw before is fitted to the orbit; during Follow it is the orbit switch.
+        The tracker refuses an orbit that does not fit what was seen (a wrong name)."""
         ident = ui.get("identified") or ui.get("last_named")
         if not ident:
             say("track: nothing identified to track")
             return
         tr = session["tracker"]
-        if tr is not None:
-            if not tr.servo:
-                say("track: a pass is already being tracked")
-                return
-            say(f"track: switching Follow to {ident['name']} on its orbit")
-            orbit_switch(tr, ident["id"], ident["name"])
+        if tr is not None and not tr.servo:
+            say("track: a pass is already being tracked")
             return
-        say(f"track: {ident['name']} on its orbit")
-        start_tracking(which=ident["id"], at=clock.now())
+        if tr is None:
+            g = cams.get("guide")
+            if g is None or not g.manual or g.gate is None:
+                say("track: click the object in the guide image first")
+                return
+        ui["orbit_pending"] = ident["name"]       # the button says "Starting..." from the press on
+        try:
+            if tr is None:
+                say(f"track: {ident['name']} - following it in the camera, then on its orbit")
+                start_servo(g.gate[:2])
+                for _ in range(50):
+                    tr = session["tracker"]
+                    if tr is not None:
+                        break
+                    time.sleep(0.1)
+                if tr is None:
+                    return
+            else:
+                say(f"track: switching Follow to {ident['name']} on its orbit")
+            # a few tries: right after the start Follow may still be short of recent sightings
+            deadline = clock.now() + 30.0
+            while session["tracker"] is tr and tr.servo and not tr.stop_requested:
+                orbit_switch(tr, ident["id"], ident["name"])
+                if not tr.servo or clock.now() > deadline:
+                    break
+                time.sleep(3.0)
+        finally:
+            ui["orbit_pending"] = None
 
     def run_tracker(tracker, label):
         """Hand the mount to a tracker until it finishes, then give it back to the console."""
         session["tracker"] = tracker
         ui["mode"] = "track"
+        ui["planning"] = False
         ui["jog"][:] = 0
         ui["tracking"] = False
         # Recording is yours: Start/Stop recording only. A session neither starts nor stops it,
@@ -1730,9 +1775,9 @@ def cmd_console(args, cfg):
                 session["tracker"] = None
                 # the plan goes with the session: left behind, the sky chart kept drawing the
                 # pass and "tracking ... left" for good, a page reload included
-                session["traj"] = session["info"] = None
+                session["traj"] = session["info"] = session["sat"] = None
                 done = session.pop("csv", None)
-                if done is not None and state.get("identify_on", True):
+                if done is not None:
                     identify_later(done)
                 elif done is not None:
                     refresh_history()
@@ -1787,7 +1832,7 @@ def cmd_console(args, cfg):
                                     f"pier side off to allow it" if flip["useful_s"] > 0 else ""))
                     return
                 rise, _ = pr.pass_horizon(sat, site, p)
-                session["traj"] = traj
+                session["traj"], session["sat"], session["range"] = traj, sat, (-np.inf, None)
                 session["info"] = {
                     "name": name, "start": traj.t_start, "end": traj.t_end, "rise": rise,
                     "max_alt": p["max_alt"],
@@ -1810,13 +1855,14 @@ def cmd_console(args, cfg):
             except Exception as e:
                 ui["msg"] = f"tracking error: {e}"
             finally:
+                ui["planning"] = False
                 ui["mode"] = "console"
                 session["tracker"] = None
                 # the plan goes with the session: left behind, the sky chart kept drawing the
                 # pass and "tracking ... left" for good, a page reload included
-                session["traj"] = session["info"] = None
+                session["traj"] = session["info"] = session["sat"] = None
                 done = session.pop("csv", None)
-                if done is not None and state.get("identify_on", True):
+                if done is not None:
                     identify_later(done)
                 elif done is not None:
                     refresh_history()
@@ -1826,6 +1872,7 @@ def cmd_console(args, cfg):
                 except Exception:
                     pass
 
+        ui["planning"] = True       # before the thread: the reply to the click already shows it
         session["thread"] = threading.Thread(target=run_session, name="track-session", daemon=True)
         session["thread"].start()
 
@@ -1888,11 +1935,13 @@ def cmd_console(args, cfg):
                 "position_at": state.get("position_at"),
                 "cal_warnings": state.get("calibration_warnings", []),
                 "alignment": align.describe(state),
+                "planning": bool(ui.get("planning")),
                 "session": ((session["info"] or {}).get("mode", "pass")
                             if ui["mode"] == "track" else None),
                 "busy": ui["busy"], "msg": ui["msg"], "jog": ui["jog"].tolist(), "cal": cal,
-                "sat_label": live.label if state.get("identify_on", True) else "",
-                "identified": ui.get("identified") if state.get("identify_on", True) else None,
+                "sat_label": live.label,
+                "identified": ui.get("identified"),
+                "naming": ui.get("naming"), "orbit_pending": ui.get("orbit_pending"),
                 "last_named": ui.get("last_named"),
                 "auto_orbit": state.get("auto_orbit", True),
                 "frame_lines": [l["pts"] for l in state.get("frame_lines", [])],
@@ -1900,7 +1949,6 @@ def cmd_console(args, cfg):
                 "frame_shown": state.get("frame_shown", True),
                 "marks_hidden": state.get("marks_hidden", []),
                 "stretch": state.get("stretch", {}),
-                "identify_on": state.get("identify_on", True),
                 "spiral": bool(ui.get("spiral")),
                 "history": ui.get("history"),
                 "favorites": ui.get("favorites"), "fav_passes": ui.get("fav_passes"),
@@ -2309,7 +2357,10 @@ def cmd_track(args, cfg):
                                                  "rise": horizon_rise,
                                                  "rise_at": f"{datetime.datetime.fromtimestamp(horizon_rise):%H:%M:%S}",
                                                  "starts_at": f"{datetime.datetime.fromtimestamp(traj.t_start):%H:%M:%S}",
-                                                 "source": tracker.source}))
+                                                 "source": tracker.source,
+                                                 "range_km": None if tracker.servo else round(
+                                                     pr.sat_range_km(sat, site, clock.now()
+                                                                     + tracker.time_offset))}))
 
     def on_start():
         if auto_record and recorder.available:

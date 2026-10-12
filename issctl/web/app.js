@@ -4,9 +4,10 @@ async function api(path, params) {
 }
 function tgt() { return document.getElementById('target').value; }
 function mnt(action, params) { return api('/api/mount', Object.assign({action}, params)); }
-let MODE = 'console', MOTORS = true, PASS_MODE = false;
+let MODE = 'console', MOTORS = true, PASS_MODE = false, PLANNING = false;
 function applyMount(m) {
   MODE = m.mode || 'console';
+  PLANNING = !!m.planning;           // Track pressed, the pass is being planned (takes seconds)
   MOTORS = m.motors !== false;
   const mb = document.getElementById('motorbtn');
   if (mb) { mb.textContent = MOTORS ? 'motors off' : 'motors ON'; mb.className = MOTORS ? '' : 'on'; }
@@ -71,12 +72,10 @@ function applyMount(m) {
     const on = m.hand_pick !== false;
     pb.dataset.on = on ? '1' : '0';
     pb.textContent = 'Pick: ' + (on ? 'by hand' : 'auto');
-    pb.className = (on ? 'on ' : '') + 'right';
+    pb.className = on ? 'on' : '';
   }
   const ob = document.getElementById('orbitbtn');
   if (ob) { const on = m.auto_orbit !== false; ob.textContent = 'Orbit lock ' + (on ? 'on' : 'off'); ob.classList.toggle('on', on); }
-  const ib = document.getElementById('identbtn');
-  if (ib) { const on = m.identify_on !== false; ib.textContent = on ? 'naming ON' : 'naming off'; ib.className = on ? 'on' : ''; }
   const kb = document.getElementById('keepsidebtn');
   if (kb) { kb.textContent = 'Keep pier side: ' + (m.keep_side ? 'ON' : 'off'); kb.className = m.keep_side ? 'on' : ''; }
   const sb = document.getElementById('siderealbtn');
@@ -113,7 +112,16 @@ function applyMount(m) {
   }
   const wbox = document.getElementById('cal-warn');
   wbox.textContent = '';
-  (m.cal_warnings || []).forEach(w => {
+  const warns = m.cal_warnings || [];
+  const wwhen = document.getElementById('cal-warn-when');
+  if (wwhen) {            // which calibration they came from: old ones stay until the next one
+    const at = m.calibrated_at ? new Date(m.calibrated_at * 1000) : null;
+    wwhen.textContent = !warns.length ? 'none' : !at ? 'from an earlier calibration'
+      : `from the calibration of ${at.toDateString().slice(4, 10)} ${at.toTimeString().slice(0, 5)}`;
+  }
+  const wclear = document.getElementById('cal-warn-clear');
+  if (wclear) wclear.disabled = !warns.length;
+  warns.forEach(w => {
     const d = document.createElement('div');
     d.className = 'w';
     d.textContent = w;
@@ -128,9 +136,15 @@ function apply(s) {
     if (document.activeElement !== g) g.value = c.gain;
     const eu = document.getElementById('expunit-' + n);
     if (eu) eu.textContent = c.exposure_unit || 'ms';
-    const sat = n === 'guide' && s.mount && s.mount.sat_label ? '  \u00b7 ' + s.mount.sat_label : '';
-    document.getElementById('stat-' + n).textContent =
-      c.fps.toFixed(0) + ' fps  ' + (c.det ? 'detected' : 'no detection') + trackNote(n, s.mount && s.mount.track) + sat;
+    let head;
+    if (n === 'guide') {      // what it is and how far, instead of "detected"
+      const p = s.pass || {}, label = (s.mount && s.mount.sat_label) || p.name || '';
+      const km = p.range_km != null ? Math.round(p.range_km).toLocaleString('en').replace(/,/g, ' ') + ' km' : '';
+      head = [c.fps.toFixed(0) + ' fps', label, km].filter(Boolean).join('  \u00b7 ');
+    } else {
+      head = c.fps.toFixed(0) + ' fps  ' + (c.det ? 'detected' : 'no detection');
+    }
+    document.getElementById('stat-' + n).textContent = head + trackNote(n, s.mount && s.mount.track);
     const info = document.getElementById('info-' + n);
     if (info) info.textContent = ((s.status || {})[n] || []).join('\n');
     const sel = document.getElementById('sel-' + n);
@@ -140,6 +154,7 @@ function apply(s) {
   }
   if (s.mount) applyMount(s.mount);
   LAST_STATE = s;
+  showIdent(s);
   refreshSkyTrack(s.pass);
   drawSky(s);
   const em = document.getElementById('estop-msg');
@@ -238,13 +253,6 @@ function drawSky(s) {
   drawIdentified(svg, s);
   // what is named now, or was last named: it stays after the object has left the frame
   const m = s.mount || {}, live = m.identified, named = live || m.last_named;
-  const tb = document.getElementById('skytrackid');
-  if (tb) {
-    const servo = MODE === 'track' && m.session === 'servo';
-    tb.disabled = !named || (MODE === 'track' && !servo);
-    tb.title = named ? `follow ${named.name} on its orbit (pass mode)` + (servo ? ' - stops Follow first' : '')
-                     : 'pick a moving object in the guide image; once it is named, track it on its orbit';
-  }
   const fb = document.getElementById('skyfav');
   const isFav = named && (m.favorites || []).some(e => String(e.id) === String(named.id));
   if (fb) {
@@ -277,10 +285,14 @@ function drawSky(s) {
   const n5 = v => v.toFixed(1).padStart(5);
   // az under alt, with the labels padded to the same width so the numbers line up
   const fmt = (p, name) => p ? `${name} alt ${n5(p[0])}°\n${' '.repeat(name.length)} az  ${n5(p[1])}°` : '';
+  // the tracked satellite's distance now (pass mode, or Follow once on an orbit)
+  const tname = ((s.pass && s.pass.name) || 'ISS').slice(0, 12);
+  const km = s.target && s.pass && s.pass.range_km != null
+    ? `\n${' '.repeat(tname.length)} dist ${Math.round(s.pass.range_km).toLocaleString('en').replace(/,/g, ' ')} km` : '';
   document.getElementById('sky-info').textContent =
     [passLine(s.pass), fmt(s.pointing, 'mount'), rateLine(s.mount && s.mount.rates),
      SKY_PICK ? fmt([SKY_PICK[1], SKY_PICK[0]], 'point') : '',
-     fmt(s.target, ((s.pass && s.pass.name) || 'ISS').slice(0, 12))].filter(Boolean).join('\n');
+     fmt(s.target, tname) + km].filter(Boolean).join('\n');
 }
 function rateLine(r) {       // what the mount is being driven at right now, per axis
   if (!r) return '';
@@ -337,6 +349,40 @@ function frameButton() {
   if (!b) return;
   b.textContent = !FRAME_ARMED ? 'Frame line' : FRAME_ARMED.length ? 'Click the other end' : 'Click one end';
   b.className = FRAME_ARMED ? 'on' : '';
+}
+// Track (guide panel): click a satellite -> it is named while the mount stays still -> Track
+// follows it on its orbit. The line beside the button says what is steering.
+function identState(s) {
+  const m = s.mount || {}, g = (s.cams || {}).guide || {}, p = s.pass || {};
+  const named = m.identified, servo = MODE === 'track' && m.session === 'servo';
+  const watching = m.naming ? Math.max(0, Math.round((m.now || 0) - m.naming.since)) : 0;
+  const unnamed = watching > 30 ? 'nothing matched yet - not in the catalogues? Follow steers by the camera'
+                                : `naming... ${watching} s`;
+  if (m.orbit_pending) return {label: 'Starting...', on: true, line: `to the orbit of ${m.orbit_pending}`};
+  if (PASS_MODE) return {label: 'Stop', on: true, act: 'stop',
+    line: `orbit + camera: ${p.name || ''}` + (p.source === 'predict' && !g.manual ? ' - click it when you see it' : '')};
+  if (servo) return named ? {label: 'Track', act: 'track', line: `Follow (camera only) - ${named.label}`}
+                          : {label: 'Identifying...', on: true, line: `Follow (camera only) - ${unnamed}`};
+  if (MODE === 'track' || !g.manual) return {label: 'Track', disabled: true, line: MODE === 'track' ? '' : 'click a satellite'};
+  if (!named) return {label: 'Identifying...', on: true, line: unnamed};
+  const maybe = (named.label || '').startsWith('probably');
+  return {label: maybe ? 'Track?' : 'Track', act: 'track', line: named.label || named.name};
+}
+function showIdent(s) {
+  const b = document.getElementById('identtrack'), l = document.getElementById('identline');
+  if (!b) return;
+  const st = identState(s);
+  b.textContent = st.label;
+  b.className = st.on ? 'on-red' : '';
+  b.disabled = !!st.disabled;
+  b.dataset.act = st.act || '';
+  if (l) l.textContent = st.line || '';
+}
+function trackIdent() {
+  const b = document.getElementById('identtrack');
+  const act = b && b.dataset.act;
+  if (act === 'stop') return mnt('untrack', {});
+  if (act === 'track') return mnt('track_identified', {});
 }
 function armBright() {        // "Brightness" claims the next click in the guide image
   BRIGHT_ARMED = !BRIGHT_ARMED;
@@ -473,6 +519,7 @@ function comingRestore() {
 }
 function trackComing() {           // "track selected", or "Stop tracking" while a pass runs
   if (PASS_MODE) return mnt('untrack', {});
+  if (PLANNING) return;
   const r = comingSelected();
   if (r) mnt('track', {sat: r.id, at: r.peak});
 }
@@ -499,9 +546,12 @@ function markComing(box) {
 function trackButton(id, picked) {   // "Track selected", which turns into "Stop tracking" in a pass
   const b = document.getElementById(id);
   if (!b) return;
-  b.textContent = PASS_MODE ? 'Stop tracking' : 'Track selected';
-  b.className = PASS_MODE ? 'on' : '';
-  b.disabled = PASS_MODE ? false : (!picked || MODE === 'track');
+  // red from the click on: planning takes several seconds, and a button that did not change
+  // left it unclear whether it had been pressed at all
+  const planning = PLANNING && !PASS_MODE;
+  b.textContent = PASS_MODE ? 'Stop tracking' : planning ? 'Planning...' : 'Track selected';
+  b.className = PASS_MODE || planning ? 'on' : '';
+  b.disabled = PASS_MODE || planning ? false : (!picked || MODE === 'track');
 }
 // the picked pass on the sky chart: its path in violet, and where it is now (or where it comes in)
 function drawComing(svg, now) {
@@ -518,6 +568,8 @@ function drawFrame(svg, s) {
   }
   const ub = document.getElementById('skyframeundo');
   if (ub) ub.disabled = !lines.length;
+  const cb = document.getElementById('skyframeclear');
+  if (cb) cb.disabled = !lines.length;
   if (!shown) return;
   for (const pts of lines) {
     const xy = pts.map(([az, alt]) => pos(az, alt).join(',')).join(' ');
@@ -718,6 +770,7 @@ function removeFavorite() {
 function favoritePasses() { mnt('favorite_passes', {id: FAV_PICK || ''}); }
 function trackFavorite() {
   if (PASS_MODE) return mnt('untrack', {});
+  if (PLANNING) return;
   const r = favPassSelected();
   if (r) mnt('track', {sat: r.id, at: r.peak});
 }
