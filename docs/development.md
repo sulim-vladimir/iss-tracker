@@ -54,7 +54,7 @@ TLE (Celestrak) --> Skyfield --> refracted alt/az --> HA/Dec --+
 | `issctl/search.py` | spiral search for a star in the main camera; main calibration on that star |
 | `issctl/control.py` | tracking controller (pass and servo mode) |
 | `issctl/identify.py` | Identify: name the satellite a session followed, live and afterwards; History |
-| `issctl/forecast.py` | Coming up: bright satellites due through the guide field or the sky |
+| `issctl/forecast.py` | Upcoming: bright satellites due through the guide field or the sky |
 | `issctl/favorites.py` | Favourites: the observed satellites worth coming back to, and their passes |
 | `issctl/deepsky.py` | goto by name: Messier, NGC, IC and common names (OpenNGC), CDS online |
 | `issctl/mask.py` | sky obstructions; window-frame lines for the chart |

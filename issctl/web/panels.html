@@ -1,7 +1,8 @@
 <!-- @panel -->
 <div class="panel cam cam-{{name}}"><h2>{{title}} <span id="stat-{{name}}"></span></h2>
-<img src="/{{name}}.mjpg" title="click to track this object, double-click to centre it"
- onclick="imgClick('{{name}}',event,this)"
+<img src="/{{name}}.mjpg" title="click an object to select it, double-click to centre it; right-click (on a phone: press and hold) to deselect it"
+ onclick="imgClick('{{name}}',event,this)" oncontextmenu="return letGo('{{name}}',event)"
+ ontouchstart="holdStart('{{name}}')" ontouchend="holdEnd()" ontouchmove="holdEnd()"
  ondblclick="mnt('centre',{cam:'{{name}}'})">
 <div class="ctl"><label>Exposure</label>
  <button onclick="api('/api/exposure',{cam:'{{name}}',factor:0.667})">-</button>
@@ -11,9 +12,9 @@
  <button onclick="api('/api/gain',{cam:'{{name}}',delta:-25})">-</button>
  <input id="gain-{{name}}" onchange="api('/api/gain',{cam:'{{name}}',value:this.value})">
  <button onclick="api('/api/gain',{cam:'{{name}}',delta:25})">+</button>{{servo}}{{steer}}</div>
-<div class="ctl"><label>Target</label><span id="sel-{{name}}"></span>{{ident}}</div>
+<div class="ctl">{{target}}{{ident}}</div>
 <div class="ctl btns">
- <button onclick="api('/api/select',{cam:'{{name}}',clear:1})">Auto</button>{{bore}}{{stretch}}{{bright}}{{centre}}{{extra}}{{orbit}}</div>
+ {{clear}}{{bore}}{{stretch}}{{bright}}{{centre}}{{extra}}{{orbit}}</div>
 <div class="info" id="info-{{name}}"></div></div>
 
 <!-- @centre -->
@@ -23,6 +24,12 @@
 <!-- @servo -->
  <button id="servobtn" class="right" title="servo mode: click the object in the guide image first - a satellite, the ISS, a plane - and the red circle stays on it; then press this and the mount follows it, with no orbit and no alignment. With nothing picked, press this and then click the object. A later click in the image moves the lock to what you clicked. Shorten the exposure first: 8 ms for the ISS, 50-200 ms for fainter satellites. Stops by itself after servo_give_up_s with nothing detected"
  onclick="MODE === 'track' ? mnt('untrack', {}) : follow()">Follow</button>
+
+<!-- @target -->
+<label>Target</label><span id="sel-NAME"></span>
+
+<!-- @auto -->
+<button title="forget the pick: the camera follows the brightest thing in its view again" onclick="api('/api/select',{cam:'NAME',clear:1})">Auto</button>
 
 <!-- @ident -->
  <span class="right hint" id="identline"></span>
@@ -120,12 +127,16 @@
  <button class="small" title="copy the whole log to the clipboard" onclick="copyLog(this)">copy</button></h2>
  <div class="info" id="log"></div></div>
 
+<!-- @ready -->
+<div class="panel box ready"><h2>Ready</h2>
+ <div class="info" id="ready" title="what tonight's tracking depends on - green is fine, orange worth a look, red needs fixing first"></div></div>
+
 <!-- @warnings -->
-<div class="panel box grow"><h2>Warnings</h2>
+<div class="panel box grow"><h2>Warnings
+ <button class="small" id="cal-warn-clear" disabled title="remove these warnings once you have read them; the next calibration writes its own"
+ onclick="mnt('warnings_clear',{})">clear</button></h2>
  <div class="hint" id="cal-warn-when"></div>
- <div class="info warn" id="cal-warn"></div>
- <div class="ctl"><button id="cal-warn-clear" disabled title="remove these warnings once you have read them; the next calibration writes its own"
- onclick="mnt('warnings_clear',{})">Clear warnings</button></div></div>
+ <div class="info warn" id="cal-warn"></div></div>
 
 <!-- @messages -->
 <div class="panel msgs"><h2>Messages <span id="mount-busy"></span></h2>
@@ -141,7 +152,7 @@
 <span id="estop-msg"></span>
 
 <!-- @coming -->
-<div class="panel box grow coming"><h2>Coming up</h2>
+<div class="panel box grow coming"><h2>Upcoming</h2>
  <div class="ctl">
   <button title="bright satellites that will cross the guide field in the next hour - fixed on the stars if sidereal tracking is on"
   onclick="mnt('forecast',{mode:'field'})">Through the guide field</button>
@@ -166,7 +177,7 @@
   <button id="histwhat" disabled onclick="identifyPicked()"
   title="name the satellite the picked session followed - from its log, the star alignment it ran with and the satellite catalogues">Identify</button>
   <button id="histfav" disabled onclick="favoritePicked()"
-  title="keep the satellite the picked session was identified as in Favourites, and predict its passes. If no catalogue rates its brightness, it gets a rating from a Brightness measurement you took on it during that session, else a default (standard magnitude 5) - and Coming up lists it from then on">Add to favourites</button></div>
+  title="keep the satellite the picked session was identified as in Favourites, and predict its passes. If no catalogue rates its brightness, it gets a rating from a Brightness measurement you took on it during that session, else a default (standard magnitude 5) - and Upcoming lists it from then on">Add to favourites</button></div>
  <div class="info" id="history"></div></div>
 
 <!-- @favorites -->
@@ -190,7 +201,6 @@
 <svg id="sky" viewBox="0 0 330 330" onclick="pickSky(event)"></svg>
 <div class="ctl"><button id="skygoto" disabled title="click a point on the chart first; the mount slews there and holds that altitude and azimuth still (sidereal off) - a place to wait for a satellite"
  onclick="gotoSky()">Go to point</button>
- <button id="skyfav" disabled onclick="mnt('favorite_named',{})">Add to favourites</button>
  <button id="skyframe" title="show or hide the window-frame lines drawn with Frame line (guide panel)"
  onclick="mnt('frame_shown',{on: (LAST_STATE && LAST_STATE.mount && LAST_STATE.mount.frame_shown === false) ? 1 : 0})">Frame on</button>
  <button id="skyframeundo" disabled title="remove the last frame line"

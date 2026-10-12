@@ -128,7 +128,7 @@ def render(cam, cal, max_width=800):
     if cam.gate:
         gx, gy, gr = cam.gate
         cv2.circle(img, (int(gx * k), int(gy * k)), int(gr * k), (220, 130, 0), 2)
-    if det:
+    if det and (cam.manual or getattr(cam, "auto_target", True)):
         cv2.circle(img, (int(det.x * k), int(det.y * k)), 14, (0, 0, 255), 2)
     return img
 
@@ -151,6 +151,11 @@ class Preview:
                    stretch=f["stretch"].replace("NAME", n) if can_move else "",
                    servo=f["servo"] if (n == "guide" and can_move) else "",
                    ident=f["ident"] if (n == "guide" and can_move) else "",     # under Follow
+                   # the console's guide never picks by itself: no "brightest in frame", and
+                   # Clear instead of Auto; the Track line says what is going on
+                   target="" if (n == "guide" and can_move) else f["target"].replace("NAME", n),
+                   # the guide lets a pick go by right-click / press-and-hold, no button
+                   clear="" if (n == "guide" and can_move) else f["auto"].replace("NAME", n),
                    orbit=f["orbit"] if (n == "guide" and can_move) else "",   # end of the button row
                    bright=f["bright"] if (n == "guide" and can_move) else "",
                    steer=f["steer"] if (n == "main" and can_move) else "",
@@ -166,6 +171,7 @@ class Preview:
                       mount_panel=fill(f["mount"], estop=estop) if can_move else "",
                       status_panel=f["status"] if can_move else "",
                       warnings_panel=f["warnings"] if can_move else "",
+                      ready_panel=f["ready"] if can_move else "",
                       coming_panel=f["coming"] if can_move else "",
                       history_panel=f["history"] if can_move else "",
                       favorites_panel=f["favorites"] if can_move else "",

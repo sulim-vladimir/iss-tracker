@@ -25,7 +25,7 @@ a button in the browser; the sections below explain them.
 6. **Guide boresight.** With the star in the middle of the main image, press **Set boresight** on
    the guide and click the star (the click snaps to the nearest bright spot) - or **Boresight on
    star**.
-7. **Track.** Pick a pass in **Coming up** or **Favourites** and press **Track selected**, or click
+7. **Track.** Pick a pass in **Upcoming** or **Favourites** and press **Track selected**, or click
    something in the guide image and press **Follow** - see [Tracking](tracking.md). Start and stop
    recording yourself. Keep the page open: it carries the
    [emergency stop](console.md#emergency-stop). Recording goes to `captures/*.ser`, the control log

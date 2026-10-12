@@ -78,7 +78,7 @@ Zenith in the middle, the horizon at the rim, north up and east to the right.
 | yellow dot and ring | where the mount points, and the guide field round it |
 | red dot | where the tracker's target is now |
 | cyan / grey / red line | the pass being tracked: sunlit / in Earth's shadow / behind a mapped obstruction |
-| violet line | the pass picked in Coming up |
+| violet line | the pass picked in Upcoming |
 | gold line | the pass picked in Favourites |
 | green line | the object just named live, past and future |
 | orange lines | window-frame lines (Frame line) |
@@ -92,17 +92,18 @@ Under the chart:
 
 * **Go to point** - click a point on the chart first; the mount slews there and holds that altitude
   and azimuth still (sidereal off) - a place to wait for a satellite.
-* **Add to favourites** - keep the object just named, or the last one named, in Favourites. Works
-  during tracking.
 * **Frame on/off**, **Undo line** and **Clear lines** - show or hide the frame lines; remove the
   last one; remove them all (after the tripod moved or the alignment changed). Work during tracking.
 * the tracking state (countdown to the pass, or time left), the mount's alt/az and the axis rates.
 
 ## Lists and messages
 
-**Coming up**, **Favourites** and **History** are described in [Satellites](satellites.md).
+**Upcoming**, **Favourites** and **History** are described in [Satellites](satellites.md).
+**Ready** (top right) is the pre-flight check, green / orange / red: the clock synchronised (the
+Pi has no clock battery), both cameras delivering frames, the star alignment (stars, residual, age),
+the green cross set on a star and when, calibration warnings, and how old the satellite orbits are.
 **Messages** shows the latest message, the **Log** everything with times (**copy** puts it on the
-clipboard), **Warnings** what the last calibration found doubtful, with that calibration's date and a **Clear warnings** button.
+clipboard), **Warnings** what the last calibration found doubtful, with that calibration's date (**clear** beside the title removes them).
 
 **One session can do the whole evening.** **Track selected** hands the mount to the tracker and
 switches the page to tracking mode: the jog/goto/calibrate controls refuse ("tracking a pass - stop

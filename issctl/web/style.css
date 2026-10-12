@@ -3,7 +3,8 @@ body{background:#2f3439;color:#e8e8e8;font:14px/1.4 system-ui,sans-serif;margin:
  .panel{background:#3b4147;border-radius:6px;padding:8px;flex:1 1 380px;min-width:320px;
           max-width:560px;box-sizing:border-box}
  /* The camera panels use the plain .panel sizing above. */
- .panel img{width:100%;display:block;border-radius:4px;background:#000}
+ .panel img{width:100%;display:block;border-radius:4px;background:#000;
+            -webkit-touch-callout:none;user-select:none}   /* press-and-hold deselects */
  h2{font-size:15px;margin:0 0 5px}
  h3{font-size:13px;margin:8px 0 4px;opacity:.8}
  .ctl{display:flex;align-items:center;gap:6px;margin-top:5px;flex-wrap:wrap}
@@ -50,6 +51,10 @@ body{background:#2f3439;color:#e8e8e8;font:14px/1.4 system-ui,sans-serif;margin:
  .rec{margin-top:8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
  #recbtn.on,#comingtrack.on{background:#a33;}
  #identtrack.on-red{background:#a33}
+ #ready{font-size:13px}
+ #ready .r-ok{color:#7ee0b8}
+ #ready .r-warn{color:#f0b35a}
+ #ready .r-bad{color:#ff7b72;font-weight:600}
  #identline{color:#9be8cb}
  button.on{background:#3a6b46}
  #estop{background:#b32222;color:#fff;font-weight:600;font-size:11px;padding:6px 0;

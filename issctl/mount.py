@@ -191,6 +191,33 @@ def _valid_p(resp):
         return False
 
 
+def claim_mount(path=None):
+    """One program at a time on the mount. Checked BEFORE the port is opened: opening it resets
+    the Uno, so a second console (or `issctl.sh goto` while the service runs) would stop the mount
+    under the first one even if it then gave up. The lock goes with the process, however it ends."""
+    import fcntl
+    import os
+
+    from .config import ROOT
+
+    path = path or ROOT / "data" / "mount.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    f = open(path, "a+")
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        f.seek(0)
+        who = f.read().strip() or "another issctl"
+        f.close()
+        raise RuntimeError(f"the mount is in use by {who} - stop it first "
+                           f"(the service: systemctl --user stop iss-console)") from None
+    f.seek(0)
+    f.truncate()
+    f.write(f"pid {os.getpid()}")
+    f.flush()
+    return f
+
+
 class SerialMount(Mount):
     def __init__(self, cfg, state, clock):
         import serial
@@ -200,6 +227,7 @@ class SerialMount(Mount):
         self.spd = np.array([steps_per_deg(m["axis1"]), steps_per_deg(m["axis2"])])
         self.sign = np.array([-1.0 if m[k]["reverse"] else 1.0 for k in ("axis1", "axis2")])
         self.lock = threading.Lock()
+        self._owner = claim_mount()
         self.ser = serial.Serial(m["port"], m["baud"], timeout=0.3)
         time.sleep(2.0)  # Uno resets when the port opens
         self.ser.reset_input_buffer()

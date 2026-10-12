@@ -3,7 +3,7 @@
 Naming what you followed, what is coming up, the session history and the favourites. Back to the
 [README](../README.md).
 
-In every list here - Coming up, Favourites and their passes, History - a click picks a row, and
+In every list here - Upcoming, Favourites and their passes, History - a click picks a row, and
 the up/down arrows then move the pick.
 
 ## The catalogues
@@ -42,7 +42,10 @@ the sky.
 ## Naming a pick, without moving the mount
 
 Click a moving object in the guide image and leave the mount alone: the red circle follows the
-object across the frame, and the guide caption names it. What it takes:
+object across the frame, and the guide caption names it. The guide never picks anything by itself
+(street lights, lit windows and stars outshine most satellites). **Right-click** the image - on a
+phone, press and hold - to deselect; during a pass the mount then follows the prediction
+until the next click. What it takes:
 
 1. a **star alignment** - without one nothing is named at all;
 2. the pick must be **detected**: the Target line under the guide image says *locked on your pick*.
@@ -61,10 +64,9 @@ says so - Follow still steers by the camera), *Track* / *Track?* (named / probab
 then *Stop* while the orbit steers, with the camera correcting. It starts Follow on the pick and
 fits the orbit to what the circle already followed, so nothing slews; a name that does not fit what
 was seen is refused and Follow goes on. During Follow it switches the session to the orbit.
-**Add to favourites** under the sky chart keeps it in [Favourites](#favourites), rated from a
-Brightness measurement taken while it was in view if there is one. It still works after the object
-has left the frame: the last object named stays under the chart ("Last named ... seen 22:14"), and every new
-name is written to the Log. A pick on a still frame is not a session, so History never lists it.
+The last object named stays under the chart ("Last named ... seen 22:14") after it has left the
+frame, and every new name is written to the Log - type it into [Favourites](#favourites) to keep
+it. A pick on a still frame is not a session, so History never lists it.
 
 ## History
 
@@ -76,9 +78,9 @@ pass or follow, how long, and what Identify made of it. Pick a row, then:
 
 **Refresh** lists them again. Favourites are starred in the list.
 
-## Coming up
+## Upcoming
 
-**Coming up** lists the bright satellites due in the next `[forecast] minutes` (60):
+**Upcoming** lists the bright satellites due in the next `[forecast] minutes` (60):
 
 * **Through the guide field** - held fixed on the stars when sidereal tracking is on, otherwise fixed
   where the tube points;
@@ -125,12 +127,12 @@ From the terminal:
 ./issctl.sh favorites --remove 42065 --hours 24
 ```
 
-**Brightness ratings.** Coming up lists only what has a standard magnitude, and `qs.mag` has almost
-nothing launched since ~2018. A favourite no catalogue rates gets a rating of its own, so Coming up
+**Brightness ratings.** Upcoming lists only what has a standard magnitude, and `qs.mag` has almost
+nothing launched since ~2018. A favourite no catalogue rates gets a rating of its own, so Upcoming
 lists it too: from a **Brightness** measurement taken on it during that session (converted to a
 standard magnitude with its distance and sun angle from the orbit), otherwise
 `[forecast] default_std_mag` (5.0). `[forecast] std_mags` in the config holds hand-set ones. Ratings
-the old "Add to Coming up" button kept in `data/state.json` became favourites on the first start of
+the old "Add to Upcoming" button kept in `data/state.json` became favourites on the first start of
 this version.
 
 ## Brightness

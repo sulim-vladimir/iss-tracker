@@ -10,7 +10,7 @@ follows what the camera sees, with no orbit and no alignment - only the camera c
 
 ## Pass mode
 
-Start it from **Track selected** in [Coming up or Favourites](satellites.md), **Track** in the guide
+Start it from **Track selected** in [Upcoming or Favourites](satellites.md), **Track** in the guide
 panel (a picked object, once named - see [Satellites](satellites.md#naming-a-pick-without-moving-the-mount)), `p` in the terminal console (the next ISS pass), or
 `./issctl.sh track`. It works for **any satellite** in the catalogues, classified ones included:
 
@@ -152,7 +152,7 @@ blockers = [[168, 176, 0, 90]]    # a window frame post
 
 Empty `openings` means the whole sky above `min_altitude`. `passes` then reports `blocked` seconds
 and splits each pass into **usable windows**, the tracker coasts through a mapped obstruction as it
-does through shadow, and **Coming up -> Anywhere** lists only what the openings show. `m` in the
+does through shadow, and **Upcoming -> Anywhere** lists only what the openings show. `m` in the
 terminal console prints the azimuth/altitude of the current pointing, for the config.
 
 This balcony's view is **not** mapped (`openings = []`): the window frame is close, so any small move

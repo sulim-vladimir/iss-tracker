@@ -110,6 +110,19 @@ function applyMount(m) {
     lg.textContent = (m.log || []).join('\n');
     if (at_end) lg.scrollTop = lg.scrollHeight;   // follow, unless you have scrolled back
   }
+  const rbox = document.getElementById('ready');
+  if (rbox && m.ready) {
+    const key = JSON.stringify(m.ready);
+    if (rbox.dataset.key !== key) {
+      rbox.dataset.key = key;
+      rbox.replaceChildren(...m.ready.map(([level, text]) => {
+        const d = document.createElement('div');
+        d.className = 'r-' + level;
+        d.textContent = ({ok: '\u2713 ', warn: '! ', bad: '\u2717 '}[level] || '') + text;
+        return d;
+      }));
+    }
+  }
   const wbox = document.getElementById('cal-warn');
   wbox.textContent = '';
   const warns = m.cal_warnings || [];
@@ -253,14 +266,7 @@ function drawSky(s) {
   drawIdentified(svg, s);
   // what is named now, or was last named: it stays after the object has left the frame
   const m = s.mount || {}, live = m.identified, named = live || m.last_named;
-  const fb = document.getElementById('skyfav');
   const isFav = named && (m.favorites || []).some(e => String(e.id) === String(named.id));
-  if (fb) {
-    fb.disabled = !named || isFav;
-    fb.title = !named ? 'pick a moving object in the guide image; once it is named, keep it in Favourites'
-             : isFav ? `${named.name} is a favourite already`
-             : `keep ${named.name} in Favourites and predict its passes - rated from a Brightness measurement taken while it was in view, else the default`;
-  }
   const nl = document.getElementById('sky-named');
   if (nl) nl.textContent = !named ? ''
     : (live ? 'Named: ' : `Last named (seen ${new Date(named.seen * 1000).toTimeString().slice(0, 5)}): `)
@@ -364,6 +370,7 @@ function identState(s) {
   if (servo) return named ? {label: 'Track', act: 'track', line: `Follow (camera only) - ${named.label}`}
                           : {label: 'Identifying...', on: true, line: `Follow (camera only) - ${unnamed}`};
   if (MODE === 'track' || !g.manual) return {label: 'Track', disabled: true, line: MODE === 'track' ? '' : 'click a satellite'};
+  if (!g.det && !named) return {label: 'Track', disabled: true, line: 'selected object not seen - click it again, or right-click to deselect'};
   if (!named) return {label: 'Identifying...', on: true, line: unnamed};
   const maybe = (named.label || '').startsWith('probably');
   return {label: maybe ? 'Track?' : 'Track', act: 'track', line: named.label || named.name};
@@ -407,7 +414,20 @@ function armBoresight(name) {
     if (b) { b.className = ARMED === n ? 'on' : ''; b.textContent = ARMED === n ? 'click the spot' : 'set boresight'; }
   }
 }
+// Right-click - or, on a phone, press and hold - lets the pick go: during a pass the mount goes
+// back to the prediction until the next click. iOS Safari sends no contextmenu, hence the timer.
+let HOLD = null, HELD = false;
+function letGo(name, event) {
+  if (event) event.preventDefault();
+  HELD = true;                       // the click a long press ends with is not a new pick
+  setTimeout(() => { HELD = false; }, 700);
+  api('/api/select', {cam: name, clear: 1});
+  return false;
+}
+function holdStart(name) { holdEnd(); HOLD = setTimeout(() => { HOLD = null; letGo(name); }, 650); }
+function holdEnd() { if (HOLD) { clearTimeout(HOLD); HOLD = null; } }
 function imgClick(name, event, img) {
+  if (HELD) return;
   const fx = event.offsetX / img.clientWidth, fy = event.offsetY / img.clientHeight;
   if (ARMED === name) { const n = name; armBoresight(name); return mnt('boresight', {cam: n, fx, fy}); }
   if (FOLLOW_ARMED && name === 'guide') { armFollow(); return mnt('servo', {fx, fy}); }
@@ -490,7 +510,8 @@ function showComing(f, now, seen, favs) {
     const last = seen[String(r.id).replace(/^0+/, '')];
     const day = last ? new Date(last * 1000).toDateString().slice(4, 10) : '';
     const star = fav.has(String(r.id).replace(/^0+/, '')) ? ' \u2605' : '';
-    el.textContent = `${hm(r.peak)}  ${when.padEnd(14)} mag ${r.mag.toFixed(1).padStart(4)}  ${r.name}${star}\n`
+    const norad = String(r.id).replace(/^0+/, '');
+    el.textContent = `${hm(r.peak)}  ${when.padEnd(14)} mag ${r.mag.toFixed(1).padStart(4)}  ${r.name} (${norad})${star}\n`
                    + `          ${where}, ${r.range_km} km` + (last ? `, seen ${day}` : '');
     el.classList.toggle('seen', !!last);
     el.title = `${r.name} (catalogue ${r.id})` + (last ? ` - observed before, last on ${day}` : '')

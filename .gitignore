@@ -2,6 +2,7 @@
 config.toml
 data/state.json
 data/favorites.json
+data/mount.lock
 captures/
 *.ser
 logs/

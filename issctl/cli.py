@@ -467,6 +467,11 @@ def cmd_console(args, cfg):
     solver = make_solver(cams["guide"], site, world) if "guide" in cams else None
     last_solve = {"sol": None, "axes": None}
     apply_saved_settings(cams, state)
+    if "guide" in cams:
+        # the guide never picks a target by itself: in a 17 deg field round the house the
+        # brightest thing is a street light or a window, and most satellites are fainter than
+        # the stars. Its detection counts (and is drawn) only on a pick.
+        cams["guide"].auto_target = False
     for n in state.get("marks_hidden", []):      # boresight/centre crosses hidden on the page
         if n in cams:
             cams[n].show_marks = False
@@ -779,6 +784,7 @@ def cmd_console(args, cfg):
             return
         old = np.asarray(cal["guide"]["boresight"], dtype=float)
         cal["guide"]["boresight"] = [float(bore[0]), float(bore[1])]
+        cal["guide"]["boresight_set"] = {"at": time.time(), "how": f"on {label}"}   # for Ready
         persist()
         say(f"boresight on {label}: moved {np.hypot(*(bore - old)):.0f} px to "
             f"{bore.round(1)} (star was {miss:.2f} deg from where the old boresight put it"
@@ -884,8 +890,8 @@ def cmd_console(args, cfg):
         main, guide = cams.get("main"), cams.get("guide")
         if not main or not guide or not state.get("cameras", {}).get("guide"):
             return
-        if main.latest()[1] is not None or guide.latest()[1] is None:
-            return
+        if main.latest()[1] is not None or not guide.manual or guide.latest()[1] is None:
+            return              # the guide only brings back what was picked in it
         say("main lost the target during the moves - bringing it back with the guide")
         do_centre("guide")
 
@@ -930,6 +936,9 @@ def cmd_console(args, cfg):
         cam, cal = cams.get(name), state.get("cameras", {}).get(name)
         if cam is None:
             say(f"no {name} camera")
+            return
+        if not cam.manual and not getattr(cam, "auto_target", True):
+            say(f"{name}: click the object first - the {name} does not pick one by itself")
             return
         if cal is None:
             say(f"{name} is not calibrated - cannot turn pixels into axis angles")
@@ -1024,6 +1033,7 @@ def cmd_console(args, cfg):
             return
         x, y = snap_click(name, float(fx) * cam.width, float(fy) * cam.height)
         cal["boresight"] = [float(x), float(y)]
+        cal["boresight_set"] = {"at": time.time(), "how": "by hand"}               # for Ready
         persist()
         centre = np.array([(cam.width - 1) / 2, (cam.height - 1) / 2])
         from .calib import cal_px_per_deg
@@ -1444,7 +1454,7 @@ def cmd_console(args, cfg):
         with favs_lock:
             fav.add(favs, sid, name, std, how, session=fname)
         say(f"{name}: added to favourites"
-            + (f", standard magnitude {std:.1f} ({how}) - Coming up lists it now" if std is not None
+            + (f", standard magnitude {std:.1f} ({how}) - Upcoming lists it now" if std is not None
                else ""))
         favorites_changed(std is not None)
 
@@ -1549,11 +1559,11 @@ def cmd_console(args, cfg):
                 where = f"Anywhere above {cfg['site']['min_altitude']:g}°"
             ui["forecast"] = {"mode": mode, "at": now, "where": where, "items": items,
                               "minutes": minutes, "busy": False}
-            say(f"coming up: {len(items)} bright pass{'es' * (len(items) != 1)} - {where}, "
+            say(f"upcoming: {len(items)} bright pass{'es' * (len(items) != 1)} - {where}, "
                 f"next {minutes:.0f} min")
         except Exception as e:
             ui["forecast"] = dict(ui.get("forecast") or {}, busy=False)
-            say(f"coming up: {e}")
+            say(f"upcoming: {e}")
 
     def identify_later(path):
         threading.Thread(target=identify_session, args=(path,), daemon=True).start()
@@ -1914,6 +1924,69 @@ def cmd_console(args, cfg):
         elif x is not None:
             cams[name].select(x, y)
 
+    def ago(t):
+        """'5 min ago', '3 h ago', '2 days ago'."""
+        s = max(0.0, time.time() - t)
+        return (f"{s / 60:.0f} min ago" if s < 5400 else f"{s / 3600:.0f} h ago" if s < 172800
+                else f"{s / 86400:.0f} days ago")
+
+    ready_cache = {"t": -np.inf, "rows": []}
+
+    def preflight():
+        """The Ready panel: what tonight's tracking depends on, as (level, text) rows - level
+        ok / warn / bad. Each one has cost a night: a stale clock (2026-10-12), an alignment
+        solved with it, a green cross nobody had set on a star."""
+        now = time.time()
+        if now - ready_cache["t"] < 2.0:
+            return ready_cache["rows"]
+        rows = []
+        sync = Path("/run/systemd/timesync")
+        if sync.is_dir():           # the Pi; the laptop's simulator has nothing to check
+            rows.append(("ok", "clock synchronised") if (sync / "synchronized").exists() else
+                        ("bad", "clock NOT synchronised - passes would be planned at the wrong "
+                                "time (no network?)"))
+        for n, c in cams.items():
+            fps = c.fps or 0.0
+            rows.append(("ok", f"{n}: {fps:.0f} fps at {c.exposure_ms:g} ms") if fps > 0 else
+                        ("bad", f"{n}: no frames"))
+        al = state.get("alignment") or {}
+        pts, model = al.get("points") or [], al.get("model") or {}
+        if not pts or align.current_model(state) is None:
+            rows.append(("bad", "no star alignment - Calibrate on stars"))
+        else:
+            rms, last = model.get("rms_arcsec"), max(p.get("t", 0.0) for p in pts)
+            text = (f"star alignment: {len(pts)} stars" + (f", {rms:.0f}\" off" if rms else "")
+                    + f", {ago(last)}")
+            level = "ok"
+            if rms and rms > 120:
+                level, text = "warn", text + " - add stars or recalibrate"
+            elif now - last > 12 * 3600:
+                level, text = "warn", text + " - recalibrate if the tripod moved"
+            rows.append((level, text))
+        guide = (state.get("cameras") or {}).get("guide")
+        if not guide:
+            rows.append(("bad", "guide not calibrated - Calibrate on stars"))
+        else:
+            bs = guide.get("boresight_set")
+            rows.append(("ok", f"green cross set {bs['how']}, {ago(bs['at'])}")
+                        if bs and bs["how"].startswith("on ") else
+                        ("warn", f"green cross set by hand, {ago(bs['at'])} - Boresight on star is exact")
+                        if bs else
+                        ("warn", "green cross: not set on a star yet - satellites may miss the "
+                                 "main camera (Boresight on star)"))
+        warns = state.get("calibration_warnings") or []
+        if warns:
+            rows.append(("warn", f"{len(warns)} calibration warning{'s' * (len(warns) > 1)} - "
+                                 f"see Warnings"))
+        tle = ROOT / "data" / "catalog" / "active.tle"
+        if tle.exists():
+            age = now - tle.stat().st_mtime
+            rows.append(("ok", f"satellite orbits {ago(tle.stat().st_mtime)}") if age < 3 * 86400
+                        else ("warn", f"satellite orbits {ago(tle.stat().st_mtime)} - positions "
+                                      f"drift; connect to the internet once"))
+        ready_cache.update(t=now, rows=rows)
+        return rows
+
     def mount_status():
         pos, alt_s, az_s = pointing()
         cal = {}
@@ -1957,7 +2030,7 @@ def cmd_console(args, cfg):
                 "hand_pick": bool(state.get("hand_pick", cfg["tracking"].get("pass_hand_pick", True))),
                 "forecast": ui.get("forecast"), "now": clock.now(),
                 "rates": [round(float(r), 4) for r in mount.rate_cmd],
-                "track": tracking_note()}
+                "track": tracking_note(), "ready": preflight()}
 
     from .ser import RecordControl
     main_cfg = cfg["cameras"]["main"]

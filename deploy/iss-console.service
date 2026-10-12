@@ -1,0 +1,28 @@
+# The web console as a user service on the Pi - installed by deploy/install-service.sh, which
+# fills in @ROOT@ (the checkout). Logs: journalctl --user -u iss-console -f
+[Unit]
+Description=ISS tracker web console (port 8090)
+After=network-online.target
+# a console that keeps failing (camera gone, mount in use) stops retrying after 5 starts in 10 min
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=@ROOT@
+Environment=PYTHONUNBUFFERED=1
+# The Pi 5 has no RTC battery: it boots at the last shutdown time and NTP steps the clock forward
+# seconds later - a console started in between planned passes 21 h stale (2026-10-12). Wait for
+# the sync, but not forever: a night with no network has no NTP.
+ExecStartPre=/bin/sh -c 'for i in $(seq 90); do [ -e /run/systemd/timesync/synchronized ] && exit 0; sleep 1; done; echo "clock not synchronised after 90 s - starting anyway"'
+TimeoutStartSec=120
+ExecStart=@ROOT@/.venv/bin/python -m issctl console --web --port 8090
+# SIGTERM is the console's graceful stop (state saved, cameras closed); closing the ZWO cameras
+# has taken up to 30 s
+KillSignal=SIGTERM
+TimeoutStopSec=60
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

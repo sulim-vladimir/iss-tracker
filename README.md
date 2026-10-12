@@ -7,7 +7,7 @@ ASI120MM Mini guide camera with a 16 mm lens (15.5 mm measured) · Raspberry Pi 
 
 *The console on 2026-09-30: the guide (left, 17.7° field) locked on a picked object, the main camera
 (12.9' x 7.3' field) with a star in view, the mount and calibration controls on the right, and along
-the bottom the sky chart, the **Coming up** list of bright satellites due through the guide field,
+the bottom the sky chart, the **Upcoming** list of bright satellites due through the guide field,
 messages, the calibration summary and the log.*
 
 ## What it does
@@ -33,7 +33,7 @@ Everything is driven from a browser page served by the Pi.
 | [Setup](docs/setup.md) | installing on the Pi, camera drivers, firmware, updating the Pi from a laptop |
 | [Observing](docs/observing.md) | a night at the telescope step by step; home, star alignment, main camera |
 | [Tracking](docs/tracking.md) | pass mode, servo mode (Follow), the pier side, shadow, obstructions and clouds |
-| [Satellites](docs/satellites.md) | Identify, naming a pick, History, Coming up, Favourites, Brightness |
+| [Satellites](docs/satellites.md) | Identify, naming a pick, History, Upcoming, Favourites, Brightness |
 | [The console](docs/console.md) | the browser page panel by panel, the sky chart, terminal keys, emergency stop |
 | [How it works](docs/development.md) | the control loop, code layout, simulator and tests |
 | [AGENTS.md](AGENTS.md) | handover notes: state of play, conventions, debugging playbook |
