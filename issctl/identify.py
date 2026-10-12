@@ -146,6 +146,59 @@ def save_result(csv_path, matches, text):
         "at": time.time()}))
 
 
+def session_summary(csv_path):
+    """What a session did, from its log, for History: how much of the time after the first lock a
+    camera steered (shadow and obstructions left out), how far from the green cross the guide
+    held the target (median, arcmin), how often it was lost, and how often the control loop ran
+    late. Cached next to the log (<log>.sum.json) once the log has stopped growing."""
+    p = Path(csv_path)
+    st = p.stat()
+    cache = p.with_suffix(".sum.json")
+    if cache.exists():
+        try:
+            c = json.loads(cache.read_text())
+            if c.get("size") == st.st_size:
+                return c
+        except (OSError, ValueError):
+            pass
+    rows = list(csv.DictReader(open(p)))
+    if len(rows) < 2:
+        return None
+    t = np.array([float(r["t"]) for r in rows])
+    src = np.array([r["source"] for r in rows])
+    step = np.diff(t, append=t[-1])
+    locked = np.isin(src, ("guide", "main"))
+    out = {"size": st.st_size, "late": int((np.diff(t) > 0.25).sum()),
+           "late_max": round(float(np.diff(t).max()), 2)}
+    if locked.any():
+        first = int(np.argmax(locked))
+        seen = ~np.isin(src[first:], ("shadow", "blocked"))
+        span = float(step[first:][seen].sum())
+        out["locked"] = round(float(step[first:][locked[first:]].sum()) / span, 3) if span > 0 else None
+        out["lost"] = int(np.sum(locked[:-1] & (src[1:] == "predict")))
+    side = p.with_suffix(".json")
+    guide = (json.loads(side.read_text()).get("cameras") or {}).get("guide") if side.exists() else None
+    if guide:
+        b, scale = np.asarray(guide["boresight"], dtype=float), float(np.linalg.norm(
+            np.asarray(guide["J"], dtype=float)[:, 1]))
+        offs, last = [], None
+        for r in rows:
+            if r["source"] != "guide" or r["det_x"] in ("", "nan"):
+                continue
+            key = (r["det_x"], r["det_y"])
+            if key != last:            # the log repeats the last detection between frames
+                last = key
+                offs.append(np.hypot(float(r["det_x"]) - b[0], float(r["det_y"]) - b[1]) / scale * 60)
+        if offs:
+            out["off_arcmin"] = round(float(np.median(offs)), 1)
+    if time.time() - st.st_mtime > 30:
+        try:
+            cache.write_text(json.dumps(out))
+        except OSError:
+            pass
+    return out
+
+
 def _first_last_t(path):
     """Start time and duration of a session log without reading all of it."""
     with open(path, "rb") as f:
@@ -209,8 +262,12 @@ def list_sessions(logs=None, limit=20):
         side, res = p.with_suffix(".json"), _result_path(p)
         name = json.loads(side.read_text()).get("name") if side.exists() else None
         result = json.loads(res.read_text()) if res.exists() else None
+        try:
+            summary = session_summary(p)
+        except Exception:
+            summary = None             # a damaged log must not take the whole list down
         out.append({"file": p.name, "kind": p.name.split("-")[0], "start": t0,
-                    "duration": round(dur, 1), "name": name, "result": result})
+                    "duration": round(dur, 1), "name": name, "result": result, "summary": summary})
     return out
 
 

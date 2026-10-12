@@ -15,6 +15,53 @@ class Detection:
     t: float = 0.0
 
 
+def mask_hot(img, pixels, r=2):
+    """A copy of img with a (2r+1)-pixel square round each hot pixel set to the median of the
+    area round it - background, so the detector sees nothing there. Pixels in full resolution."""
+    out = img.copy()
+    h, w = img.shape[:2]
+    for x, y in pixels:
+        x, y = int(round(x)), int(round(y))
+        if not (0 <= x < w and 0 <= y < h):
+            continue
+        around = img[max(0, y - r - 4):y + r + 5, max(0, x - r - 4):x + r + 5]
+        out[max(0, y - r):y + r + 1, max(0, x - r):x + r + 1] = np.median(around)
+    return out
+
+
+class HotPixelWatch:
+    """Finds hot pixels in a camera as it runs. Nothing on the sky stays within still_px of the
+    same pixel for hold_s while the mount points moved_deg elsewhere - except a target being
+    tracked, which is held on the green cross: keep_off_px round it is left out."""
+
+    def __init__(self, hold_s=60.0, still_px=0.2, moved_deg=2.0, keep_off_px=25.0, size=1200):
+        import collections
+        self.hold_s, self.still_px, self.moved_deg, self.keep_off_px = hold_s, still_px, moved_deg, keep_off_px
+        self.seen = collections.deque(maxlen=size)
+
+    def update(self, t, x, y, axes, boresight):
+        """A detection at (x, y) at time t with the mount at axes (deg): the hot pixel it proves
+        to be, rounded to 0.1 px, or None."""
+        from . import geometry as geo
+        if boresight is not None and np.hypot(x - boresight[0], y - boresight[1]) < self.keep_off_px:
+            return None
+        axes = np.asarray(axes, dtype=float)
+        hot = None
+        for t0, x0, y0, a0 in self.seen:
+            if t - t0 < self.hold_s:
+                break                        # oldest first: the rest are newer still
+            d = axes - a0
+            d[0] = geo.wrap180(d[0])
+            if np.hypot(x - x0, y - y0) <= self.still_px \
+                    and float(np.hypot(*(d * geo.sky_metric(axes[1])))) >= self.moved_deg:
+                hot = (round(float(x), 1), round(float(y), 1))
+                break
+        self.seen.append((t, x, y, axes))
+        if hot:
+            self.seen.clear()
+        return hot
+
+
 def detect(img, sigma=6.0, min_area=3, bayer=False, gate=None, max_width=1300,
            max_area=0, edge_margin=0, smooth=0.0):
     """Brightest compact blob above sigma*noise. gate=(x, y, radius) restricts the search.

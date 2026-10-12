@@ -99,9 +99,10 @@ Under the chart:
 ## Lists and messages
 
 **Upcoming**, **Favourites** and **History** are described in [Satellites](satellites.md).
-**Ready** (top right) is the pre-flight check, green / orange / red: the clock synchronised (the
-Pi has no clock battery), both cameras delivering frames, the star alignment (stars, residual, age),
-the green cross set on a star and when, calibration warnings, and how old the satellite orbits are.
+**Ready** (under Warnings) is the pre-flight check, green / orange / red: the clock synchronised
+(the Pi has no clock battery), both cameras delivering frames, the star alignment (stars, residual,
+age), where the green cross is (information only - it holds while the guide stays fixed on the
+tube), calibration warnings, and how old the satellite orbits are.
 **Messages** shows the latest message, the **Log** everything with times (**copy** puts it on the
 clipboard), **Warnings** what the last calibration found doubtful, with that calibration's date (**clear** beside the title removes them).
 

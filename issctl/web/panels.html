@@ -33,8 +33,8 @@
 
 <!-- @ident -->
  <span class="right hint" id="identline"></span>
- <button id="identtrack" disabled title="click a satellite in the guide image: the red circle follows it while the mount stays still, and it is named from the catalogues. Then Track: the mount follows it on its orbit, with the camera correcting - started from what the camera already saw, with no slew. A name that does not fit what was seen is refused and Follow goes on. Nothing named (an aircraft, an uncatalogued object): use Follow, which steers by the camera alone"
- onclick="trackIdent()">Track</button>
+ <button id="identtrack" disabled title="Identify names the object selected in the guide image (or the one Follow is steering on) from the satellite catalogues - only when pressed; a click alone just selects. Once named it becomes Track: the mount follows it on its orbit, with the camera correcting - started from what the camera already saw, with no slew. A name that does not fit what was seen is refused and Follow goes on"
+ onclick="trackIdent()">Identify</button>
 
 <!-- @orbit -->
  <button id="orbitbtn" title="orbit lock: once Follow has the object named for sure, the same session goes on along its orbit - no stop, no slew. The orbit is fitted to what the camera followed (time and pointing offset), it then carries the mount through faint spells and Earth's shadow, and the guide only looks where the orbit says. An orbit that does not fit what was followed is refused and Follow goes on. Off: Follow stays on the camera; Track it switches by hand"

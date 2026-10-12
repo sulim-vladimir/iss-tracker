@@ -6,7 +6,7 @@ import time
 
 import numpy as np
 
-from .detect import detect
+from .detect import detect, mask_hot
 
 
 class Camera:
@@ -22,6 +22,11 @@ class Camera:
         self.exposure_unit = "ms"   # some V4L2 drivers only expose a raw register
         self.gate = None
         self.follow = False   # keep the gate on whatever was picked, frame to frame
+        # Known hot pixels (full-resolution x, y), blanked before detection: one at guide
+        # (688, 440) was "the target" in 29 sessions - it stays put in the frame however the
+        # mount moves, so the tracker drove the mount after it at up to 2.75 deg/s.
+        self.hot_pixels = []
+        self.pick_serial = 0
         self.manual = False   # picked by the user: the tracker must not move the gate
         # Set by a running tracker: frame time -> gate where the target must be in THAT frame,
         # from the mount's position then. A gate that only follows the last detection is left
@@ -58,6 +63,7 @@ class Camera:
         self.follow = True
         self.manual = True
         self.pick_track.clear()
+        self.pick_serial += 1     # which pick this is, for naming: the track itself rolls over
 
     def clear_selection(self):
         self.gate = None
@@ -126,7 +132,9 @@ class Camera:
             sigma = self.cfg["detect_sigma"]
             if gate is not None and self.manual:
                 sigma = self.cfg.get("detect_sigma_picked", sigma)
-            det = detect(img, sigma, self.cfg["detect_min_area"], self.bayer, gate,
+            # blanked in a copy: the frame shown and recorded stays as the camera gave it
+            work = mask_hot(img, self.hot_pixels) if self.hot_pixels else img
+            det = detect(work, sigma, self.cfg["detect_min_area"], self.bayer, gate,
                          max_area=self.cfg.get("detect_max_area", 0),
                          edge_margin=self.cfg.get("detect_edge_margin", 0),
                          smooth=self.cfg.get("detect_smooth", 0.0))

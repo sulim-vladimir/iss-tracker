@@ -42,25 +42,28 @@ the sky.
 ## Naming a pick, without moving the mount
 
 Click a moving object in the guide image and leave the mount alone: the red circle follows the
-object across the frame, and the guide caption names it. The guide never picks anything by itself
+object across the frame. A click only selects - **Follow** then steers by the image alone, as
+always. To name it, press **Identify** (under Follow; it also names what Follow is steering on):
+the line beside it counts *naming... 12 s*, and the guide caption shows the name. Selecting
+something else or deselecting ends it. The guide never picks anything by itself
 (street lights, lit windows and stars outshine most satellites). **Right-click** the image - on a
 phone, press and hold - to deselect; during a pass the mount then follows the prediction
 until the next click. What it takes:
 
 1. a **star alignment** - without one nothing is named at all;
-2. the pick must be **detected**: the Target line under the guide image says *locked on your pick*.
-   *Your pick - nothing there* means the camera does not see it, and nothing can be named;
+2. the pick must be **detected** - *selected object not seen* beside Identify means the camera
+   does not see it, and nothing can be named;
 3. **at least 4 detections spanning 3 s or more**. A ranking runs every 5 s, so at a 1 s exposure
-   the name comes 5-10 s after the click. The first ranking after a start loads the whole catalogue
+   the name comes 5-10 s after Identify. The first ranking after a start loads the whole catalogue
    and takes a few seconds more on the Pi;
 4. it stays named while the circle keeps the object, until it leaves the guide frame. A fast
    satellite at a long exposure can move further between frames than the circle reaches - shorten
    the exposure.
 
 Once named, its path is drawn on the sky chart in **green** - where it has been and where it goes
-until it sets. **Track** (guide panel, under Follow) then follows it on its orbit - only when you
-press it. The button tells where it is: *Identifying...* (red, naming; after 30 s with no match it
-says so - Follow still steers by the camera), *Track* / *Track?* (named / probably), *Starting...*,
+until it sets, and **Identify** becomes **Track**, which follows it on its orbit - only when you
+press it. After 30 s with no match the line says *not named* (Identify can be pressed again);
+Follow still works on the pick, as before. The button: *Track* / *Track?* (named / probably), *Starting...*,
 then *Stop* while the orbit steers, with the camera correcting. It starts Follow on the pick and
 fits the orbit to what the circle already followed, so nothing slews; a name that does not fit what
 was seen is refused and Follow goes on. During Follow it switches the session to the orbit.
@@ -71,7 +74,12 @@ it. A pick on a still frame is not a session, so History never lists it.
 ## History
 
 The **History** panel lists the latest real sessions (simulations are left out), newest first: when,
-pass or follow, how long, and what Identify made of it. Pick a row, then:
+pass or follow, how long, and what Identify made of it. The line under each row says how it went:
+the share of the time a camera steered after the first lock (Earth's shadow and obstructions left
+out), how far from the green cross the guide typically held the target - the main camera sees only
++-3.6' round it - how often the target was lost, and how often the control loop ran late (the mount
+then runs on its last command). Worked out once from the log and kept beside it (`<log>.sum.json`).
+Pick a row, then:
 
 * **Identify** - run it (again) on that session;
 * **Add to favourites** - keep the satellite it was identified as, see [Favourites](#favourites).

@@ -10,6 +10,12 @@ follows what the camera sees, with no orbit and no alignment - only the camera c
 
 ## Pass mode
 
+The page uses the usual terms: **ephemeris** - the satellite's predicted path from its orbit;
+**ephemeris only** - the mount follows that prediction (open loop: nothing seen yet, Earth's
+shadow, an obstruction); **ephemeris + guiding** - a camera measures where the satellite really is
+and corrects the prediction (closed loop); **camera only** - Follow, steering by the image alone
+with no orbit (visual servoing).
+
 Start it from **Track selected** in [Upcoming or Favourites](satellites.md), **Track** in the guide
 panel (a picked object, once named - see [Satellites](satellites.md#naming-a-pick-without-moving-the-mount)), `p` in the terminal console (the next ISS pass), or
 `./issctl.sh track`. It works for **any satellite** in the catalogues, classified ones included:

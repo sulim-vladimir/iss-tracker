@@ -404,3 +404,31 @@ def test_real_clock_follows_the_wall_clock_after_suspend(monkeypatch):
     assert abs(clock.now() - wall) < 1.0
     sim = Clock(start_unix=1000.0, speed=10.0)
     assert 1000.0 <= sim.now() < 1010.0
+
+
+def test_a_known_hot_pixel_is_not_detected():
+    """The brightest thing in the frame is a hot pixel: blanked, the satellite is found instead."""
+    import numpy as np
+    from issctl.detect import detect, mask_hot
+    rng = np.random.default_rng(0)
+    img = rng.normal(20, 2, (200, 300)).clip(0, 255).astype(np.uint8)
+    img[50:52, 60:62] = 255                            # hot pixel
+    yy, xx = np.mgrid[0:200, 0:300]
+    img = np.maximum(img, (60 * np.exp(-((xx - 200) ** 2 + (yy - 120) ** 2) / 4.0)).astype(np.uint8))
+    assert abs(detect(img, min_area=1).x - 60.5) < 2               # without the mask: the hot pixel
+    d = detect(mask_hot(img, [(60.5, 50.5)]), min_area=1)
+    assert abs(d.x - 200) < 1 and abs(d.y - 120) < 1
+    assert img[50, 60] == 255                                      # the frame itself is untouched
+
+
+def test_hot_pixels_are_found_but_not_a_tracked_target():
+    from issctl.detect import HotPixelWatch
+    w, bore = HotPixelWatch(), (672.0, 504.0)
+    found = None
+    for k in range(100):                 # 100 s, the mount turning 0.05 deg/s on axis2
+        t, axes = 1000.0 + k, (30.0, 100.0 + 0.05 * k)
+        assert w.update(t, 672.3 + 0.1 * (k % 3), 503.8, axes, bore) is None   # held on the cross
+        found = found or w.update(t, 688.0, 440.0 + 0.05 * (k % 2), axes, bore)
+    assert found == (688.0, 440.0)
+    still = HotPixelWatch()              # a star with the mount standing still: never "hot"
+    assert all(still.update(1000.0 + k, 400.0, 300.0, (30.0, 100.0), bore) is None for k in range(100))

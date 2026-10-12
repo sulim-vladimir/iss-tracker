@@ -157,7 +157,8 @@ function apply(s) {
     } else {
       head = c.fps.toFixed(0) + ' fps  ' + (c.det ? 'detected' : 'no detection');
     }
-    document.getElementById('stat-' + n).textContent = head + trackNote(n, s.mount && s.mount.track);
+    document.getElementById('stat-' + n).textContent =
+      head + trackNote(n, s.mount && s.mount.track, s.mount && s.mount.session === 'servo');
     const info = document.getElementById('info-' + n);
     if (info) info.textContent = ((s.status || {})[n] || []).join('\n');
     const sel = document.getElementById('sel-' + n);
@@ -361,19 +362,23 @@ function frameButton() {
 function identState(s) {
   const m = s.mount || {}, g = (s.cams || {}).guide || {}, p = s.pass || {};
   const named = m.identified, servo = MODE === 'track' && m.session === 'servo';
-  const watching = m.naming ? Math.max(0, Math.round((m.now || 0) - m.naming.since)) : 0;
-  const unnamed = watching > 30 ? 'nothing matched yet - not in the catalogues? Follow steers by the camera'
-                                : `naming... ${watching} s`;
-  if (m.orbit_pending) return {label: 'Starting...', on: true, line: `to the orbit of ${m.orbit_pending}`};
+  const asked = m.name_request != null && m.naming;
+  const watching = asked ? Math.max(0, Math.round((m.now || 0) - m.naming.since)) : 0;
+  // the usual terms: ephemeris (the orbit's prediction), guiding (a camera corrects it - closed
+  // loop), camera only (Follow: visual servoing, no orbit)
+  const lead = servo ? 'camera only' : '';
+  const line = (...parts) => parts.filter(Boolean).join(' - ');
+  if (m.orbit_pending) return {label: 'Starting...', on: true, line: `switching to the ephemeris of ${m.orbit_pending}`};
   if (PASS_MODE) return {label: 'Stop', on: true, act: 'stop',
-    line: `orbit + camera: ${p.name || ''}` + (p.source === 'predict' && !g.manual ? ' - click it when you see it' : '')};
-  if (servo) return named ? {label: 'Track', act: 'track', line: `Follow (camera only) - ${named.label}`}
-                          : {label: 'Identifying...', on: true, line: `Follow (camera only) - ${unnamed}`};
-  if (MODE === 'track' || !g.manual) return {label: 'Track', disabled: true, line: MODE === 'track' ? '' : 'click a satellite'};
-  if (!g.det && !named) return {label: 'Track', disabled: true, line: 'selected object not seen - click it again, or right-click to deselect'};
-  if (!named) return {label: 'Identifying...', on: true, line: unnamed};
-  const maybe = (named.label || '').startsWith('probably');
-  return {label: maybe ? 'Track?' : 'Track', act: 'track', line: named.label || named.name};
+    line: (['guide', 'main'].includes(p.source) ? 'ephemeris + guiding' : 'ephemeris only') + `: ${p.name || ''}`
+          + (p.source === 'predict' && !g.manual ? ' - click it when you see it' : '')};
+  if (!g.manual) return {label: 'Identify', disabled: true, line: lead};
+  if (named) return {label: (named.label || '').startsWith('probably') ? 'Track?' : 'Track', act: 'track',
+                     line: line(lead, named.label || named.name)};
+  if (!asked) return {label: 'Identify', act: 'identify',
+    line: line(lead, g.det ? '' : 'selected object not seen - click it again, or right-click to deselect')};
+  return {label: 'Identify', act: 'identify', disabled: watching <= 30,
+          line: line(lead, watching > 30 ? 'not named - not a catalogued satellite, or not moving' : `naming... ${watching} s`)};
 }
 function showIdent(s) {
   const b = document.getElementById('identtrack'), l = document.getElementById('identline');
@@ -390,6 +395,7 @@ function trackIdent() {
   const act = b && b.dataset.act;
   if (act === 'stop') return mnt('untrack', {});
   if (act === 'track') return mnt('track_identified', {});
+  if (act === 'identify') return mnt('identify_pick', {});
 }
 function armBright() {        // "Brightness" claims the next click in the guide image
   BRIGHT_ARMED = !BRIGHT_ARMED;
@@ -629,15 +635,17 @@ function drawPath(svg, path, name, now, color, textColor) {
 }
 
 // ---- which camera the tracker is steering with, shown in each camera's caption ----
-function trackNote(name, t) {
+function trackNote(name, t, servo) {
   if (!t) return '';
-  if (t.source === name) return '  \u00b7 TRACKING uses this camera';
+  if (t.source === name) return '  \u00b7 guiding';
   if (t.source === 'guide' || t.source === 'main')
     return name === 'main' && t.handoff
       ? `  \u00b7 standby (handoff ${Math.min(t.main_streak, t.handoff)}/${t.handoff} frames)`
       : '  \u00b7 standby';
-  const why = {predict: 'coasting on prediction', shadow: 'in Earth shadow - coasting',
-               blocked: 'behind an obstruction - coasting'}[t.source] || t.source;
+  // Follow has no ephemeris: lost, it coasts at its last rate
+  const why = servo ? 'lost - coasting at the last rate'
+            : {predict: 'ephemeris only', shadow: 'in Earth shadow - ephemeris only',
+               blocked: 'behind an obstruction - ephemeris only'}[t.source] || t.source;
   return '  \u00b7 ' + why;
 }
 
@@ -666,13 +674,24 @@ function showHistory(h) {
                 : r.result.best ? (r.result.verdict === 'sure' ? r.result.best : 'probably ' + r.result.best)
                   + (r.favorite ? ' \u2605' : '')
                 : 'nothing matched';
-      line.textContent = `${day} ${hm}  ${what.padEnd(14)} ${String(Math.round(r.duration)).padStart(4)} s  ${res}`;
+      line.textContent = `${day} ${hm}  ${what.padEnd(14)} ${String(Math.round(r.duration)).padStart(4)} s  ${res}`
+                       + summaryLine(r.summary);
       line.title = (r.result && r.result.text) || r.file;
       line.onclick = () => { HISTORY_PICK = HISTORY_PICK === r.file ? null : r.file; markHistory(box); };
       box.appendChild(line);
     }
   }
   markHistory(box);
+}
+// how the session went, under its row: share of the time a camera steered after the first lock,
+// how far from the green cross the guide held it (main sees +-3.6'), losses, late control loop
+function summaryLine(s) {
+  if (!s) return '';
+  const parts = [s.locked == null ? 'never locked' : `locked ${Math.round(s.locked * 100)}%`];
+  if (s.off_arcmin != null) parts.push(`${s.off_arcmin}' from the cross`);
+  if (s.lost) parts.push(`lost ${s.lost}x`);
+  if (s.late) parts.push(`loop late ${s.late}x, up to ${s.late_max} s`);
+  return '\n             ' + parts.join(' \u00b7 ');
 }
 function markHistory(box) {
   box.querySelectorAll('.row').forEach(el => el.classList.toggle('sel', el.dataset.file === HISTORY_PICK));

@@ -472,6 +472,8 @@ def cmd_console(args, cfg):
         # brightest thing is a street light or a window, and most satellites are fainter than
         # the stars. Its detection counts (and is drawn) only on a pick.
         cams["guide"].auto_target = False
+    for n, cam in cams.items():                  # hot pixels found so far (watch_hot_pixels)
+        cam.hot_pixels = [tuple(p) for p in (state.get("hot_pixels") or {}).get(n, [])]
     for n in state.get("marks_hidden", []):      # boresight/centre crosses hidden on the page
         if n in cams:
             cams[n].show_marks = False
@@ -1103,8 +1105,9 @@ def cmd_console(args, cfg):
                 mount.stop()
             return
         # what only changes the picture, or the next plan, works whatever the mount is doing
-        display = action in ("marks", "stretch", "frame_shown", "frame_undo", "frame_clear", "warnings_clear",
-                             "keep_side", "favorite_named", "auto_orbit")
+        display = action in ("marks", "stretch", "frame_shown", "frame_undo", "frame_clear",
+                             "warnings_clear", "identify_pick", "keep_side", "favorite_named",
+                             "auto_orbit")
         if ui["mode"] == "track" and action not in ("main_steers", "hand_pick") and not display:
             ui["msg"] = "tracking a pass - stop it first"
             return
@@ -1183,6 +1186,13 @@ def cmd_console(args, cfg):
                 state["frame_lines"].pop()
                 persist()
                 say(f"frame line removed, {len(state['frame_lines'])} left")
+        elif action == "identify_pick":
+            g = cams.get("guide")
+            if g is None or not g.manual:
+                say("identify: click the object in the guide image first")
+            else:
+                ui["name_request"] = g.pick_serial
+                ui["naming"] = {"of": "pick", "since": clock.now()}
         elif action == "warnings_clear":
             state["calibration_warnings"] = []
             persist()
@@ -1599,9 +1609,21 @@ def cmd_console(args, cfg):
                         samples = [(t, px, src)]
                 elif guide is not None and guide.manual and len(guide.pick_track):
                     track = list(guide.pick_track)
-                    now_key = ("pick", track[0][0])
+                    # not the oldest point of the track: it holds 30 and rolls over, and naming
+                    # started again every frame once it was full (a pick unnamed after 30 s at
+                    # 1 fps was "Identifying..." for ever, 2026-10-13)
+                    now_key = ("pick", guide.pick_serial)
                     samples = [(t, (x, y), "guide") for t, x, y in track]
                 else:
+                    now_key = None
+                # Only on request (Identify, under Follow): naming every click was in the way of
+                # plain image following. The request belongs to the object selected when it was
+                # made - another click, or deselecting, ends it.
+                req = ui.get("name_request")
+                if req is not None and not (guide is not None and guide.manual
+                                            and guide.pick_serial == req):
+                    ui["name_request"] = req = None
+                if req is None:
                     now_key = None
                 if now_key != key:
                     key, last_t, failed, path_for = now_key, -np.inf, False, None
@@ -1653,6 +1675,37 @@ def cmd_console(args, cfg):
                 say(f"live identification stopped: {e}")
 
     threading.Thread(target=name_it_live, name="live-naming", daemon=True).start()
+
+    def watch_hot_pixels():
+        """The guide's hot pixels, found as it runs (detect.HotPixelWatch), blanked from then on
+        and saved in state["hot_pixels"]."""
+        from .detect import HotPixelWatch
+        cam = cams.get("guide")
+        if cam is None:
+            return
+        watch, last = HotPixelWatch(), None
+        while True:
+            time.sleep(0.5)
+            try:
+                _, det, seq = cam.latest()
+                cal = (state.get("cameras") or {}).get("guide")
+                if det is None or seq == last or cal is None:
+                    continue
+                last = seq
+                at = mount.position_at(det.t)
+                hot = watch.update(det.t, det.x, det.y, mount.position() if at is None else at,
+                                   cal["boresight"])
+                if hot and all(np.hypot(hot[0] - x, hot[1] - y) > 3 for x, y in cam.hot_pixels):
+                    cam.hot_pixels = cam.hot_pixels + [hot]
+                    state.setdefault("hot_pixels", {})["guide"] = [list(p) for p in cam.hot_pixels]
+                    persist()
+                    say(f"guide: hot pixel at ({hot[0]:.0f}, {hot[1]:.0f}) - it stayed put while "
+                        f"the mount moved {watch.moved_deg:.0f}+ deg; ignored from now on")
+            except Exception as e:
+                say(f"hot pixel watch stopped: {e}")
+                return
+
+    threading.Thread(target=watch_hot_pixels, name="hot-pixels", daemon=True).start()
 
     orbit_tried = {}      # (session tracker, catalogue id) -> when a switch was last tried
 
@@ -1717,6 +1770,7 @@ def cmd_console(args, cfg):
                     time.sleep(0.1)
                 if tr is None:
                     return
+                ui["name_request"] = g.pick_serial   # Follow selected it again: keep naming it
             else:
                 say(f"track: switching Follow to {ident['name']} on its orbit")
             # a few tries: right after the start Follow may still be short of recent sightings
@@ -1967,13 +2021,15 @@ def cmd_console(args, cfg):
         if not guide:
             rows.append(("bad", "guide not calibrated - Calibrate on stars"))
         else:
+            # information only: with the guide fixed on the tube the cross does not move, and
+            # it is set once, not every night
+            bx, by = guide["boresight"]
             bs = guide.get("boresight_set")
-            rows.append(("ok", f"green cross set {bs['how']}, {ago(bs['at'])}")
-                        if bs and bs["how"].startswith("on ") else
-                        ("warn", f"green cross set by hand, {ago(bs['at'])} - Boresight on star is exact")
-                        if bs else
-                        ("warn", "green cross: not set on a star yet - satellites may miss the "
-                                 "main camera (Boresight on star)"))
+            rows.append(("ok", f"green cross at ({bx:.0f}, {by:.0f})"
+                               + (f", set {bs['how']} {ago(bs['at'])}" if bs else "")))
+        hot = [len(c.hot_pixels) for c in cams.values() if getattr(c, "hot_pixels", None)]
+        if hot:
+            rows.append(("ok", f"{sum(hot)} hot pixel{'s' * (sum(hot) > 1)} ignored"))
         warns = state.get("calibration_warnings") or []
         if warns:
             rows.append(("warn", f"{len(warns)} calibration warning{'s' * (len(warns) > 1)} - "
@@ -2015,6 +2071,7 @@ def cmd_console(args, cfg):
                 "sat_label": live.label,
                 "identified": ui.get("identified"),
                 "naming": ui.get("naming"), "orbit_pending": ui.get("orbit_pending"),
+                "name_request": ui.get("name_request"),
                 "last_named": ui.get("last_named"),
                 "auto_orbit": state.get("auto_orbit", True),
                 "frame_lines": [l["pts"] for l in state.get("frame_lines", [])],

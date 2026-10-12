@@ -230,3 +230,25 @@ def test_observed_lists_what_sessions_were_identified_as(tmp_path, tles, site):
     assert set(seen) == {"42065", "42058"}
     assert seen["42065"] == pytest.approx(times[0], abs=1.0)
     assert set(idf.observed(tmp_path)) == {"42065"}        # without the catalogue: ids only
+
+
+def test_a_session_summary_from_its_log(tmp_path):
+    """History's line: locked share after the first lock (shadow left out), losses, late loop."""
+    import json
+    from issctl.identify import session_summary
+    log = tmp_path / "track-20261013-000000.csv"
+    head = "t,a1,a2,alt,az,tgt1,tgt2,cmd1,cmd2,time_offset,cross1,cross2,source,det_x,det_y,lit,open\n"
+    rows, t = [], 1000.0
+    for src, n in (("predict", 50), ("guide", 100), ("predict", 10), ("guide", 40), ("shadow", 50)):
+        for _ in range(n):
+            det = "10.0,0.0" if src == "guide" else "nan,nan"
+            rows.append(f"{t:.3f},0,0,0,0,0,0,0,0,0,0,0,{src},{det},1,1\n")
+            t += 0.02
+    t += 1.0                                    # one stall
+    rows.append(f"{t:.3f},0,0,0,0,0,0,0,0,0,0,0,shadow,nan,nan,0,1\n")
+    log.write_text(head + "".join(rows))
+    log.with_suffix(".json").write_text(json.dumps(
+        {"cameras": {"guide": {"J": [[0.0, 60.0], [60.0, 0.0]], "boresight": [0.0, 0.0]}}}))
+    s = session_summary(log)
+    assert abs(s["locked"] - 140 / 150) < 0.02 and s["lost"] == 1
+    assert s["late"] == 1 and s["off_arcmin"] == 10.0          # 10 px at 60 px/deg
