@@ -1,0 +1,12 @@
+#!/bin/sh
+# Set the system clock to a unix time - the console's "set the Pi's clock" button, for a night
+# with no network. Installed root-owned in /usr/local/sbin by deploy/install-service.sh, with a
+# sudo rule for this script alone: it takes exactly one number and nothing else, so the rule
+# cannot be stretched to other uses of date (a plain `date --set=*` rule would also have run
+# `date -f /etc/shadow` as root).
+set -eu
+[ "$#" -eq 1 ] || { echo "usage: iss-set-clock UNIX_SECONDS" >&2; exit 2; }
+case "$1" in
+    ''|*[!0-9.]*|*.*.*) echo "not a unix time: $1" >&2; exit 2 ;;
+esac
+exec /usr/bin/date --set="@$1"

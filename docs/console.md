@@ -101,6 +101,14 @@ Under the chart:
 ## Lists and messages
 
 **Upcoming**, **Favourites** and **History** are described in [Satellites](satellites.md).
+**A red bar across the top** appears when the Pi's clock differs from the browser's by more than
+30 s. If the Pi has no network time (no RTC battery, no network at boot) it offers **Set the Pi's
+clock to this device's time** - a phone or laptop keeps network/GPS time. The console then corrects
+what the wrong time spoiled: star alignment points solved with it, a pass planned with it, the
+Upcoming list (the same happens when network time arrives late by itself). If the Pi does keep
+network time, the bar says to check the browser's clock instead. Needs a small root tool and sudo
+rule, installed once by `deploy/install-service.sh`.
+
 **Ready** (under Warnings) is the pre-flight check, green / orange / red: the clock synchronised
 (the Pi has no clock battery), both cameras delivering frames, the star alignment (stars, residual,
 age), where the green cross is (information only - it holds while the guide stays fixed on the

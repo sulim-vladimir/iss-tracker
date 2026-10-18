@@ -117,6 +117,24 @@ def _free(vectors, n_dirs=0):
     return [0, 1, 2, 3] if n < 3 or spread < CONE_SPREAD_DEG else [0, 1, 2, 3, 4]
 
 
+SIDEREAL_DEG_PER_S = 360.98564736629 / 86400.0
+
+
+def correct_clock_step(state, since, until, jump):
+    """The system clock was set by `jump` s - network time arriving after the Pi booted at its
+    last shutdown time (no RTC battery). Points recorded between since and until (old timescale)
+    were solved with the wrong time: the sky did not move, the clock did, so each one's hour angle
+    is off by the sidereal angle of the jump. On 2026-10-12 that hid a 45 deg rotation in the
+    alignment. Shifts them; returns how many. Refit afterwards."""
+    n = 0
+    for p in points(state):
+        if since <= p.get("t", -np.inf) <= until:
+            p["t"] = float(p["t"] + jump)
+            p["ha"] = float(geo.wrap180(p["ha"] + jump * SIDEREAL_DEG_PER_S))
+            n += 1
+    return n
+
+
 def refit(state, mount=None, cams_state=None):
     """Fit the model to the stored points. With a mount, also move the fitted Dec index into the
     counters, so axis2 then reads the true declination of the mount frame - the one quantity the

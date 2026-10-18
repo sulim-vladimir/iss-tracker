@@ -385,3 +385,20 @@ def test_a_named_star_off_centre_is_a_good_alignment_point(cfg):
     ha, dec = sol.hadec(px)
     axes = object_axes(state, mount.position(), px, "guide", frame=(cam.width, cam.height))
     assert align.add_point(state, axes, ha, dec, sol.t, source="named vega") < 0.1
+
+
+def test_points_solved_before_the_clock_was_set_are_corrected(site):
+    """A star solved while the clock was 5 days slow: its hour angle is off by the sidereal angle
+    of the jump; the correction gives what a right clock would have said."""
+    true_t, jump = 1792360000.0, 5 * 86400.0 + 3721.0
+    stale_t = true_t - jump
+    ra, dec = 279.23, 38.78                                        # Vega
+    ha_stale, dec_s = pr.radec_to_hadec(ra, dec, site, stale_t)
+    ha_true, dec_t = pr.radec_to_hadec(ra, dec, site, true_t)
+    state = {"alignment": {"points": [
+        {"axes": [10.0, 50.0], "ha": float(ha_stale), "dec": float(dec_s), "t": stale_t},
+        {"axes": [11.0, 51.0], "ha": 1.0, "dec": 2.0, "t": stale_t - 86400.0}]}}   # an older night
+    assert align.correct_clock_step(state, stale_t - 600.0, stale_t + 600.0, jump) == 1
+    p, old = align.points(state)
+    assert abs(geo.wrap180(p["ha"] - ha_true)) < 0.05 and p["t"] == true_t
+    assert old["ha"] == 1.0 and old["t"] == stale_t - 86400.0     # recorded with a good clock

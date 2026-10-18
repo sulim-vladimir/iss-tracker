@@ -5,8 +5,34 @@ async function api(path, params) {
 function tgt() { return document.getElementById('target').value; }
 function mnt(action, params) { return api('/api/mount', Object.assign({action}, params)); }
 let MODE = 'console', MOTORS = true, PASS_MODE = false, PLANNING = false;
+// The Pi's clock against this device's: a Pi booted with no network and no RTC battery runs days
+// behind, and every pass, plan and star point is computed with that. A bar across the top says so,
+// with a button that sets the Pi's clock from this device (a phone keeps network/GPS time).
+function clockCheck(m) {
+  if (m.now == null) return;
+  const off = m.now - Date.now() / 1000;            // + : the Pi is ahead
+  const bar = document.getElementById('clockbar');
+  if (!bar) return;
+  bar.hidden = Math.abs(off) < 30;
+  if (bar.hidden) { bar.dataset.text = ''; return; }
+  const span = Math.abs(off), how = span < 5400 ? `${Math.round(span / 60)} min` :
+    span < 172800 ? `${(span / 3600).toFixed(1)} h` : `${(span / 86400).toFixed(1)} days`;
+  const text = `The Pi's clock is ${how} ${off > 0 ? 'ahead of' : 'behind'} this device` +
+    (m.clock_synced ? ' - but the Pi keeps network time: check this device\'s clock.' :
+                      ' - passes, plans and star points would be computed for the wrong time. ');
+  if (bar.dataset.text === text) return;
+  bar.dataset.text = text;
+  bar.textContent = text;
+  if (!m.clock_synced) {
+    const b = document.createElement('button');
+    b.textContent = "Set the Pi's clock to this device's time";
+    b.onclick = () => mnt('set_clock', {unix: (Date.now() / 1000).toFixed(3)});
+    bar.appendChild(b);
+  }
+}
 function applyMount(m) {
   MODE = m.mode || 'console';
+  clockCheck(m);
   gotoButtons(m);
   PLANNING = !!m.planning;           // Track pressed, the pass is being planned (takes seconds)
   MOTORS = m.motors !== false;

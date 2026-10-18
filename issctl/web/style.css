@@ -51,6 +51,9 @@ body{background:#2f3439;color:#e8e8e8;font:14px/1.4 system-ui,sans-serif;margin:
  .rec{margin-top:8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
  #recbtn.on,#comingtrack.on{background:#a33;}
  #identtrack.on-red,#gotobtn.on-red,#skygoto.on-red{background:#a33}
+ #clockbar{background:#7a1f1f;color:#fff;padding:8px 12px;border-radius:6px;margin-bottom:10px;
+           font-weight:600}
+ #clockbar button{margin-left:12px}
  #ready{font-size:13px}
  #ready .r-ok{color:#7ee0b8}
  #ready .r-warn{color:#f0b35a}

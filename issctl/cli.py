@@ -1153,7 +1153,7 @@ def cmd_console(args, cfg):
             return
         # what only changes the picture, or the next plan, works whatever the mount is doing
         display = action in ("marks", "stretch", "frame_shown", "frame_undo", "frame_clear",
-                             "warnings_clear", "identify_pick", "keep_side", "favorite_named",
+                             "warnings_clear", "identify_pick", "set_clock", "keep_side", "favorite_named",
                              "auto_orbit")
         if ui["mode"] == "track" and action not in ("main_steers", "hand_pick") and not display:
             ui["msg"] = "tracking a pass - stop it first"
@@ -1233,6 +1233,8 @@ def cmd_console(args, cfg):
                 state["frame_lines"].pop()
                 persist()
                 say(f"frame line removed, {len(state['frame_lines'])} left")
+        elif action == "set_clock":
+            set_clock_from(params.get("unix"))
         elif action == "identify_pick":
             g = cams.get("guide")
             if g is None or not g.manual:
@@ -1762,6 +1764,65 @@ def cmd_console(args, cfg):
 
     threading.Thread(target=watch_hot_pixels, name="hot-pixels", daemon=True).start()
 
+    def clock_stepped(since, until, jump):
+        """The system clock was set while the console ran. Put right what the old time spoiled:
+        alignment points solved with it, a pass planned with it, the lists computed with it."""
+        say(f"system clock set {jump:+.0f} s (network time arrived) - correcting what was "
+            f"recorded with the old time")
+        n = align.correct_clock_step(state, since, until, jump)
+        if n:
+            align.refit(state, mount, state.get("cameras"))
+            persist()
+            say(f"star alignment: {n} point{'s' * (n > 1)} solved with the old time corrected - "
+                + align.describe(state))
+        tr = session["tracker"]
+        if tr is not None and not tr.servo:
+            stop_tracking()
+            say("the pass was planned with the old time - stopped; track it again")
+        if (ui.get("forecast") or {}).get("mode"):
+            threading.Thread(target=_safely, args=(do_forecast, ui["forecast"]["mode"]),
+                             daemon=True).start()
+        if ui.get("fav_passes"):
+            threading.Thread(target=_safely, args=(do_favorite_passes,), daemon=True).start()
+
+    def set_clock_from(unix):
+        """The page's "set the Pi's clock" button: the system clock to the browser's (a phone or
+        laptop keeps network or GPS time) - for a night with no network. Needs the root tool and
+        sudo rule deploy/install-service.sh installs (deploy/iss-set-clock: one number, nothing
+        else). watch_clock then sees the step and corrects what the old time spoiled."""
+        import subprocess
+        try:
+            t = float(unix)
+        except (TypeError, ValueError):
+            say("set clock: no time given")
+            return
+        if Path("/run/systemd/timesync/synchronized").exists():
+            say("set clock: the Pi keeps network time - not changed (is this device's clock right?)")
+            return
+        r = subprocess.run(["sudo", "-n", "/usr/local/sbin/iss-set-clock", f"{t:.3f}"],
+                           capture_output=True, text=True, timeout=10)
+        say("clock set from this device" if r.returncode == 0 else
+            f"set clock failed ({(r.stderr or r.stdout).strip()[:120]}) - run "
+            f"deploy/install-service.sh once on the Pi for the permission")
+
+    def watch_clock(step_s=2.0):
+        """Ubuntu's time service (systemd-timesyncd) steps the clock when network time arrives -
+        days, after a boot with no RTC battery and no network (the service waits only 90 s for
+        it). The wall clock against the monotonic one, which nothing sets, shows the step."""
+        since, last = time.time(), time.time() - time.monotonic()
+        while True:
+            time.sleep(1.0)
+            off = time.time() - time.monotonic()
+            if abs(off - last) > step_s:
+                try:
+                    clock_stepped(since, time.monotonic() + last, off - last)
+                except Exception as e:
+                    say(f"clock change: {e}")
+                since = time.time()
+            last = off
+
+    threading.Thread(target=watch_clock, name="clock", daemon=True).start()
+
     orbit_tried = {}      # (session tracker, catalogue id) -> when a switch was last tried
 
     def orbit_switch(tr, which, name):
@@ -2142,7 +2203,9 @@ def cmd_console(args, cfg):
                 "hand_pick": bool(state.get("hand_pick", cfg["tracking"].get("pass_hand_pick", True))),
                 "forecast": ui.get("forecast"), "now": clock.now(),
                 "rates": [round(float(r), 4) for r in mount.rate_cmd],
-                "track": tracking_note(), "ready": preflight()}
+                "track": tracking_note(), "ready": preflight(),
+                "clock_synced": Path("/run/systemd/timesync/synchronized").exists()
+                                if Path("/run/systemd/timesync").is_dir() else None}
 
     from .ser import RecordControl
     main_cfg = cfg["cameras"]["main"]

@@ -18,6 +18,22 @@ if [[ "$(loginctl show-user "$USER" -p Linger --value 2>/dev/null)" != yes ]]; t
     sudo loginctl enable-linger "$USER"
 fi
 
+# the page's "set the Pi's clock" button (a night with no network): a root-owned script that
+# takes one number, and a sudo rule for that script alone - not for date, whose other options
+# (date -f FILE prints any file) a wildcard rule would let through
+rule="/etc/sudoers.d/iss-console-clock"
+tool="/usr/local/sbin/iss-set-clock"
+if ! cmp -s "$here/deploy/iss-set-clock" "$tool" || [[ ! -e "$rule" ]]; then
+    tmp="$(mktemp)"
+    echo "$USER ALL=(root) NOPASSWD: $tool" > "$tmp"
+    if visudo -cf "$tmp" >/dev/null; then
+        echo "the clock button needs a small root tool and one sudo rule - sudo asks once:"
+        sudo install -m 0755 -o root -g root "$here/deploy/iss-set-clock" "$tool"
+        sudo install -m 0440 -o root -g root "$tmp" "$rule"
+    fi
+    rm -f "$tmp"
+fi
+
 if systemctl --user is-active --quiet iss-console; then
     echo "it is running: systemctl --user restart iss-console to pick up a new version"
 else
