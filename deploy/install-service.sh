@@ -23,7 +23,12 @@ fi
 # (date -f FILE prints any file) a wildcard rule would let through
 rule="/etc/sudoers.d/iss-console-clock"
 tool="/usr/local/sbin/iss-set-clock"
-if ! cmp -s "$here/deploy/iss-set-clock" "$tool" || [[ ! -e "$rule" ]]; then
+# is the rule there? /etc/sudoers.d is root's only, so ask sudo instead: with the rule the tool
+# itself runs, and answers a call with no time by its usage (exit 2); without it, sudo wants a
+# password (exit 1)
+rc=0
+sudo -n "$tool" >/dev/null 2>&1 || rc=$?
+if ! cmp -s "$here/deploy/iss-set-clock" "$tool" || [[ "$rc" -ne 2 ]]; then
     tmp="$(mktemp)"
     echo "$USER ALL=(root) NOPASSWD: $tool" > "$tmp"
     if visudo -cf "$tmp" >/dev/null; then

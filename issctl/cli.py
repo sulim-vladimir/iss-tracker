@@ -1807,8 +1807,9 @@ def cmd_console(args, cfg):
 
     def watch_clock(step_s=2.0):
         """Ubuntu's time service (systemd-timesyncd) steps the clock when network time arrives -
-        days, after a boot with no RTC battery and no network (the service waits only 90 s for
-        it). The wall clock against the monotonic one, which nothing sets, shows the step."""
+        ~25 s into every boot (no RTC battery: it starts at the last shutdown time), or days
+        later on a night with no network. The wall clock against the monotonic one, which
+        nothing sets, shows the step."""
         since, last = time.time(), time.time() - time.monotonic()
         while True:
             time.sleep(1.0)

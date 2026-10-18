@@ -11,11 +11,10 @@ StartLimitBurst=5
 Type=simple
 WorkingDirectory=@ROOT@
 Environment=PYTHONUNBUFFERED=1
-# The Pi 5 has no RTC battery: it boots at the last shutdown time and NTP steps the clock forward
-# seconds later - a console started in between planned passes 21 h stale (2026-10-12). Wait for
-# the sync, but not forever: a night with no network has no NTP.
-ExecStartPre=/bin/sh -c 'for i in $(seq 90); do [ -e /run/systemd/timesync/synchronized ] && exit 0; sleep 1; done; echo "clock not synchronised after 90 s - starting anyway"'
-TimeoutStartSec=120
+# No waiting for network time: the Pi 5 (no RTC battery) boots at its last shutdown time and NTP
+# steps the clock ~25 s later, and the console handles that step itself (watch_clock corrects
+# what the old time spoiled; the page offers to set the clock when no network time comes).
+# Waiting for the sync here kept the console away for that long after every boot.
 ExecStart=@ROOT@/.venv/bin/python -m issctl console --web --port 8090
 # SIGTERM is the console's graceful stop (state saved, cameras closed); closing the ZWO cameras
 # has taken up to 30 s
