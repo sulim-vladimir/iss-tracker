@@ -93,7 +93,16 @@ it, where the window allows. Runs closer than 20 deg only show repeatability.
 **Stay away from the pole** (Dec above ~60 deg): axis1 there rotates the field instead of shifting it.
 From a north-facing balcony that means pointing low - the same azimuth at alt 20 is Dec ~58.
 
-Other star tools: **Add star** adds the current pointing as another alignment point; **Clear
+Other star tools: **Add star** adds the current pointing as another alignment point. It plate-solves
+the guide frame, which needs 6+ stars - right after sunset there are not that many. Then it uses a
+named star instead: type it in the target box (`vega`, `arcturus`, a planet...), **goto**, click it
+in the guide image, **Add star**. It need not be centred - its pixel is carried to the guide centre
+through the guide matrix (to ~3'). Two or three bright stars far apart rebuild the alignment in
+twilight. **Calibrate on one star** is the twilight version of Calibrate on stars for the guide
+camera itself: click one bright star in the guide image and press it - each axis steps 0.25 deg a
+few times (small enough for the selection to keep the star between 1 s frames) and the star's
+motion gives the guide's scale and rotation. It leaves the green cross alone and does not align
+the mount - Add star does that; **Sync** on one named star is enough when the tripod has not moved. **Clear
 alignment** forgets the model - only after the tripod itself moved. **Centre by solve** puts a named
 object on the guide boresight using the plate solve rather than the counters, so it works however
 little the mount knows where it is.

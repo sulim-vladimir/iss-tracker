@@ -66,7 +66,7 @@ picture and up moves it up, whatever the camera's rotation, through its matrix. 
 
 ## Calibration
 
-**Set home** and the star tools - **Sync on stars**, **Calibrate on stars**, **Add
+**Set home** and the star tools - **Sync on stars**, **Calibrate on stars**, **Calibrate on one star** (twilight), **Add
 star**, **Spiral search in main**, **Calibrate main on star**, **Boresight on star**, **Clear
 alignment** - all described in [Observing](observing.md). Under them a summary: when it was
 calibrated, each camera's scale and rotation, the star alignment and the polar error.

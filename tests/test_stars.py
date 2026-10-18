@@ -368,3 +368,20 @@ def test_brightness_of_a_star_and_of_something_no_catalogue_has():
     named = brightness(sol, (51.0, 100.0))
     assert named["catalog_label"] == "vega"                           # the name wins
     assert brightness(sol, (5.0, 900.0))["px"] is None                 # nothing there
+
+
+def test_a_named_star_off_centre_is_a_good_alignment_point(cfg):
+    """Twilight Add star: no solve, but a star selected off the guide centre, its sky position
+    known from its name - carried to the centre through the guide matrix, it must agree with the
+    alignment as well as a solved point does."""
+    from issctl.identify import object_axes
+    mount, world, cam, solver = rig(cfg)
+    state = {}
+    cal = align.calibrate_on_stars(mount, cam, solver, state, log=lambda *a: None, slew_rate=3.0,
+                                   settle_s=0.0)
+    state["cameras"] = {"guide": cal}               # as the console stores it
+    sol = solver.solve(None, mount.clock.now())
+    px = ((cam.width - 1) / 2 + 180.0, (cam.height - 1) / 2 - 110.0)      # ~3 deg off centre
+    ha, dec = sol.hadec(px)
+    axes = object_axes(state, mount.position(), px, "guide", frame=(cam.width, cam.height))
+    assert align.add_point(state, axes, ha, dec, sol.t, source="named vega") < 0.1

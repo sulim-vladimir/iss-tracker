@@ -441,7 +441,7 @@ def cmd_console(args, cfg):
     from .calib import (axis1_plausible, axis1_stretch, calibrate_cameras, centring_move,
                         image_jog_rates, measure)
     from .mount import SIDEREAL_DEG_S, SimMount
-    from .solve import solve_camera
+    from .solve import SolveError, solve_camera
 
     state_path = SIM_STATE_FILE if args.sim else None
     state = load_state(state_path)
@@ -741,10 +741,43 @@ def cmd_console(args, cfg):
                " (no alignment yet - 'calibrate on stars' next, so goto and passes know how "
                "the tripod stands)"))
 
-    def do_align_add():
-        sol, axes, b = solve_here()
+    def named_star_point(name):
+        """At twilight the guide sees too few stars to solve. A bright star you named (the Target
+        box) and selected in the guide image still gives a point: its sky position from the name,
+        its pixel carried to the guide centre - where the alignment points - through the guide
+        matrix. (counters, ha, dec, t), or None with the reason said."""
+        from .identify import object_axes
+        g = cams.get("guide")
+        if not name or name.lower().startswith("altaz"):
+            say("add star: too few stars to solve - type a bright star's name in the target box, "
+                "click it in the guide image, then Add star")
+            return None
+        if g is None or not g.manual or not (state.get("cameras") or {}).get("guide"):
+            say(f"add star: click {name} in the guide image first (and the guide must be calibrated)")
+            return None
+        _, det, _ = g.latest()
+        if det is None:
+            say(f"add star: the selected object is not detected - click {name} again")
+            return None
+        at = mount.position_at(det.t)
+        at = np.asarray(mount.position() if at is None else at, dtype=float)
+        axes = object_axes(state, at, (det.x, det.y), "guide", frame=(g.width, g.height))
+        ha, dec, _, _ = pr.target_hadec(name, site, det.t)
+        return axes, float(ha), float(dec), float(det.t)
+
+    def do_align_add(name=""):
+        """Add this pointing to the star alignment: by plate solve in a dark sky, by the named
+        star selected in the guide image when the solve has too few stars (twilight)."""
         try:
-            off = align.add_point(state, axes, *sol.hadec(b), sol.t)
+            sol, axes, b = solve_here()
+            point, how = (axes, *sol.hadec(b), sol.t), "solve"
+        except SolveError as e:
+            point, how = named_star_point(name.strip()), f"named {name.strip()}"
+            if point is None:
+                return
+            say(f"add star: no solve ({e}) - using {name.strip()}")
+        try:
+            off = align.add_point(state, point[0], *point[1:], source=how)
         except ValueError as e:
             say(str(e))
             return
@@ -871,12 +904,13 @@ def cmd_console(args, cfg):
         mount.move_to(HOME.copy(), abort=aborted)
         say("home reached" if not aborted() else "going home aborted")
 
-    def do_cal(only=None, mode="blob"):
+    def do_cal(only=None, mode="blob", steps=None, measure_boresight=True):
         say("calibrating on the target...")
         warnings = []
         res = calibrate_cameras(mount, cams, track_rate=sidereal() if ui["tracking"] else None,
                                 log=say, abort=aborted, warnings=warnings, only=only,
-                                existing=state.get("cameras"), mode=mode)
+                                existing=state.get("cameras"), mode=mode, steps=steps,
+                                measure_boresight=measure_boresight)
         state.setdefault("cameras", {}).update(res)
         state["calibrated_at"] = time.time()
         state["calibration_warnings"] = warnings
@@ -885,6 +919,19 @@ def cmd_console(args, cfg):
             f"calibration complete, saved to {(state_path or STATE_FILE).name}")
         if mode == "blob":
             recover_main()
+
+    def do_cal_one_star():
+        """'Calibrate on one star': the guide camera measured on the star selected in it - for
+        twilight, when too few stars show to plate-solve. Small steps (0.25 deg, ~18 px) so the
+        selection keeps the star between 1 s frames; the default ramp jumps ~110 px a step. It
+        measures the guide only; the alignment comes from Add star (by name)."""
+        g = cams.get("guide")
+        if g is None or not g.manual or g.latest()[1] is None:
+            say("calibrate on one star: click a bright star in the guide image first")
+            return
+        # the green cross stays: it is set once, on a star centred in main (Boresight on star) -
+        # main's brightest spot at twilight may be noise, not this star
+        do_cal(["guide"], steps={"guide": 0.25}, measure_boresight=False)
 
     def recover_main():
         """Big moves (guide calibration, backlash) overshoot the main camera's tiny field by more
@@ -1116,7 +1163,7 @@ def cmd_console(args, cfg):
         if aborted() and action not in ("stop", "frame", "speed") and not display:
             ui["abort"].clear()  # any deliberate command clears the latched stop
         if action in ("jog", "goto", "track", "calibrate", "centre", "starcal",
-                      "solve_centre", "gohome", "spiral", "maincal", "goto_altaz") and not ui["motors"]:
+                      "solve_centre", "gohome", "spiral", "maincal", "goto_altaz", "cal_one") and not ui["motors"]:
             mount.enable(True)
             ui["motors"] = True
         if action == "jog":
@@ -1280,6 +1327,9 @@ def cmd_console(args, cfg):
                 align.clear(state)
                 persist()
                 ui["msg"] = "star alignment cleared"
+            elif action == "align_add":
+                target = params.get("target") or ""
+                in_background(lambda: do_align_add(target))
             elif action == "solve_centre":
                 target = (params.get("target") or "").strip()
                 if not target:
@@ -1312,6 +1362,10 @@ def cmd_console(args, cfg):
                 in_background(lambda: do_backlash(params.get("cam")))
             else:
                 ui["msg"] = "no cameras"
+        elif action == "cal_one":
+            if "guide" in cams:
+                ui["jog"][:] = 0
+                in_background(do_cal_one_star)
         elif action == "calibrate":
             if cams:
                 ui["jog"][:] = 0

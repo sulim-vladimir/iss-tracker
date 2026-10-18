@@ -107,8 +107,10 @@
   onclick="mnt('solve_sync',{})">sync on stars</button>
   <button title="measure the guide camera by solving frames either side of a small move on each axis (star_cal_step_deg, 1 deg by default). Also aligns the mount: goto and pass planning then know how the tripod stands"
   onclick="mnt('starcal',{})">calibrate on stars</button>
-  <button title="add this pointing as an alignment star. Points in different parts of the sky make the model better"
-  onclick="mnt('align_add',{})">add star</button>
+  <button title="twilight, too few stars to solve: click one bright star in the guide image, then press this. The mount steps each axis 0.25 deg a few times and measures how the star moves - the guide camera's scale and rotation. It does not align the mount: add 2-3 named stars with Add star for that"
+  onclick="mnt('cal_one',{})">calibrate on one star</button>
+  <button title="add this pointing as an alignment star. Points in different parts of the sky make the model better. Dark sky: the guide frame is plate-solved. Twilight (too few stars to solve): type a bright star's name in the target box (vega, arcturus, a planet...), click it in the guide image, then press this"
+  onclick="mnt('align_add',{target:tgt()})">add star</button>
   <button id="spiralbtn" title="the star is in the guide but not in the main camera: walk a spiral round here, one main field per step (30' by default), pausing at each stop. Press Stop here when the star is in main - the mount stays there"
   onclick="mnt(this.dataset.running === '1' ? 'stop' : 'spiral', {})">Spiral search in main</button>
   <button title="with a star anywhere in the main camera: move each axis 1.8' either way and measure the main matrix in its own pixels (no guide involved), then centre the star. Takes up the Dec slack first"

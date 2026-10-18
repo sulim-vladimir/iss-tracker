@@ -455,3 +455,44 @@ def test_smoothing_finds_a_faint_object_the_plain_threshold_misses():
     assert got is not None and abs(got.x - 300.3) < 1.0 and abs(got.y - 200.6) < 1.0
     # and in the same frame, away from it, the smoothed 5 sigma finds nothing
     assert detect(img, 5.0, 3, False, (100.0, 400.0, 38.0), smooth=1.0) is None
+
+
+def test_one_star_calibration_keeps_the_boresight():
+    """Calibrate on one star (twilight): small steps the selection can follow, the guide matrix
+    measured, and the green cross left exactly where it was - main's brightest spot is not
+    trusted to move it."""
+    import copy
+    from issctl.calib import calibrate_cameras
+    from issctl.camera import SimCamera
+    from issctl.clock import Clock
+    from issctl.config import load_config
+    from issctl.mount import SimMount
+    from issctl.sim import CalibWorld
+    cfg = load_config()
+    clock = Clock(speed=5.0)
+    mount = SimMount(cfg, {}, clock, start=[20.0, 40.0])
+    mount.query()
+    world = CalibWorld(cfg, mount)
+    cams = {n: SimCamera(n, cfg["cameras"][n], clock, world).start() for n in ("guide", "main")}
+    try:
+        existing = copy.deepcopy(world.true_cal)
+        existing["guide"]["boresight"] = [600.0, 450.0]           # set once, by hand
+        guide = cams["guide"]
+        _, det, _ = guide.latest()
+        for _ in range(50):
+            _, det, _ = guide.latest()
+            if det is not None:
+                break
+            clock.sleep(0.1)
+        guide.select(det.x, det.y)
+        res = calibrate_cameras(mount, cams, only=["guide"], existing=existing,
+                                steps={"guide": 0.25}, measure_frames=3, log=lambda *a: None,
+                                measure_boresight=False)
+        assert res["guide"]["boresight"] == [600.0, 450.0]
+        from issctl.calib import jacobian                   # both at today's declination
+        a2 = mount.position()[1]
+        assert np.allclose(jacobian(res["guide"], a2), jacobian(world.true_cal["guide"], a2),
+                           rtol=0.03, atol=1.0)
+    finally:
+        for c in cams.values():
+            c.stop()

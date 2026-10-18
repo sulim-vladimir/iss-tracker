@@ -436,7 +436,7 @@ def calibration_order(cam_cfgs, existing=None):
 
 def calibrate_cameras(mount, cams, steps=None, track_rate=None, log=print, abort=None,
                       warnings=None, slew_rate=0.5, only=None, existing=None,
-                      ramp_steps=3, measure_frames=10, mode="blob"):
+                      ramp_steps=3, measure_frames=10, mode="blob", measure_boresight=True):
     """Needs one bright target visible in every camera (centre it in the main camera first).
 
     Each camera is calibrated with its own step size, so wide and narrow fields both get a
@@ -449,6 +449,9 @@ def calibrate_cameras(mount, cams, steps=None, track_rate=None, log=print, abort
     only=[names] calibrates just those cameras - useful when one of them could not see the target
     the first time round. The boresight still needs both cameras to see the target now, but the
     other camera's stored matrix (existing) is reused, so you never have to redo the wide field.
+
+    measure_boresight=False keeps the stored boresight whatever the cameras see: one-star
+    calibration at twilight measures the guide only, and main's brightest spot may be noise.
     """
     steps = dict(steps or {})
     trackers = {n: make_tracker(c, mode) for n, c in cams.items()}
@@ -654,7 +657,8 @@ def calibrate_cameras(mount, cams, steps=None, track_rate=None, log=print, abort
                 "redo that part on a point source (a distant lamp, a planet, the Moon) at 1 km "
                 "or more - closer than that the parallax between the two cameras exceeds the "
                 "main camera's field.")
-    elif jm and jg and at_start.get("main") is not None and at_start.get("guide") is not None:
+    elif measure_boresight and jm and jg and at_start.get("main") is not None \
+            and at_start.get("guide") is not None:
         result.setdefault("guide", dict(jg))
         dth = np.linalg.solve(np.array(jm["J"]), np.array(jm["boresight"]) - at_start["main"])
         boresight = at_start["guide"] + np.array(jg["J"]) @ dth
