@@ -177,6 +177,12 @@ std_mags = { "42058" = 3.0, "42065" = 3.0, "46984" = 4.0 }
 default_std_mag = 5.0        # a favourite no catalogue rates, without a Brightness measurement on it
 favorite_hours = 48          # how far ahead Favourites predicts passes
 
+[collimation]                 # `issctl collimate`, or the console's /collimate page
+camera = "guide"              # the camera that goes into the focuser
+lens_mm = 0                   # its lens; 0 = that camera's focal_length_mm (also set on the page)
+focal_mm = 750                # the telescope's primary - not with the Barlow
+aperture_mm = 150
+
 [preview]
 enabled = true
 port = 8080

@@ -1,5 +1,5 @@
 <!-- @panel -->
-<div class="panel cam cam-{{name}}"><h2>{{title}} <span id="stat-{{name}}"></span></h2>
+<div class="panel cam cam-{{name}}"><h2>{{title}} <span id="stat-{{name}}"></span>{{collim}}</h2>
 <img src="/{{name}}.mjpg" title="click an object to select it, double-click to centre it; right-click (on a phone: press and hold) to deselect it"
  onclick="imgClick('{{name}}',event,this)" oncontextmenu="return letGo('{{name}}',event)"
  ontouchstart="holdStart('{{name}}')" ontouchend="holdEnd()" ontouchmove="holdEnd()"
@@ -208,3 +208,6 @@
  onclick="if(confirm('Remove ALL frame lines?')) mnt('frame_clear',{})">Clear lines</button></div>
 <div class="hint" id="sky-named"></div>
 <div class="info" id="sky-info"></div></div>
+
+<!-- @collim -->
+<a class="small" href="/collimate" target="_blank" title="this camera in the focuser, as a Cheshire">collimate</a>

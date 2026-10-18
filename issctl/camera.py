@@ -257,6 +257,8 @@ class AsiCamera(Camera):
         self.sdk_lib = sdk_lib
         self.cam = None
         self._caps = None
+        self._delivered = 0             # frames since the stream started
+        self._exposure_pending = False  # a long exposure waiting for the stream to settle
 
     def _open(self):
         lib = find_sdk(self.sdk_lib) if not AsiCamera._sdk_ready else None
@@ -290,7 +292,11 @@ class AsiCamera(Camera):
             self.width, self.height = cam.get_roi()[2:4]
             step = "set gain and exposure"
             self.gain = self._control(cam, "Gain", asi.ASI_GAIN, int(self.cfg["gain"]))
-            self._control(cam, "Exposure", asi.ASI_EXPOSURE, int(self.exposure_ms * 1000))
+            # always start short, the real exposure follows once frames flow (see set_exposure)
+            start_ms = min(self.exposure_ms, self.START_EXPOSURE_MS)
+            self._control(cam, "Exposure", asi.ASI_EXPOSURE, int(start_ms * 1000))
+            self._delivered = 0
+            self._exposure_pending = start_ms != self.exposure_ms
             step = "start video capture"
             cam.start_video_capture()
         except Exception as e:
@@ -320,8 +326,22 @@ class AsiCamera(Camera):
         cam.set_control_value(ctype, clamped)
         return clamped
 
+    # The ASI120MM Mini hung for good - listed on USB, never another frame until unplugged -
+    # three times out of three when a long exposure (191, 506 ms) was set within the first frames
+    # of a stream: a restart restoring its saved exposure. The same change made once the stream
+    # had run a while never did. So a stream starts short and takes a long exposure only later.
+    START_EXPOSURE_MS = 20.0
+    SETTLE_FRAMES = 5
+
     def set_exposure(self, ms):
         super().set_exposure(ms)
+        if self._delivered < self.SETTLE_FRAMES and ms > self.START_EXPOSURE_MS:
+            self._exposure_pending = True     # applied by _grab once the stream has settled
+            return
+        self._apply_exposure()
+
+    def _apply_exposure(self):
+        self._exposure_pending = False
         us = self._control(self.cam, "Exposure", self._asi.ASI_EXPOSURE,
                            int(self.exposure_ms * 1000))
         if us is not None:
@@ -340,6 +360,11 @@ class AsiCamera(Camera):
             try:
                 self.cam.stop_video_capture()
                 time.sleep(0.2)
+                if self.exposure_ms > self.START_EXPOSURE_MS:     # a new stream starts short
+                    self._control(self.cam, "Exposure", self._asi.ASI_EXPOSURE,
+                                  int(self.START_EXPOSURE_MS * 1000))
+                    self._exposure_pending = True
+                self._delivered = 0
                 self.cam.start_video_capture()
                 return
             except Exception as e:
@@ -355,6 +380,12 @@ class AsiCamera(Camera):
             img = self.cam.capture_video_frame(timeout=int(self.exposure_ms * 2 + 500))
         except self._asi.ZWO_IOError:
             return None, None
+        self._delivered += 1
+        if self._exposure_pending and self._delivered >= self.SETTLE_FRAMES:
+            try:
+                self._apply_exposure()
+            except Exception as e:
+                print(f"{self.name}: could not set the exposure: {e}")
         t = self.clock.now() - self.exposure_ms / 2000.0 - self.cfg["latency_s"]
         return img, t
 

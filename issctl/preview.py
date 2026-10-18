@@ -134,17 +134,23 @@ def render(cam, cal, max_width=800):
 
 
 class Preview:
-    def __init__(self, cams, state, port=8080, fps=5.0, status=None, controls=None):
+    collimator = None      # also for a Preview built without __init__, as the tests do
+
+    def __init__(self, cams, state, port=8080, fps=5.0, status=None, controls=None,
+                 collimator=None):
         self.cams, self.state, self.port, self.period = cams, state, port, 1.0 / fps
         self.status = status      # callable(camera_name) -> list of overlay lines
         self.controls = controls  # dict of callables: state/exposure/gain/record
+        self.collimator = collimator   # the /collimate page (collimate.Collimator), if any
 
     def page(self):
         can_record = bool(self.controls and self.controls.get("record"))
         can_move = bool(self.controls and self.controls.get("mount_action"))
         f = fragments()
+        coll = self.collimator
         cam_panels = "".join(
             fill(f["panel"], name=n, title=n.capitalize(),
+                   collim=f["collim"] if (coll and coll.cam.name == n) else "",
                    extra=f["record"] if (n == "main" and can_record) else "",
                    # main's aim point is its frame centre; only the guide's is set by hand
                    bore=f["bore"].replace("NAME", n) if (n != "main" and can_move) else "",
@@ -208,14 +214,38 @@ class Preview:
                 self.end_headers()
                 self.wfile.write(body)
 
+            def _stream(self, draw):
+                self.send_response(200)
+                self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+                self.end_headers()
+                try:
+                    while True:
+                        img = draw()
+                        if img is not None:
+                            ok, jpg = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                            self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\n\r\n"
+                                             + jpg.tobytes() + b"\r\n")
+                        time.sleep(preview.period)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+
             def do_GET(self):
                 url = urlparse(self.path)
                 q = {k: v[0] for k, v in parse_qs(url.query).items()}
                 path = url.path
                 ctl = preview.controls or {}
 
+                coll = preview.collimator
                 if path in ("/", "/index.html"):
+                    if coll and not ctl.get("mount_action"):    # `issctl collimate`: nothing else
+                        return self._send(asset("collimate.html").encode(), "text/html")
                     return self._send(preview.page().encode(), "text/html")
+                if coll and path == "/collimate":
+                    return self._send(asset("collimate.html").encode(), "text/html")
+                if coll and path == "/api/collimate":
+                    action = q.pop("action", "state")
+                    body = coll.state() if action == "state" else coll.action(action, q)
+                    return self._send(json.dumps(body).encode())
                 if url.path in ("/style.css", "/app.js"):
                     kind = "text/css" if url.path.endswith(".css") else "application/javascript"
                     return self._send(asset(url.path.lstrip("/")).encode(), kind)
@@ -243,6 +273,8 @@ class Preview:
                     return self._send(json.dumps(preview.api_state()).encode())
 
                 name = path.strip("/").removesuffix(".mjpg")
+                if coll and name == "collimate":
+                    return self._stream(coll.render)
                 if name in preview.cams:
                     self.send_response(200)
                     self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")

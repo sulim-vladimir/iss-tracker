@@ -3,6 +3,8 @@ config.toml
 data/state.json
 data/favorites.json
 data/mount.lock
+data/collimation.json
+data/collimation-sim.json
 captures/
 *.ser
 logs/
