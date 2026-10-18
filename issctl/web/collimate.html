@@ -1,0 +1,308 @@
+<!doctype html><html><head><title>Collimation</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="/style.css">
+<style>
+ /* The picture is as large as the window allows, whole: width AND height, so nothing it
+    needs is below the fold. The box hugs the picture (no letterbox), which keeps clicks exact. */
+ .wrap{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-start}
+ .view{flex:0 1 auto;max-width:none;min-width:300px;padding:6px}
+ .view h2{margin:0 0 4px}
+ .view img{display:block;width:auto;height:auto;max-width:100%;
+           max-height:calc(100vh - 62px);border-radius:4px;background:#000;cursor:crosshair;
+           user-select:none;-webkit-touch-callout:none}
+ .side{flex:1 1 360px;min-width:300px;max-width:470px;display:flex;flex-direction:column;
+       gap:10px;max-height:calc(100vh - 20px);overflow-y:auto}
+ .side .panel{max-width:none;flex:0 0 auto;min-width:0}
+ .side .ctl label{width:auto}
+ .side .ctl label.cl{width:68px}
+ .side input{width:72px}
+ #msg{color:#e3b567;min-height:1.4em}
+ .muted{font-size:12px;color:#b9c1c8}
+ /* readings: a target per step */
+ .step{display:grid;grid-template-columns:132px 1fr;gap:10px;align-items:center;
+       padding:8px;margin:8px 0;border-radius:6px;background:#343a40;border-left:5px solid #5c656e}
+ .step.good{border-color:#4caf50}.step.close{border-color:#d6be3c}.step.adjust{border-color:#d9534f}
+ .step .t{font-weight:600;font-size:15px}
+ .step .big{font:600 22px ui-monospace,monospace;margin:4px 0 2px}
+ .step .verdict{font-size:13px;font-weight:600;padding:2px 8px;border-radius:9px;
+                display:inline-block;background:#5c656e}
+ .good .verdict{background:#4caf50;color:#111}.close .verdict{background:#d6be3c;color:#111}
+ .adjust .verdict{background:#d9534f}
+ .step .mirror{display:flex;align-items:center;gap:6px;font-size:12px;color:#cfd6dd;margin-top:4px}
+ .step.off{opacity:.75}
+ /* circles */
+ .circles{display:grid;grid-template-columns:150px 1fr;gap:10px;align-items:start}
+ .feat{display:grid;grid-template-columns:auto 1fr auto;gap:5px 8px;align-items:center}
+ .feat button{min-width:44px}
+ .feat button.on{background:#c9913c;color:#111}
+ .feat .st{font-size:12px;color:#cfd6dd;line-height:1.25}
+ .feat .st b{font-weight:600}
+ .feat .ok{color:#6fcf73}.feat .bad{color:#e3b567}
+ .key{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px}
+ /* turn test */
+ .turn{display:grid;grid-template-columns:1fr auto 1fr auto 1fr;gap:4px;align-items:center;
+       text-align:center;font-size:12px;color:#cfd6dd;margin:4px 0 8px}
+ .turn .box{border:2px solid #5c656e;border-radius:6px;padding:4px 2px}
+ .turn .box.now{border-color:#c9913c;background:#4a4238}
+ .turn .box.done{border-color:#4caf50}
+ .turn button{width:100%;margin-top:4px;padding:4px 2px;font-size:12px}
+ details{font-size:13px;color:#cfd6dd} details ol{padding-left:18px;margin:6px 0}
+</style>
+</head><body>
+<div class="wrap">
+ <div class="view panel">
+  <h2>Collimation <span id="camstat" class="muted"></span> <a href="/" style="font-size:11px;margin-left:8px;color:#9cc4ea">console</a></h2>
+  <img id="img" src="/collimate.mjpg" alt="" onclick="clickImg(event)">
+ </div>
+ <div class="side">
+  <div class="panel"><h2>Readings</h2>
+   <div id="steps"></div>
+   <div class="muted">The dot is where one centre sits against the other, as in the picture.
+    Bring it into the green. Its grey tail shows where it has just been: turn a screw a
+    little and the tail shows which way that screw moves it.</div></div>
+
+  <div class="panel"><h2>Circles</h2>
+   <div class="circles"><div id="sketch"></div>
+    <div><div class="feat" id="feats"></div>
+     <div class="ctl btns"><button id="donebtn" onclick="coll('done')" hidden>Done</button></div>
+    </div></div>
+  </div>
+
+  <div class="panel"><h2>Focuser axis</h2>
+   <div class="turn" id="turn"></div>
+   <div class="muted" id="axis"></div>
+   <div class="ctl"><button onclick="coll('axis_reset')" class="small" style="margin-left:0">Forget the axis</button>
+    <label style="width:auto;margin-left:12px">Lens</label>
+    <input id="lens" onchange="coll('lens',{mm:this.value})"> mm
+    <span class="muted" id="scope"></span></div>
+  </div>
+
+  <div class="panel"><h2>Camera</h2>
+   <div id="msg"></div>
+   <div class="ctl"><label class="cl">Exposure</label>
+    <button onclick="camApi('/api/exposure',{factor:0.667})">-</button>
+    <input id="exp" onchange="camApi('/api/exposure',{ms:this.value})">
+    <button onclick="camApi('/api/exposure',{factor:1.5})">+</button> ms</div>
+   <div class="ctl"><label class="cl">Gain</label>
+    <button onclick="camApi('/api/gain',{delta:-10})">-</button>
+    <input id="gain" onchange="camApi('/api/gain',{value:this.value})">
+    <button onclick="camApi('/api/gain',{delta:10})">+</button> 0-100</div>
+   <div class="ctl"><button id="autobtn" onclick="coll('auto_exposure')" title="gain to 0, brightest parts to ~75% of full scale">Auto exposure</button>
+    <span id="level" class="muted" style="font-family:ui-monospace,monospace"></span></div>
+   <div class="ctl"><button id="trackbtn" onclick="coll('tracking',{on:TRACKING?0:1})"></button>
+    <span class="muted">freeze while a hand is in front of the tube</span></div>
+   <div class="ctl"><button onclick="coll('save_frame')" title="the raw frame, to captures/">Save frame</button></div>
+  </div>
+
+  <div class="panel" id="simpanel" hidden><h2>Simulator</h2>
+   <div class="ctl btns">
+    <button onclick="coll('sim_turn')">Turn camera 180&deg;</button>
+    <button onclick="coll('sim_nudge',{what:'secondary'})">Secondary screw</button>
+    <button onclick="coll('sim_nudge',{what:'primary'})">Primary screw</button>
+   </div>
+  </div>
+
+  <div class="panel"><details><summary>How to</summary>
+   <ol>
+    <li>Camera with its lens in the 1.25" holder, screw snug. A white card in the tube opposite
+     the focuser, the tube aimed at a bright wall or the daytime sky (never the Sun). A white
+     paper collar round the lens makes its reflection easy to see.</li>
+    <li>Focus the lens on the secondary's edge, then back it off a little - between the
+     secondary and the donut. Blur is fine: the centre of a blurred circle is still exact.</li>
+    <li>Pick each circle: its button, then 3-6 clicks spread round its edge, then Done.</li>
+    <li>Focuser axis: 1st frame, turn the camera 180&deg; in the holder, 2nd frame.</li>
+    <li>Adjust in order: 1 (rarely needed), 2 with the secondary's screws, 3 with the
+     primary's. Then check 2 and 3 once more.</li>
+   </ol></details></div>
+ </div>
+</div>
+<script>
+const NAMES = {S: 'secondary outline', P: 'primary edge', D: 'centre donut', C: 'camera reflection'};
+const HINT = {S: 'edge of the secondary mirror', P: 'rim of the bright disk (between the clips)',
+              D: 'outer edge of the donut', C: 'the dark spot of the lens'};
+const COL = {S: '#3caaff', P: '#ffc850', D: '#ff5a5a', C: '#e66ee6'};
+const GRADE = {good: '#4caf50', close: '#d6be3c', adjust: '#d9534f'};
+const WORD = {good: 'good', close: 'nearly', adjust: 'adjust'};
+let CAM = null, TRACKING = true;
+const TRAILS = {};                    // step -> recent [vx, vy], to show which way a screw moves it
+
+async function coll(action, params) {
+  const r = await fetch('/api/collimate?' + new URLSearchParams(Object.assign({action}, params || {})));
+  show(await r.json());
+}
+async function camApi(path, params) {
+  if (!CAM) return;
+  await fetch(path + '?' + new URLSearchParams(Object.assign({cam: CAM}, params)));
+  coll('state');
+}
+function clickImg(e) {
+  const b = e.currentTarget.getBoundingClientRect();
+  coll('click', {fx: ((e.clientX - b.left) / b.width).toFixed(5),
+                 fy: ((e.clientY - b.top) / b.height).toFixed(5)});
+}
+function setInput(id, v) {           // never overwrite what is being typed
+  const el = document.getElementById(id);
+  if (document.activeElement !== el) el.value = v;
+}
+const svg = (w, h, body) => `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">${body}</svg>`;
+const rad = a => a * Math.PI / 180;
+
+// A target: green inside "good", yellow to "close", red beyond; the dot is the offset.
+function target(st) {
+  const S = 132, c = S / 2, R = 60, max = st.close * 2.2;
+  const k = R / max, gr = st.good * k, cr = st.close * k;
+  let b = `<circle cx="${c}" cy="${c}" r="${R}" fill="#4a2c2c" stroke="#6b3a3a"/>` +
+          `<circle cx="${c}" cy="${c}" r="${cr}" fill="#4d4628" stroke="#8a7a2c"/>` +
+          `<circle cx="${c}" cy="${c}" r="${gr}" fill="#2c4a2e" stroke="#4caf50"/>` +
+          `<line x1="${c - R}" y1="${c}" x2="${c + R}" y2="${c}" stroke="#777" stroke-width=".6"/>` +
+          `<line x1="${c}" y1="${c - R}" x2="${c}" y2="${c + R}" stroke="#777" stroke-width=".6"/>`;
+  if (!st.have) {
+    b += `<text x="${c}" y="${c + 5}" text-anchor="middle" fill="#bbb" font-size="13">?</text>`;
+    return svg(S, S, b);
+  }
+  const clip = ([x, y]) => { const d = Math.hypot(x, y) * k;
+    return d > R - 4 ? [x * k * (R - 4) / d, y * k * (R - 4) / d, true] : [x * k, y * k, false]; };
+  const tr = TRAILS[st.key] || [];
+  if (tr.length > 1) {
+    const pts = tr.map(p => { const [x, y] = clip(p); return `${(c + x).toFixed(1)},${(c + y).toFixed(1)}`; });
+    b += `<polyline points="${pts.join(' ')}" fill="none" stroke="#aaa" stroke-width="2" stroke-opacity=".55"/>`;
+  }
+  const [x, y, out] = clip([st.vx, st.vy]);
+  b += `<line x1="${c}" y1="${c}" x2="${c + x}" y2="${c + y}" stroke="#fff" stroke-width="1.5"/>`;
+  b += out ? `<path d="M0,-7 L6,5 L-6,5 Z" fill="#fff" transform="translate(${c + x},${c + y}) rotate(${Math.atan2(y, x) * 180 / Math.PI + 90})"/>`
+           : `<circle cx="${c + x}" cy="${c + y}" r="6" fill="${GRADE[st.grade]}" stroke="#fff" stroke-width="2"/>`;
+  return svg(S, S, b);
+}
+
+// The tube from the side, the mirror to adjust picked out in orange.
+function tube(mirror) {
+  const on = '#ffa94d', off = '#7b848d';
+  const p = mirror === 'primary' ? on : off, s = mirror === 'secondary' ? on : off;
+  return svg(78, 30,
+    `<rect x="2" y="8" width="66" height="18" rx="2" fill="none" stroke="#9aa3ab"/>` +
+    `<rect x="54" y="2" width="9" height="6" fill="#9aa3ab"/>` +
+    `<path d="M5,10 Q9,17 5,24" fill="none" stroke="${p}" stroke-width="${mirror === 'primary' ? 3.5 : 2}"/>` +
+    `<line x1="54" y1="21" x2="63" y2="12" stroke="${s}" stroke-width="${mirror === 'secondary' ? 3.5 : 2}"/>`);
+}
+
+// What the four circles look like in the picture.
+function sketch(s) {
+  const c = 75;
+  const ring = (k, x, y, r) => {
+    const picked = !!s.circles[k], on = s.picking === k;
+    return `<circle cx="${x}" cy="${y}" r="${r}" fill="none" stroke="${COL[k]}" stroke-width="${on ? 4 : 2}"` +
+           (picked ? '' : ` stroke-dasharray="4 3"`) + `/>`;
+  };
+  const label = (k, x, y) => `<text x="${x}" y="${y}" fill="${COL[k]}" font-size="13" font-weight="700">${k}</text>`;
+  const px = c + 2, py = c - 1;
+  return svg(150, 150,
+    `<rect width="150" height="150" rx="6" fill="#111"/>` +
+    `<circle cx="${c}" cy="${c}" r="66" fill="#3a3a3a"/>` +                          // the secondary
+    `<circle cx="${px}" cy="${py}" r="58" fill="#cfcfcf"/>` +                         // the primary in it
+    [30, 150, 270].map(a => { const x = px + 55 * Math.cos(rad(a)), y = py + 55 * Math.sin(rad(a));
+      return `<rect x="${x - 5}" y="${y - 6}" width="10" height="12" fill="#3a3a3a" transform="rotate(${a} ${x} ${y})"/>`; }).join('') +
+    [45, 135, 225, 315].map(a => `<line x1="${c + 18 * Math.cos(rad(a))}" y1="${c + 18 * Math.sin(rad(a))}" x2="${px + 58 * Math.cos(rad(a))}" y2="${py + 58 * Math.sin(rad(a))}" stroke="#555" stroke-width="1.5"/>`).join('') +
+    `<circle cx="${c}" cy="${c}" r="19" fill="#151515"/>` +                           // the secondary's reflection
+    `<circle cx="${c}" cy="${c}" r="12" fill="#e8e8e8"/>` +                           // the white collar's reflection
+    `<circle cx="${c - 2}" cy="${c + 1}" r="6.5" fill="none" stroke="#fff" stroke-width="3"/>` + // the donut
+    `<circle cx="${c}" cy="${c}" r="2" fill="#111"/>` +                               // the lens
+    ring('S', c, c, 66) + ring('P', px, py, 58) + ring('D', c - 2, c + 1, 8) + ring('C', c, c, 3.2) +
+    label('S', 128, 22) + label('P', 117, 38) + label('D', 50, 64) + label('C', 82, 70));
+}
+
+function turnTest(s) {
+  const st = s.axis_measured ? 2 : s.turn_pending ? 1 : 0;
+  const cam = (top) => svg(44, 44,
+    `<circle cx="22" cy="22" r="17" fill="#555" stroke="#aaa" stroke-width="2"/>` +
+    `<circle cx="22" cy="22" r="6" fill="#222"/>` +
+    `<circle cx="22" cy="${top ? 9 : 35}" r="3.5" fill="#ffa94d"/>`);
+  const arrow = svg(46, 44,
+    `<path d="M6,26 A17,17 0 1,1 40,26" fill="none" stroke="#ffa94d" stroke-width="2.5"/>` +
+    `<path d="M40,26 l-6,-3 l4,8 z" fill="#ffa94d"/>` +
+    `<text x="23" y="42" text-anchor="middle" fill="#ffa94d" font-size="10">180&deg;</text>`);
+  document.getElementById('turn').innerHTML =
+    `<div class="box ${st === 0 ? 'now' : 'done'}">${cam(true)}<br>mark on top` +
+    `<button onclick="coll('turn_first')">1st frame</button></div><div>&rarr;</div>` +
+    `<div class="box ${st === 1 ? 'now' : st === 2 ? 'done' : ''}">${arrow}<br>turn it half<br>a turn, tighten</div><div>&rarr;</div>` +
+    `<div class="box ${st === 1 ? 'now' : st === 2 ? 'done' : ''}">${cam(false)}<br>mark below` +
+    `<button onclick="coll('turn_second')" ${s.turn_pending ? '' : 'disabled'}>2nd frame</button></div>`;
+  document.getElementById('axis').innerHTML = s.axis_measured
+    ? `<span style="color:#6fcf73">&#10004; axis found</span> at (${s.axis[0]}, ${s.axis[1]}): the green cross. Redo it whenever the camera is reseated.`
+    : `Not measured yet - readings 1 and 2 need it. Until then the grey cross is only the frame centre.`;
+}
+
+function show(s) {
+  CAM = s.cam.name;
+  TRACKING = s.tracking;
+  document.getElementById('camstat').textContent = `${s.cam.name}, ${s.cam.fps} fps`;
+  setInput('exp', s.cam.exposure_ms);
+  setInput('gain', s.cam.gain);
+  setInput('lens', s.lens_mm);
+  document.getElementById('scope').textContent = `scope ${s.focal_mm}/${s.aperture_mm}`;
+  const tb = document.getElementById('trackbtn');
+  tb.textContent = s.tracking ? 'Following edges' : 'Frozen';
+  tb.className = s.tracking ? 'on' : '';
+  document.getElementById('msg').textContent = s.msg || '';
+  const ab = document.getElementById('autobtn');
+  ab.textContent = s.auto ? `Auto: ${s.auto}` : 'Auto exposure';
+  ab.className = s.auto ? 'on' : '';
+  const lv = document.getElementById('level');
+  lv.textContent = s.peak == null ? 'no frame' :
+    `brightest ${s.peak}%` + (s.clipped > 0.2 ? `, ${s.clipped}% clipped` : '');
+  lv.style.color = s.clipped > 0.2 || (s.peak != null && s.peak < 25) ? '#e3b567' : '#b9c1c8';
+
+  document.getElementById('sketch').innerHTML = sketch(s);
+  const feats = document.getElementById('feats');
+  feats.innerHTML = '';
+  for (const k of 'SPDC') {
+    const c = s.circles[k];
+    const b = document.createElement('button');
+    b.innerHTML = `<span class="key" style="background:${COL[k]}"></span>${k}`;
+    b.title = 'pick ' + NAMES[k];
+    b.className = s.picking === k ? 'on' : '';
+    b.onclick = () => coll('pick', {what: k});
+    const st = document.createElement('span');
+    st.className = 'st';
+    st.innerHTML = `<b>${NAMES[k]}</b><br>` + (s.picking === k ? `click the ${HINT[k]}: ${s.clicks} point(s)` :
+      c ? (c.locked ? `<span class="ok">&#10004; locked</span>, r ${c.r} px` : `<span class="bad">no edge found</span>, r ${c.r} px`)
+        : `<span class="muted">not picked</span>`);
+    const x = document.createElement('button');
+    x.textContent = '×';
+    x.className = 'small';
+    x.title = 'forget it';
+    x.disabled = !c;
+    x.onclick = () => { for (const t in TRAILS) delete TRAILS[t]; coll('forget', {what: k}); };
+    feats.append(b, st, x);
+  }
+  document.getElementById('donebtn').hidden = !s.picking;
+  turnTest(s);
+
+  const steps = document.getElementById('steps');
+  steps.innerHTML = '';
+  for (const st of s.steps) {
+    if (st.have) {
+      const tr = TRAILS[st.key] = TRAILS[st.key] || [];
+      const last = tr[tr.length - 1];
+      if (!last || Math.hypot(last[0] - st.vx, last[1] - st.vy) > 0.02 * st.close) tr.push([st.vx, st.vy]);
+      if (tr.length > 40) tr.shift();
+    } else delete TRAILS[st.key];
+    const d = document.createElement('div');
+    d.className = 'step ' + (st.have ? st.grade : 'off');
+    const unit = st.unit === '%' ? '%' : ' mm';
+    const via = st.key === 'secondary' && st.ref_name === 'axis' ? ' <span class="muted">(P on the axis)</span>' : '';
+    d.innerHTML = `<div>${target(st)}</div><div><div class="t">${st.title}${via}</div>` +
+      (st.have
+        ? `<div class="big">${st.value.toFixed(st.unit === '%' ? 1 : 2)}${unit} <span class="verdict">${WORD[st.grade]}${st.locked ? '' : ' ?'}</span></div>` +
+          `<div class="muted">green below ${+st.good.toFixed(2)}${unit}</div>`
+        : `<div class="muted" style="margin:6px 0">${st.text}</div>`) +
+      `<div class="mirror">${tube(st.mirror)}<span>${st.mirror}:<br>${st.screws}</span></div>` +
+      (st.have ? `<div class="muted" style="margin-top:3px">${st.text}</div>` : '') + `</div>`;
+    steps.appendChild(d);
+  }
+  document.getElementById('simpanel').hidden = !s.sim;
+}
+coll('state');
+setInterval(() => coll('state'), 700);
+</script>
+</body></html>
