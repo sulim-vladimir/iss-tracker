@@ -35,7 +35,6 @@ Everything is driven from a browser page served by the Pi.
 | [Tracking](docs/tracking.md) | pass mode, servo mode (Follow), the pier side, shadow, obstructions and clouds |
 | [Satellites](docs/satellites.md) | Identify, naming a pick, History, Upcoming, Favourites, Brightness |
 | [The console](docs/console.md) | the browser page panel by panel, the sky chart, terminal keys, emergency stop |
-| [Collimation](docs/collimation.md) | the guide camera in the focuser as an electronic Cheshire |
 | [How it works](docs/development.md) | the control loop, code layout, simulator and tests |
 | [AGENTS.md](AGENTS.md) | handover notes: state of play, conventions, debugging playbook |
 

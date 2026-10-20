@@ -17,9 +17,6 @@ detection (red circle) - image only, no text burned in. On the guide the **green
 boresight - where the main camera looks - and a **grey cross** the frame centre; on main the grey
 cross is its frame centre, which is its aim point.
 
-The guide panel's title carries a **collimate** link: the guide camera in the Newtonian's focuser,
-as an electronic Cheshire - see [Collimation](collimation.md).
-
 Under the image:
 
 * **Exposure** and **Gain**, as `-`/`+` steps or an exact value; remembered across restarts.

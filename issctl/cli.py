@@ -319,10 +319,10 @@ def make_controls(cams, recorder=None, mount_action=None, mount_state=None, esto
             "select": select, "sky": sky}
 
 
-def start_preview(cams, state, port, status=None, controls=None, collimator=None):
+def start_preview(cams, state, port, status=None, controls=None):
     from .preview import Preview
     try:
-        Preview(cams, state, port, status=status, controls=controls, collimator=collimator).start()
+        Preview(cams, state, port, status=status, controls=controls).start()
         print(f"preview on http://localhost:{port}/")
     except OSError as e:
         print(f"preview unavailable on port {port}: {e} (use --port)")
@@ -335,10 +335,10 @@ def open_mount(cfg, state, clock):
     return SerialMount(cfg, state, clock)
 
 
-def open_cameras(cfg, clock, names=("guide", "main")):
+def open_cameras(cfg, clock):
     from .camera import AsiCamera, V4l2Camera
     cams = {}
-    for name in names:
+    for name in ("guide", "main"):
         cam_cfg = cfg["cameras"][name]
         try:
             if cam_cfg.get("driver", "asi") == "v4l2":
@@ -2221,8 +2221,7 @@ def cmd_console(args, cfg):
                                              on_settings=lambda n, c: remember_settings(state, state_path, n, c),
                                              sky=sky_now, pointing=lambda: pointing()[1:],
                                              target=target_now, pass_info=pass_now,
-                                             picked=picked),
-                      collimator=make_collimator(cfg, cams, args.sim))
+                                             picked=picked))
 
     def run(scr):
         curses.curs_set(0)
@@ -2366,59 +2365,6 @@ def cmd_console(args, cfg):
 
 
 # ---------------------------------------------------------------- plate solving
-
-def collimation_file(sim):
-    return ROOT / "data" / ("collimation-sim.json" if sim else "collimation.json")
-
-
-def make_collimator(cfg, cams, sim):
-    """The console's /collimate page, on whichever camera goes into the focuser."""
-    from .collimate import Collimator
-    cam = cams.get(cfg["collimation"]["camera"])
-    return Collimator(cam, cfg["collimation"], collimation_file(sim), sim=False) if cam else None
-
-
-def cmd_collimate(args, cfg):
-    """The collimation page on its own: one camera, no mount - for a tube on another mount, or
-    on the table. The console offers the same page at /collimate; stop it first to use this
-    (systemctl --user stop iss-console), since only one program can hold a camera."""
-    from .collimate import Collimator, SimCollimationCamera
-    ccfg = cfg["collimation"]
-    name = args.camera or ccfg["camera"]
-    clock = Clock()
-    if args.sim:
-        cam = SimCollimationCamera(name, cfg["cameras"][name], clock).start()
-    else:
-        cam = open_cameras(cfg, clock, names=(name,)).get(name)
-        if cam is None:
-            raise SystemExit(f"the {name} camera did not open - if the console is running it "
-                             "holds the camera: use its /collimate page, or stop it with "
-                             "systemctl --user stop iss-console")
-    cams = {name: cam}
-    coll = Collimator(cam, ccfg, collimation_file(args.sim), sim=args.sim)
-    # the exposure and gain last used for collimating - not the console's, which are set for
-    # stars at night - kept in the collimation file: this command never writes state.json, so
-    # it cannot clobber what a console saves
-    apply_saved_settings({name: cam}, {"camera_settings": {name: coll.saved_camera}})
-    port = args.port or cfg["preview"]["port"]
-    start_preview(cams, {}, port, controls=make_controls(cams, on_settings=lambda n, c: coll.save()),
-                  collimator=coll)
-    print(f"collimation page on http://<this machine>:{port}/   (Ctrl-C to stop)")
-    # A plain kill must stop the camera properly too: the ASI120MM Mini, killed mid-capture,
-    # came back listed but never sent another frame until it was unplugged
-    import signal
-    def stop(*_):
-        raise KeyboardInterrupt
-    signal.signal(signal.SIGTERM, stop)
-    signal.signal(signal.SIGHUP, stop)
-    try:
-        while True:
-            time.sleep(1.0)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        cam.stop()
-
 
 def cmd_solve_setup(args, cfg):
     import shutil
@@ -2751,11 +2697,6 @@ def main(argv=None):
     p.add_argument("--web", action="store_true",
                    help="browser only, no terminal UI (handy over SSH or from a phone)")
 
-    p = sub.add_parser("collimate", help="collimate the Newtonian with a camera in its focuser")
-    p.add_argument("--camera", choices=("guide", "main"), help="default from [collimation] in the config")
-    p.add_argument("--port", type=int, help="page port (default from config)")
-    p.add_argument("--sim", action="store_true", help="a synthetic, miscollimated view")
-
     p = sub.add_parser("track", help="track a pass of the ISS or any catalogued satellite")
     p.add_argument("--sat", help="satellite name or NORAD number (default: the ISS)")
     p.add_argument("--port", type=int, help="preview port (default from config)")
@@ -2797,7 +2738,7 @@ def main(argv=None):
     cfg = load_config(args.config)
     commands = {"passes": cmd_passes, "favorites": cmd_favorites, "mount-test": cmd_mount_test,
                 "console": cmd_console, "track": cmd_track, "axis-scale": cmd_axis_scale, "solve-setup": cmd_solve_setup,
-                "solve": cmd_solve, "identify": cmd_identify, "collimate": cmd_collimate}
+                "solve": cmd_solve, "identify": cmd_identify}
     try:
         commands[args.cmd](args, cfg)
     except UnknownSatellite as e:
